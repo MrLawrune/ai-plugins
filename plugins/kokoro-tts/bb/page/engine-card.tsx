@@ -2,7 +2,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { useRpc } from "@get-bb/plugin-sdk/app";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -79,7 +78,6 @@ export function EngineCard({ data, patch, rpc, prefs, setPrefs, setupState, up }
   };
 
   const isGpu = cfg.provider === "cuda" || cfg.provider === "openvino";
-  const local = engine?.kind === "local" ? engine : engine?.kind === "remote" ? engine.fallback : null;
   const remote = engine?.kind === "remote" ? engine : null;
   const r = data.restart_required;
 
@@ -87,19 +85,6 @@ export function EngineCard({ data, patch, rpc, prefs, setPrefs, setupState, up }
     <Section
       title="Engine"
       description="Where synthesis runs. Switching applies immediately; a managed server may restart into a different runtime."
-      actions={
-        engine ? (
-          <Badge variant="outline">
-            {remote
-              ? remote.remote_health
-                ? `remote ok${remote.last_latency_ms ? ` · ${Math.round(remote.last_latency_ms)} ms` : ""}`
-                : "remote down · using fallback"
-              : local?.loaded
-                ? `${local.loaded_provider} loaded${local.load_ms ? ` · ${Math.round(local.load_ms)} ms` : ""}`
-                : "idle · unloaded"}
-          </Badge>
-        ) : null
-      }
     >
       <Row label="Synthesis runs on">
         <div role="radiogroup" className="flex flex-wrap gap-1.5">
