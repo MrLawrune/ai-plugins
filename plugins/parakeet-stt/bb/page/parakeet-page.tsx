@@ -66,9 +66,33 @@ export function ParakeetPage() {
           </select>
         </Row>
         <SwitchRow id="hold" label="Hold to talk" hint="Record only while the shortcut is held" checked={prefs.holdToTalk} onChange={(v) => void patch({ holdToTalk: v })} />
-        <SwitchRow id="submit" label="Auto-submit" hint="Send the message after dictating" checked={prefs.autoSubmit} onChange={(v) => void patch({ autoSubmit: v })} />
+        <SwitchRow id="submit" label="Auto-submit" hint="Send the message after a one-shot dictation" checked={prefs.autoSubmit} onChange={(v) => void patch({ autoSubmit: v })} />
         <SwitchRow id="space" label="Trailing space" checked={prefs.trailingSpace} onChange={(v) => void patch({ trailingSpace: v })} />
         <SwitchRow id="sounds" label="Sound cues" checked={prefs.soundCues} onChange={(v) => void patch({ soundCues: v })} />
+      </Section>
+
+      <Section title="Continuous dictation" description="Tap the mic for your default mode; press and hold for one-shot push-to-talk.">
+        <Row label="Default mode" htmlFor="mode">
+          <select id="mode" className="rounded-md border bg-transparent px-2 py-1 text-sm" value={prefs.mode}
+            onChange={(e) => void patch({ mode: e.target.value as Prefs["mode"] })}>
+            <option value="continuous">Continuous (commit at each pause)</option>
+            <option value="oneshot">One-shot (transcribe on stop)</option>
+          </select>
+        </Row>
+        <SwitchRow id="preview" label="Live preview" hint="Show the phrase in progress, dimmed" checked={prefs.livePreview} onChange={(v) => void patch({ livePreview: v })} />
+        <SliderRow id="pause" label="Pause before commit" value={prefs.pauseMs} min={300} max={1500} step={50} format={(v) => `${v} ms`} onChange={(v) => void patch({ pauseMs: v })} />
+        <SwitchRow id="silence" label="End on silence" checked={prefs.endOnSilence} onChange={(v) => void patch({ endOnSilence: v })} />
+        {prefs.endOnSilence && (
+          <SliderRow id="silence-s" label="Silence timeout" value={prefs.silenceTimeoutS} min={3} max={60} step={1} format={(v) => `${v} s`} onChange={(v) => void patch({ silenceTimeoutS: v })} />
+        )}
+        <SwitchRow id="commands" label="Voice commands" hint="Say the phrase at the end of a sentence" checked={prefs.voiceCommands} onChange={(v) => void patch({ voiceCommands: v })} />
+        {prefs.voiceCommands && (
+          <>
+            <Row label="Send phrase" htmlFor="send-phrase"><Input id="send-phrase" defaultValue={prefs.sendPhrase} onBlur={(e) => void patch({ sendPhrase: e.target.value })} /></Row>
+            <Row label="Stop phrase" htmlFor="stop-phrase"><Input id="stop-phrase" defaultValue={prefs.stopPhrase} onBlur={(e) => void patch({ stopPhrase: e.target.value })} /></Row>
+          </>
+        )}
+        <SwitchRow id="native" label="Hide bb's voice button" hint="Keep one mic in the composer" checked={prefs.hideNativeMic} onChange={(v) => void patch({ hideNativeMic: v })} />
       </Section>
 
       <Section title="Vocabulary">
