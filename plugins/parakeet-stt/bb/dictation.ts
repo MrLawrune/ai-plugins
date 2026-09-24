@@ -14,6 +14,8 @@ export interface Target {
   setLive(text: string, seq: number): void;
   /** Replace the live tail with solid `text` for phrase `seq` (empty just clears the tail). */
   commitLive(text: string, seq: number): void;
+  /** Capture where this session's text goes (caret, selection, or end) before recording starts. */
+  begin(): void;
 }
 export interface StreamHandlers {
   onPartial(text: string, seq: number): void;
@@ -121,6 +123,7 @@ export class DictationController {
     if (this.#state.phase !== "idle" || !deps) return;
     const target = this.#resolve(targetId);
     if (!target) return;
+    target.begin();
     const wanted = mode ?? deps.prefs().mode;
     if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target);
     return this.#startOneShot(deps, target);

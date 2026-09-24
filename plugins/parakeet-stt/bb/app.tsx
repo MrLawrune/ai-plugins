@@ -7,7 +7,8 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { appendDictation, controller, matchesShortcut, type DictationDeps, type Target } from "./dictation.ts";
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "./dictation-prefs.ts";
-import { applyLive, liveState, tailRange } from "./draft-tail.ts";
+import { takeCaret, trackCaret } from "./caret-tracker.ts";
+import { applyLive, beginAt, liveRange, liveState } from "./draft-tail.ts";
 import { ParakeetPage } from "./page/parakeet-page.tsx";
 import { followBottom } from "./follow-bottom.ts";
 import { createPressDetector } from "./press.ts";
@@ -58,18 +59,38 @@ function useControllerDeps() {
   }, [rpc]);
 }
 
-/** A dictation target bound to one composer; the live tail is shared (one session at a time). */
+/** Draft as left by the last plugin edit; if unchanged at the next start, continue where it ended. */
+let lastPluginDraft: string | null = null;
+
+/** A dictation target bound to one composer; the live state is shared (one session at a time). */
 function makeTarget(id: string, composer: () => ComposerApi): Target {
+  const edit = (fn: (d: string) => string) => composer().updateText((d) => (lastPluginDraft = fn(d)));
   return {
     id,
-    appendText: (text) => composer().updateText((current) => appendDictation(current, text, prefsNow().trailingSpace)),
+    begin: () => edit((d) => {
+      const prev = liveState.get();
+      const caret = takeCaret(d);
+      if (caret) {
+        const b = beginAt(d, caret);
+        liveState.set(b.state);
+        return b.draft;
+      }
+      const resume = prev.anchor !== null && d === lastPluginDraft && prev.anchor <= d.length;
+      liveState.set({ anchor: resume ? prev.anchor : null, tail: "", dropSeq: null });
+      return d;
+    }),
+    appendText: (text) => edit((d) => {
+      const r = applyLive(d, liveState.get(), -1, text, true);
+      liveState.set(r.state);
+      return r.state.anchor === null ? appendDictation(d, text, prefsNow().trailingSpace) : r.draft;
+    }),
     submit: () => { void composer().experimental_submit({ experimental_data: {} }); },
-    setLive: (text, seq) => composer().updateText((d) => {
+    setLive: (text, seq) => edit((d) => {
       const r = applyLive(d, liveState.get(), seq, text, false);
       liveState.set(r.state);
       return r.draft;
     }),
-    commitLive: (text, seq) => composer().updateText((d) => {
+    commitLive: (text, seq) => edit((d) => {
       const r = applyLive(d, liveState.get(), seq, text, true);
       liveState.set(r.state);
       return r.draft;
@@ -234,11 +255,16 @@ export default definePluginApp((app) => {
         id: "live-tail",
         className: "opacity-50",
         match: (text) => {
-          const r = tailRange(text, liveState.get().tail);
+          const r = liveRange(text, liveState.get());
           return r ? [r] : [];
         },
       }],
     },
+  });
+
+  app.contentScripts.register({
+    id: "caret",
+    mount({ signal }) { trackCaret(signal); },
   });
 
   app.contentScripts.register({

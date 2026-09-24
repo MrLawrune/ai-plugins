@@ -20,7 +20,7 @@ function harness(over: Partial<DictationDeps> = {}) {
   };
   const c = new DictationController(deps);
   let draft = "fix the";
-  c.register({ id: "t1", setLive() {}, commitLive() {}, appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") });
+  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") });
   return { c, log, draft: () => draft, interrupt: (w: Interruption) => interrupt!(w) };
 }
 
@@ -159,7 +159,7 @@ test("composer closed before the transcript arrives: user is told where the text
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  const unregister = c.register({ id: "t1", setLive() {}, commitLive() {}, appendText: () => log.push("appended"), submit: () => {} });
+  const unregister = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: () => log.push("appended"), submit: () => {} });
   await c.start("t1");
   unregister();
   await c.stop();
@@ -177,8 +177,8 @@ test("two surfaces for one composer: unmounting one keeps the other usable", asy
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  c.register({ id: "t1", setLive() {}, commitLive() {}, appendText: (t) => log.push(`action:${t}`), submit: () => {} });
-  const unregisterBanner = c.register({ id: "t1", setLive() {}, commitLive() {}, appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
+  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: (t) => log.push(`action:${t}`), submit: () => {} });
+  const unregisterBanner = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
   unregisterBanner();
   await c.toggle("t1");
   assert.equal(c.snapshot().phase, "recording");
@@ -231,6 +231,7 @@ function streamHarness(over: Partial<DictationDeps> = {}) {
     submit: () => log.push("submit"),
     setLive: (t) => { live = t; },
     commitLive: (t) => { live = ""; if (t) draft = `${draft} ${t}`; },
+    begin: () => log.push("begin"),
   });
   return { c, log, h: () => handlers!, interrupt: (w: Interruption) => interrupt!(w), draft: () => draft, live: () => live };
 }
@@ -340,9 +341,16 @@ test("targetCount tracks registrations and notifies subscribers", () => {
   let notified = 0;
   c.subscribe(() => notified++);
   assert.equal(c.targetCount(), 0);
-  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {} });
+  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {}, begin() {} });
   assert.equal(c.targetCount(), 1);
   off();
   assert.equal(c.targetCount(), 0);
   assert.equal(notified, 2);
+});
+
+test("each start captures the insertion point once, before recording", async () => {
+  const s = streamHarness();
+  await s.c.start();
+  assert.equal(s.log.filter((l) => l === "begin").length, 1);
+  assert.ok(s.log.indexOf("begin") < s.log.indexOf("stream:start"));
 });
