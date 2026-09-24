@@ -9,6 +9,7 @@ import { appendDictation, controller, matchesShortcut, type DictationDeps, type 
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "./dictation-prefs.ts";
 import { applyLive, liveState, tailRange } from "./draft-tail.ts";
 import { ParakeetPage } from "./page/parakeet-page.tsx";
+import { followBottom } from "./follow-bottom.ts";
 import { createPressDetector } from "./press.ts";
 import { blobToBase64, extensionFor, startBrowserRecording } from "./recorder.ts";
 import type { Prefs, rpcContract, SoundName } from "./schemas.ts";
@@ -292,6 +293,7 @@ export default definePluginApp((app) => {
       };
       apply();
       const off = onDictationPrefs(apply);
+      followBottom(document, "[data-promptbox-compact-content] .ProseMirror", signal);
       signal.addEventListener("abort", () => { off(); style.remove(); });
     },
   });
