@@ -66,3 +66,7 @@ test("keeps listening with the screen off by default", () => {
 test("floating mic on phones by default", () => {
   assert.equal(DEFAULT_PREFS.floatingMic, true);
 });
+
+test("collapsed composer shows more lines by default", () => {
+  assert.equal(DEFAULT_PREFS.expandCompactDraft, true);
+});

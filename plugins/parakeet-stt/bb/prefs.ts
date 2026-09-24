@@ -21,6 +21,7 @@ export const DEFAULT_PREFS: Prefs = {
   hideNativeMic: true,
   keepListeningHidden: true,
   floatingMic: true,
+  expandCompactDraft: true,
 };
 
 export interface KvLike {

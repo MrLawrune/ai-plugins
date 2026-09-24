@@ -267,6 +267,34 @@ export default definePluginApp((app) => {
   });
 
   app.contentScripts.register({
+    id: "compact-draft",
+    mount({ signal }) {
+      // bb's collapsed (phone) composer clips the draft to one line with an ellipsis; let it wrap
+      // up to ~4 lines and scroll beyond that. Unmatched selectors after a bb update simply do nothing.
+      const style = document.createElement("style");
+      style.textContent = [
+        ":root [data-promptbox-compact] [data-promptbox-main]{height:auto!important;min-height:3rem!important}",
+        ":root [data-promptbox-compact-content] .ProseMirror[contenteditable]{white-space:pre-wrap!important;text-overflow:clip!important;max-height:6.8em!important;overflow-y:auto!important}",
+        ":root [data-promptbox-compact-content] .ProseMirror[contenteditable] :where(p,li,blockquote,h1,h2,h3,h4,h5,h6){display:block!important}",
+        ":root [data-promptbox-compact-content] .ProseMirror[contenteditable]>*+:before,:root [data-promptbox-compact-content] .ProseMirror[contenteditable] br:after{content:none!important}",
+        ":root [data-promptbox-compact-content] .ProseMirror[contenteditable] br{display:initial!important}",
+      ].join("\n");
+      // Same cascade layer as bb's rule: layered !important beats unlayered, so specificity decides here.
+      style.textContent = `@layer components {\n${style.textContent}\n}`;
+      const apply = (p: Prefs = prefsNow()) => {
+        if (p.expandCompactDraft) {
+          if (!style.isConnected) document.head.appendChild(style);
+        } else {
+          style.remove();
+        }
+      };
+      apply();
+      const off = onDictationPrefs(apply);
+      signal.addEventListener("abort", () => { off(); style.remove(); });
+    },
+  });
+
+  app.contentScripts.register({
     id: "native-mic",
     mount({ signal }) {
       const style = document.createElement("style");

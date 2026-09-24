@@ -95,6 +95,7 @@ export function ParakeetPage() {
         )}
         <SwitchRow id="hidden" label="Keep listening when the screen is off" hint="Off: locking the phone ends dictation" checked={prefs.keepListeningHidden} onChange={(v) => void patch({ keepListeningHidden: v })} />
         <SwitchRow id="floating" label="Floating mic on phones" hint="Dictate without opening the keyboard" checked={prefs.floatingMic} onChange={(v) => void patch({ floatingMic: v })} />
+        <SwitchRow id="compact" label="Show more lines in the collapsed composer" hint="Phones: wrap the draft instead of cutting it off" checked={prefs.expandCompactDraft} onChange={(v) => void patch({ expandCompactDraft: v })} />
         <SwitchRow id="native" label="Hide bb's voice button" hint="Keep one mic in the composer" checked={prefs.hideNativeMic} onChange={(v) => void patch({ hideNativeMic: v })} />
       </Section>
 

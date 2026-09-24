@@ -31,6 +31,7 @@ export const prefsSchema = z.object({
   hideNativeMic: z.boolean(),
   keepListeningHidden: z.boolean(),
   floatingMic: z.boolean(),
+  expandCompactDraft: z.boolean(),
 }).strict();
 export type Prefs = z.output<typeof prefsSchema>;
 
