@@ -1,16 +1,35 @@
 // Frontend dictation state machine shared by the composer action, plus-menu item, banner,
 // and keyboard shortcut. Browser specifics are injected so the logic runs under node:test.
 import type { SoundName } from "./schemas.ts";
+import type { EndReason } from "./stream-protocol.ts";
 
-export type Phase = "idle" | "recording" | "transcribing";
+export type Mode = "continuous" | "oneshot";
+export type Phase = "idle" | "recording" | "transcribing" | "streaming" | "finishing";
 export interface DictationSnapshot { phase: Phase; targetId: string | null; startedAt: number | null }
-export interface Target { id: string; appendText(text: string): void; submit(): void }
+export interface Target {
+  id: string;
+  appendText(text: string): void;
+  submit(): void;
+  /** Replace the dimmed live tail with `text` (empty clears it). */
+  setLive(text: string): void;
+  /** Replace the live tail with solid `text` (empty just clears the tail). */
+  commitLive(text: string): void;
+}
+export interface StreamHandlers {
+  onPartial(text: string): void;
+  onFinal(text: string): void;
+  onCommand(name: "send" | "stop"): void;
+  onEnded(reason: EndReason): void;
+  onError(message: string): void;
+}
+export interface StreamHandle { stop(): Promise<void>; cancel(): void }
 export interface RecordingHandle { stop(): Promise<Blob>; cancel(): void }
 export type Interruption = "hidden" | "limit";
 export interface DictationDeps {
   startRecording(onInterrupt: (why: Interruption) => void): Promise<RecordingHandle>;
   transcribe(audio: Blob): Promise<string>;
-  prefs(): { autoSubmit: boolean; trailingSpace: boolean; soundCues: boolean };
+  startStream?(handlers: StreamHandlers, onInterrupt: (why: Interruption) => void): Promise<StreamHandle>;
+  prefs(): { autoSubmit: boolean; trailingSpace: boolean; soundCues: boolean; mode: Mode; livePreview: boolean };
   playSound(name: SoundName): void;
   notify(kind: "info" | "error", message: string): void;
   now(): number;
@@ -44,6 +63,8 @@ export class DictationController {
   #recording: RecordingHandle | null = null;
   /** stop() arrived while the mic prompt was still pending (e.g. hold-to-talk key released). */
   #stopRequested = false;
+  #stream: StreamHandle | null = null;
+  #live = "";
 
   constructor(deps: DictationDeps | null) {
     this.#deps = deps;
@@ -72,15 +93,75 @@ export class DictationController {
   }
 
   async toggle(targetId?: string): Promise<void> {
-    if (this.#state.phase === "idle") return this.start(targetId);
-    if (this.#state.phase === "recording") return this.stop();
+    const phase = this.#state.phase;
+    if (phase === "idle") return this.start(targetId);
+    if (phase === "recording" || phase === "streaming") return this.stop();
   }
 
-  async start(targetId?: string): Promise<void> {
+  /** Start in `mode` (default: the prefs mode). Continuous falls back to one-shot if streaming fails. */
+  async start(targetId?: string, mode?: Mode): Promise<void> {
     const deps = this.#deps;
     if (this.#state.phase !== "idle" || !deps) return;
     const target = this.#resolve(targetId);
     if (!target) return;
+    const wanted = mode ?? deps.prefs().mode;
+    if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target);
+    return this.#startOneShot(deps, target);
+  }
+
+  async #startStream(deps: DictationDeps, target: Target): Promise<void> {
+    this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now() });
+    this.#stopRequested = false;
+    this.#live = "";
+    const handlers: StreamHandlers = {
+      onPartial: (text) => {
+        if (!deps.prefs().livePreview || this.snapshot().phase === "idle") return;
+        this.#live = text;
+        target.setLive(text);
+      },
+      onFinal: (text) => { this.#live = ""; target.commitLive(text); },
+      onCommand: (name) => { if (name === "send") target.submit(); },
+      onError: (message) => deps.notify("error", message),
+      onEnded: (reason) => this.#streamEnded(deps, target, reason),
+    };
+    let handle: StreamHandle;
+    try {
+      handle = await deps.startStream!(handlers, (why) => {
+        if (this.snapshot().phase !== "streaming") return;
+        deps.notify("info", why === "hidden" ? "Dictation stopped because the page was hidden." : "Dictation reached its limit.");
+        void this.stop();
+      });
+    } catch (e) {
+      this.#set(IDLE);
+      deps.notify("info", `Streaming unavailable (${e instanceof Error ? e.message : String(e)}); using one-shot.`);
+      return this.#startOneShot(deps, target);
+    }
+    if (this.snapshot().phase !== "streaming") {
+      handle.cancel(); // cancelled while connecting
+      return;
+    }
+    this.#stream = handle;
+    this.#cue("start");
+    if (this.#stopRequested) await this.stop();
+  }
+
+  #streamEnded(deps: DictationDeps, target: Target, reason: EndReason): void {
+    if (this.snapshot().phase === "idle") return;
+    if (reason === "error") {
+      if (this.#live) target.commitLive(this.#live);
+      deps.notify("info", "Dictation connection lost; the last phrase may be incomplete.");
+      this.#cue("error");
+    } else {
+      if (reason === "silence") deps.notify("info", "Dictation stopped after silence.");
+      if (reason === "limit") deps.notify("info", "Dictation reached the 15-minute limit.");
+      this.#cue("stop");
+    }
+    this.#live = "";
+    this.#stream = null;
+    this.#set(IDLE);
+  }
+
+  async #startOneShot(deps: DictationDeps, target: Target): Promise<void> {
     // Enter "recording" before the mic prompt resolves so a double press is ignored.
     this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now() });
     this.#stopRequested = false;
@@ -108,6 +189,16 @@ export class DictationController {
   }
 
   async stop(): Promise<void> {
+    if (this.#state.phase === "streaming") {
+      if (!this.#stream) {
+        this.#stopRequested = true;
+        return;
+      }
+      const stream = this.#stream;
+      this.#set({ ...this.#state, phase: "finishing" });
+      await stream.stop();
+      return;
+    }
     const deps = this.#deps;
     const recording = this.#recording;
     if (this.#state.phase !== "recording" || !deps) return;
@@ -138,6 +229,16 @@ export class DictationController {
   }
 
   cancel(): void {
+    if (this.#state.phase === "streaming" || this.#state.phase === "finishing") {
+      const target = this.#resolve(this.#state.targetId ?? undefined);
+      this.#stream?.cancel();
+      this.#stream = null;
+      this.#live = "";
+      target?.setLive("");
+      this.#set(IDLE);
+      this.#cue("cancel");
+      return;
+    }
     if (this.#state.phase !== "recording") return;
     this.#recording?.cancel();
     this.#recording = null;
