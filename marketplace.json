@@ -9,15 +9,50 @@
       "id": "kokoro-tts",
       "displayName": "Kokoro TTS",
       "description": "Hear your agents: local Kokoro text-to-speech for every BB thread, set up and run for you.",
-      "icon": { "url": "./plugins/kokoro-tts/assets/icon.svg" },
-      "tags": ["voice", "tts", "accessibility"],
-      "author": { "name": "MrLawrune", "github": "MrLawrune" },
+      "icon": {
+        "url": "./plugins/kokoro-tts/assets/icon.svg"
+      },
+      "tags": [
+        "voice",
+        "tts",
+        "accessibility"
+      ],
+      "author": {
+        "name": "MrLawrune",
+        "github": "MrLawrune"
+      },
       "source": {
         "git": {
           "url": "https://github.com/MrLawrune/ai-plugins.git",
           "subdir": "plugins/kokoro-tts",
           "range": "^0.1.0",
           "tagPrefix": "kokoro-tts/"
+        }
+      }
+    },
+    {
+      "id": "parakeet-stt",
+      "displayName": "Parakeet STT",
+      "description": "Dictate to your agents: Handy-style speech-to-text for every BB composer, powered by your own Parakeet server.",
+      "icon": {
+        "url": "./plugins/parakeet-stt/assets/icon.svg"
+      },
+      "tags": [
+        "voice",
+        "stt",
+        "dictation",
+        "accessibility"
+      ],
+      "author": {
+        "name": "MrLawrune",
+        "github": "MrLawrune"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/MrLawrune/ai-plugins.git",
+          "subdir": "plugins/parakeet-stt",
+          "range": "^0.1.0",
+          "tagPrefix": "parakeet-stt/"
         }
       }
     }

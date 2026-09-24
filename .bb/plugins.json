@@ -2,5 +2,14 @@
   "$schema": "https://getbb.app/schemas/plugins.schema.json",
   "schemaVersion": 1,
   "name": "ai-plugins",
-  "plugins": [{ "name": "kokoro-tts", "source": "./plugins/kokoro-tts" }]
+  "plugins": [
+    {
+      "name": "kokoro-tts",
+      "source": "./plugins/kokoro-tts"
+    },
+    {
+      "name": "parakeet-stt",
+      "source": "./plugins/parakeet-stt"
+    }
+  ]
 }

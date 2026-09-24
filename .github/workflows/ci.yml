@@ -14,6 +14,18 @@ jobs:
       - run: npx tsc --noEmit
       - run: npm test
       - run: uv run --project server --with pytest pytest tests -q
+  parakeet-stt:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: plugins/parakeet-stt } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - uses: astral-sh/setup-uv@v6
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: uv run --project server --with pytest pytest tests -q
   catalogs:
     runs-on: ubuntu-latest
     steps:

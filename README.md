@@ -13,3 +13,11 @@ Claude Code without bb:
 
     /plugin marketplace add MrLawrune/ai-plugins
     /plugin install kokoro-tts@mrlawrune-ai-plugins
+
+## parakeet-stt
+
+Dictate to your agents: Handy-style speech-to-text for every bb composer, backed by your own OpenAI-compatible Parakeet server.
+
+    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.1.0 --plugin parakeet-stt --tag-prefix parakeet-stt/
+
+Server setup and API: [plugins/parakeet-stt/README.md](plugins/parakeet-stt/README.md).
