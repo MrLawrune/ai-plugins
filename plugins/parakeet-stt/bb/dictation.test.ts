@@ -129,3 +129,75 @@ test("matchesShortcut is exact", () => {
   assert.equal(matchesShortcut(ev("Space"), "ctrl+space"), false);
   assert.equal(matchesShortcut(ev("Space", { ctrlKey: true }), "off"), false);
 });
+
+test("stop pressed before the mic resolves still stops once it does (hold-to-talk release)", async () => {
+  let resolveMic!: () => void;
+  const log: string[] = [];
+  const h = harness({
+    startRecording: () => new Promise((r) => {
+      resolveMic = () => r({ async stop() { log.push("rec:stop"); return new Blob(["x"]); }, cancel() {} });
+    }),
+  });
+  const starting = h.c.start();
+  const stopping = h.c.stop();
+  resolveMic();
+  await starting;
+  await stopping;
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.deepEqual(log, ["rec:stop"]);
+  assert.equal(h.draft(), "fix the hello world");
+});
+
+test("composer closed before the transcript arrives: user is told where the text went", async () => {
+  const log: string[] = [];
+  const c = new DictationController({
+    async startRecording() { return { async stop() { return new Blob(["x"]); }, cancel() {} }; },
+    async transcribe() { return "lost words"; },
+    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false }),
+    playSound: () => {},
+    notify: (k, m) => log.push(`${k}:${m}`),
+    now: () => 0,
+  });
+  const unregister = c.register({ id: "t1", appendText: () => log.push("appended"), submit: () => {} });
+  await c.start("t1");
+  unregister();
+  await c.stop();
+  assert.ok(!log.includes("appended"));
+  assert.ok(log.some((l) => l.startsWith("info:") && l.includes("history")), log.join(" | "));
+});
+
+test("two surfaces for one composer: unmounting one keeps the other usable", async () => {
+  const log: string[] = [];
+  const c = new DictationController({
+    async startRecording() { return { async stop() { return new Blob(["x"]); }, cancel() {} }; },
+    async transcribe() { return "hi"; },
+    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false }),
+    playSound: () => {},
+    notify: (k, m) => log.push(`${k}:${m}`),
+    now: () => 0,
+  });
+  c.register({ id: "t1", appendText: (t) => log.push(`action:${t}`), submit: () => {} });
+  const unregisterBanner = c.register({ id: "t1", appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
+  unregisterBanner();
+  await c.toggle("t1");
+  assert.equal(c.snapshot().phase, "recording");
+  await c.toggle("t1");
+  assert.deepEqual(log, ["action:hi"]);
+});
+
+test("cancel while the mic prompt is pending releases the mic once it resolves", async () => {
+  let resolveMic!: () => void;
+  const log: string[] = [];
+  const h = harness({
+    startRecording: () => new Promise((r) => {
+      resolveMic = () => r({ async stop() { log.push("rec:stop"); return new Blob(["x"]); }, cancel() { log.push("rec:cancel"); } });
+    }),
+  });
+  const starting = h.c.start();
+  h.c.cancel();
+  resolveMic();
+  await starting;
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.deepEqual(log, ["rec:cancel"]);
+});

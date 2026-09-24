@@ -42,6 +42,8 @@ export class DictationController {
   #targets: Target[] = [];
   #listeners = new Set<() => void>();
   #recording: RecordingHandle | null = null;
+  /** stop() arrived while the mic prompt was still pending (e.g. hold-to-talk key released). */
+  #stopRequested = false;
 
   constructor(deps: DictationDeps | null) {
     this.#deps = deps;
@@ -60,9 +62,12 @@ export class DictationController {
     return () => this.#listeners.delete(listener);
   }
 
-  /** The most recently registered or used target is the default for shortcuts. */
+  /**
+   * The most recently registered or used target is the default for shortcuts. Several surfaces
+   * (action, banner, plus menu) may register the same composer id; each unregisters only itself.
+   */
   register(target: Target): () => void {
-    this.#targets = [...this.#targets.filter((t) => t.id !== target.id), target];
+    this.#targets = [...this.#targets, target];
     return () => { this.#targets = this.#targets.filter((t) => t !== target); };
   }
 
@@ -78,8 +83,10 @@ export class DictationController {
     if (!target) return;
     // Enter "recording" before the mic prompt resolves so a double press is ignored.
     this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now() });
+    this.#stopRequested = false;
+    let handle: RecordingHandle;
     try {
-      this.#recording = await deps.startRecording((why) => {
+      handle = await deps.startRecording((why) => {
         if (this.#state.phase !== "recording") return;
         deps.notify("info", INTERRUPT_NOTICE[why]);
         void this.stop();
@@ -91,13 +98,24 @@ export class DictationController {
       deps.notify("error", `Microphone unavailable: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
+    if (this.snapshot().phase !== "recording") {
+      handle.cancel(); // cancelled while the mic prompt was pending
+      return;
+    }
+    this.#recording = handle;
     this.#cue("start");
+    if (this.#stopRequested) await this.stop();
   }
 
   async stop(): Promise<void> {
     const deps = this.#deps;
     const recording = this.#recording;
-    if (this.#state.phase !== "recording" || !deps || !recording) return;
+    if (this.#state.phase !== "recording" || !deps) return;
+    if (!recording) {
+      this.#stopRequested = true;
+      return;
+    }
+    this.#stopRequested = false;
     const target = this.#resolve(this.#state.targetId ?? undefined);
     this.#recording = null;
     this.#set({ ...this.#state, phase: "transcribing" });
@@ -106,7 +124,8 @@ export class DictationController {
       this.#cue("stop");
       const text = (await deps.transcribe(audio)).trim();
       if (!text) deps.notify("info", "No speech detected");
-      else if (target) {
+      else if (!target) deps.notify("info", "The composer closed before the text arrived; it is saved in Parakeet STT history.");
+      else {
         target.appendText(text);
         if (deps.prefs().autoSubmit) target.submit();
       }
@@ -127,12 +146,10 @@ export class DictationController {
   }
 
   #resolve(targetId?: string): Target | undefined {
-    if (targetId) {
-      const t = this.#targets.find((x) => x.id === targetId);
-      if (t) this.#targets = [...this.#targets.filter((x) => x !== t), t];
-      return t;
-    }
-    return this.#targets.at(-1);
+    if (!targetId) return this.#targets.at(-1);
+    const t = [...this.#targets].reverse().find((x) => x.id === targetId);
+    if (t) this.#targets = [...this.#targets.filter((x) => x !== t), t];
+    return t;
   }
 
   #cue(name: SoundName): void {
