@@ -10,6 +10,15 @@ export const DEFAULT_PREFS: Prefs = {
   removeFillers: true,
   correctionThreshold: 0.18,
   historyLimit: 5,
+  mode: "continuous",
+  livePreview: true,
+  pauseMs: 600,
+  endOnSilence: false,
+  silenceTimeoutS: 8,
+  voiceCommands: false,
+  sendPhrase: "send it",
+  stopPhrase: "stop listening",
+  hideNativeMic: true,
 };
 
 export interface KvLike {

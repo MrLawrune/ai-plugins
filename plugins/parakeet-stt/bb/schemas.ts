@@ -20,6 +20,15 @@ export const prefsSchema = z.object({
   removeFillers: z.boolean(),
   correctionThreshold: z.number().min(0).max(0.5),
   historyLimit: z.number().int().min(0).max(50),
+  mode: z.enum(["continuous", "oneshot"]),
+  livePreview: z.boolean(),
+  pauseMs: z.number().int().min(300).max(1500),
+  endOnSilence: z.boolean(),
+  silenceTimeoutS: z.number().int().min(3).max(60),
+  voiceCommands: z.boolean(),
+  sendPhrase: z.string().trim().min(1).max(40),
+  stopPhrase: z.string().trim().min(1).max(40),
+  hideNativeMic: z.boolean(),
 }).strict();
 export type Prefs = z.output<typeof prefsSchema>;
 

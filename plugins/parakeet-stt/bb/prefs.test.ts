@@ -39,3 +39,22 @@ test("custom words are trimmed and de-duplicated", async () => {
   const p = await store.update({ customWords: [" tmux ", "tmux", "", "CLAUDE.md"] });
   assert.deepEqual(p.customWords, ["tmux", "CLAUDE.md"]);
 });
+
+test("streaming defaults", () => {
+  assert.equal(DEFAULT_PREFS.mode, "continuous");
+  assert.equal(DEFAULT_PREFS.livePreview, true);
+  assert.equal(DEFAULT_PREFS.pauseMs, 600);
+  assert.equal(DEFAULT_PREFS.endOnSilence, false);
+  assert.equal(DEFAULT_PREFS.silenceTimeoutS, 8);
+  assert.equal(DEFAULT_PREFS.voiceCommands, false);
+  assert.equal(DEFAULT_PREFS.sendPhrase, "send it");
+  assert.equal(DEFAULT_PREFS.stopPhrase, "stop listening");
+  assert.equal(DEFAULT_PREFS.hideNativeMic, true);
+});
+
+test("prefs saved before streaming existed load with streaming defaults", async () => {
+  const store = new PrefsStore(memKv({ prefs: { shortcut: "alt+space", customWords: ["tmux"] } }));
+  const p = await store.load();
+  assert.equal(p.shortcut, "alt+space");
+  assert.equal(p.mode, "continuous");
+});
