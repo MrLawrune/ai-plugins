@@ -325,3 +325,12 @@ test("explicit oneshot mode overrides the continuous default (press-and-hold)", 
   assert.equal(s.c.snapshot().phase, "recording");
   assert.ok(s.log.includes("oneshot:start") && !s.log.includes("stream:start"));
 });
+
+test("continuous: mic lost by the browser ends gracefully with a notice", async () => {
+  const s = streamHarness();
+  await s.c.start();
+  s.interrupt("lost");
+  await new Promise((r) => setTimeout(r, 0));
+  assert.ok(s.log.includes("stream:stop"));
+  assert.ok(s.log.some((l) => l.startsWith("info:") && l.includes("microphone")), s.log.join(" | "));
+});

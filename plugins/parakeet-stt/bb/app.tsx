@@ -32,7 +32,7 @@ function useControllerDeps() {
     let recordingMime = "audio/webm";
     const deps: DictationDeps = {
       startRecording: async (onInterrupt) => {
-        const handle = await startBrowserRecording(onInterrupt);
+        const handle = await startBrowserRecording(onInterrupt, () => prefsNow().keepListeningHidden);
         recordingMime = handle.mimeType;
         return handle;
       },
@@ -46,7 +46,7 @@ function useControllerDeps() {
       },
       startStream: (h, onInterrupt) => {
         const proto = location.protocol === "https:" ? "wss" : "ws";
-        return startBrowserStream(`${proto}://${location.host}${PLUGIN_BASE}/stream`, h, onInterrupt);
+        return startBrowserStream(`${proto}://${location.host}${PLUGIN_BASE}/stream`, h, onInterrupt, () => prefsNow().keepListeningHidden);
       },
       prefs: prefsNow,
       playSound: (name: SoundName) => { void new Audio(`${PLUGIN_BASE}/sound/${name}`).play().catch(() => undefined); },

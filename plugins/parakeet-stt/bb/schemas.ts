@@ -29,6 +29,7 @@ export const prefsSchema = z.object({
   sendPhrase: z.string().trim().min(1).max(40),
   stopPhrase: z.string().trim().min(1).max(40),
   hideNativeMic: z.boolean(),
+  keepListeningHidden: z.boolean(),
 }).strict();
 export type Prefs = z.output<typeof prefsSchema>;
 

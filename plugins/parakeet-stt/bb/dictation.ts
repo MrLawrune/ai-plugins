@@ -24,7 +24,7 @@ export interface StreamHandlers {
 }
 export interface StreamHandle { stop(): Promise<void>; cancel(): void }
 export interface RecordingHandle { stop(): Promise<Blob>; cancel(): void }
-export type Interruption = "hidden" | "limit";
+export type Interruption = "hidden" | "limit" | "lost";
 export interface DictationDeps {
   startRecording(onInterrupt: (why: Interruption) => void): Promise<RecordingHandle>;
   transcribe(audio: Blob): Promise<string>;
@@ -39,6 +39,13 @@ const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null
 const INTERRUPT_NOTICE: Record<Interruption, string> = {
   hidden: "Recording stopped because the page was hidden; transcribing what was captured.",
   limit: "Recording reached the 5-minute limit; transcribing.",
+  lost: "The browser turned the microphone off; transcribing what was captured.",
+};
+
+const STREAM_INTERRUPT_NOTICE: Record<Interruption, string> = {
+  hidden: "Dictation stopped because the page was hidden.",
+  limit: "Dictation reached its limit.",
+  lost: "The browser turned the microphone off; dictation stopped and your text was kept.",
 };
 
 export function appendDictation(current: string, text: string, trailingSpace: boolean): string {
@@ -128,7 +135,7 @@ export class DictationController {
     try {
       handle = await deps.startStream!(handlers, (why) => {
         if (this.snapshot().phase !== "streaming") return;
-        deps.notify("info", why === "hidden" ? "Dictation stopped because the page was hidden." : "Dictation reached its limit.");
+        deps.notify("info", STREAM_INTERRUPT_NOTICE[why]);
         void this.stop();
       });
     } catch (e) {

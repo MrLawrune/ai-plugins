@@ -58,3 +58,7 @@ test("prefs saved before streaming existed load with streaming defaults", async 
   assert.equal(p.shortcut, "alt+space");
   assert.equal(p.mode, "continuous");
 });
+
+test("keeps listening with the screen off by default", () => {
+  assert.equal(DEFAULT_PREFS.keepListeningHidden, true);
+});

@@ -1,4 +1,5 @@
 // Browser side of continuous dictation: mic → AudioWorklet → 16 kHz PCM16 frames → plugin relay socket.
+import { guardCapture } from "./capture-guard.ts";
 import type { Interruption, StreamHandle, StreamHandlers } from "./dictation.ts";
 import { Resampler16k } from "./pcm.ts";
 import { parseServerEvent } from "./stream-protocol.ts";
@@ -7,7 +8,7 @@ import { WORKLET_SOURCE } from "./worklet.ts";
 const READY_TIMEOUT_MS = 5000;
 const STOP_TIMEOUT_MS = 30000;
 
-export async function startBrowserStream(url: string, h: StreamHandlers, onInterrupt: (why: Interruption) => void): Promise<StreamHandle> {
+export async function startBrowserStream(url: string, h: StreamHandlers, onInterrupt: (why: Interruption) => void, keepListeningHidden: () => boolean = () => true): Promise<StreamHandle> {
   if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === "undefined") throw new Error("this browser cannot stream audio");
   const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   let ctx: AudioContext;
@@ -20,9 +21,9 @@ export async function startBrowserStream(url: string, h: StreamHandlers, onInter
     media.getTracks().forEach((t) => t.stop());
     void ctx.close().catch(() => undefined);
     URL.revokeObjectURL(moduleUrl);
-    document.removeEventListener("visibilitychange", onVisibility);
+    unguard?.();
   };
-  const onVisibility = () => { if (document.visibilityState === "hidden") onInterrupt("hidden"); };
+  let unguard: (() => void) | null = null;
 
   try {
     await ctx.audioWorklet.addModule(moduleUrl);
@@ -72,7 +73,7 @@ export async function startBrowserStream(url: string, h: StreamHandlers, onInter
     if (ws.readyState !== WebSocket.OPEN) return;
     for (const frame of resampler.push(ev.data)) ws.send(frame.buffer);
   };
-  document.addEventListener("visibilitychange", onVisibility);
+  unguard = guardCapture({ doc: document, tracks: media.getAudioTracks(), keepListeningHidden, onInterrupt });
 
   return {
     stop: () => new Promise<void>((resolve) => {

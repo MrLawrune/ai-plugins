@@ -1,5 +1,6 @@
 // Browser MediaRecorder wrapper. Picks a codec every major browser supports (iOS Safari only
 // records audio/mp4) and stops on page hide (phone lock) or the 5-minute limit.
+import { guardCapture } from "./capture-guard.ts";
 import type { Interruption, RecordingHandle } from "./dictation.ts";
 
 export const MIME_PREFERENCE = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"] as const;
@@ -22,7 +23,7 @@ export async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
-export async function startBrowserRecording(onInterrupt: (why: Interruption) => void): Promise<RecordingHandle & { mimeType: string }> {
+export async function startBrowserRecording(onInterrupt: (why: Interruption) => void, keepListeningHidden: () => boolean = () => true): Promise<RecordingHandle & { mimeType: string }> {
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
     throw new Error("this browser cannot record audio");
   }
@@ -31,14 +32,13 @@ export async function startBrowserRecording(onInterrupt: (why: Interruption) => 
   const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
   const chunks: Blob[] = [];
   recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-  const onVisibility = () => { if (document.visibilityState === "hidden") onInterrupt("hidden"); };
   const limit = setTimeout(() => onInterrupt("limit"), MAX_RECORDING_MS);
   const release = () => {
     stream.getTracks().forEach((t) => t.stop());
-    document.removeEventListener("visibilitychange", onVisibility);
+    unguard();
     clearTimeout(limit);
   };
-  document.addEventListener("visibilitychange", onVisibility);
+  const unguard = guardCapture({ doc: document, tracks: stream.getAudioTracks(), keepListeningHidden, onInterrupt });
   recorder.start(1000); // timeslice: keeps captured audio if the page is suspended
   const type = recorder.mimeType || mimeType || "audio/webm";
   return {
