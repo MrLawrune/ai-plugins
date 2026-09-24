@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { appendDictation, controller, matchesShortcut, type DictationDeps, type Target } from "./dictation.ts";
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "./dictation-prefs.ts";
-import { takeCaret, trackCaret } from "./caret-tracker.ts";
+import { notePluginEdit, takeCaret, trackCaret } from "./caret-tracker.ts";
 import { applyLive, beginAt, liveRange, liveState } from "./draft-tail.ts";
 import { ParakeetPage } from "./page/parakeet-page.tsx";
 import { followBottom } from "./follow-bottom.ts";
@@ -64,7 +64,11 @@ let lastPluginDraft: string | null = null;
 
 /** A dictation target bound to one composer; the live state is shared (one session at a time). */
 function makeTarget(id: string, composer: () => ComposerApi): Target {
-  const edit = (fn: (d: string) => string) => composer().updateText((d) => (lastPluginDraft = fn(d)));
+  const edit = (fn: (d: string) => string) => composer().updateText((d) => {
+    const next = fn(d);
+    if (next !== d) notePluginEdit();
+    return (lastPluginDraft = next);
+  });
   return {
     id,
     begin: () => edit((d) => {
