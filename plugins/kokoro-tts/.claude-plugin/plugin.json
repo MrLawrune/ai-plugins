@@ -1,0 +1,21 @@
+{
+  "name": "kokoro-tts",
+  "description": "Weighted voice communication for Claude Code -- speech, sounds, and silence via a persistent, runtime-configurable Kokoro TTS server",
+  "version": "0.1.0",
+  "author": {
+    "name": "MrLawrune"
+  },
+  "repository": "https://github.com/MrLawrune/ai-plugins",
+  "license": "Apache-2.0",
+  "keywords": [
+    "tts",
+    "voice",
+    "kokoro",
+    "audio",
+    "accessibility",
+    "speech",
+    "sounds",
+    "communication"
+  ],
+  "hooks": "./hooks/hooks.json"
+}

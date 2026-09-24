@@ -1,0 +1,50 @@
+[project]
+name = "kokoro-tts-server"
+version = "0.1.0"
+description = "Persistent Kokoro TTS server for Claude Code with weighted communication routing"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    # Pinned: must match [[tool.uv.dependency-metadata]] below.
+    "kokoro-onnx==0.5.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "mistune>=3.0.0",
+]
+
+# Exactly one ONNX Runtime flavor may be installed; they all own the
+# `onnxruntime` package directory. Each runtime group supplies its own flavor;
+# the default `cpu` group supplies plain `onnxruntime`.
+[dependency-groups]
+cpu = ["onnxruntime>=1.20"]
+gpu = [
+    "onnxruntime-gpu>=1.30",
+    "nvidia-cublas", "nvidia-cudnn-cu13", "nvidia-cuda-runtime", "nvidia-cufft",
+    "nvidia-curand", "nvidia-cuda-nvrtc", "nvidia-nvjitlink",
+]
+openvino = ["onnxruntime-openvino>=1.24"]
+
+[tool.uv]
+default-groups = ["cpu"]
+conflicts = [
+    [{ group = "cpu" }, { group = "gpu" }, { group = "openvino" }],
+]
+
+# kokoro-onnx declares `onnxruntime` as a hard dependency, which would install
+# the CPU wheel next to onnxruntime-gpu / onnxruntime-openvino. Replace its
+# metadata with the upstream 0.5.0 requirements minus onnxruntime, so the
+# runtime flavor comes only from the selected group. (An override would also
+# drop the `cpu` group's own onnxruntime: overrides apply by name everywhere.)
+# When bumping kokoro-onnx, update `version` and copy its new Requires-Dist
+# here, minus onnxruntime. A version mismatch fails silently: uv falls back to
+# upstream metadata and reinstalls onnxruntime into every group
+# (tests/test_runtime_groups.py guards this).
+[[tool.uv.dependency-metadata]]
+name = "kokoro-onnx"
+version = "0.5.0"
+requires-python = ">=3.10,<3.14"
+requires-dist = [
+    "espeakng-loader>=0.2.4",
+    "numpy>=2.0.2",
+    "phonemizer-fork>=3.3.2",
+]

@@ -1,0 +1,12 @@
+{
+  "name": "mrlawrune-ai-plugins",
+  "owner": { "name": "MrLawrune" },
+  "plugins": [
+    {
+      "name": "kokoro-tts",
+      "description": "Weighted voice output for Claude Code via a local Kokoro TTS server",
+      "source": "./plugins/kokoro-tts",
+      "strict": false
+    }
+  ]
+}

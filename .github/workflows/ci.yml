@@ -1,0 +1,27 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  kokoro-tts:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: plugins/kokoro-tts } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - uses: astral-sh/setup-uv@v6
+      - run: sudo apt-get install -y libportaudio2
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: uv run --project server --with pytest pytest tests -q
+  catalogs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          curl -fsSL -o "$RUNNER_TEMP/marketplace.schema.json" https://getbb.app/schemas/marketplace.schema.json
+          curl -fsSL -o "$RUNNER_TEMP/plugins.schema.json" https://getbb.app/schemas/plugins.schema.json
+          npx --yes ajv-cli@5 validate --spec=draft2020 --strict=false -s "$RUNNER_TEMP/marketplace.schema.json" -d marketplace.json
+          npx --yes ajv-cli@5 validate --spec=draft2020 --strict=false -s "$RUNNER_TEMP/plugins.schema.json" -d .bb/plugins.json
+          jq -e '.plugins | length > 0' .claude-plugin/marketplace.json
+        shell: bash

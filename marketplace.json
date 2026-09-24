@@ -1,0 +1,25 @@
+{
+  "$schema": "https://getbb.app/schemas/marketplace.schema.json",
+  "schemaVersion": 1,
+  "name": "mrlawrune-ai-plugins",
+  "displayName": "MrLawrune AI Plugins",
+  "description": "Plugins for bb and Claude Code.",
+  "plugins": [
+    {
+      "id": "kokoro-tts",
+      "displayName": "Kokoro TTS",
+      "description": "Hear your agents: local Kokoro text-to-speech for every BB thread, set up and run for you.",
+      "icon": { "url": "./plugins/kokoro-tts/assets/icon.svg" },
+      "tags": ["voice", "tts", "accessibility"],
+      "author": { "name": "MrLawrune", "github": "MrLawrune" },
+      "source": {
+        "git": {
+          "url": "https://github.com/MrLawrune/ai-plugins.git",
+          "subdir": "plugins/kokoro-tts",
+          "range": "^0.1.0",
+          "tagPrefix": "kokoro-tts/"
+        }
+      }
+    }
+  ]
+}
