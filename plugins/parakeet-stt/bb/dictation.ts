@@ -10,14 +10,14 @@ export interface Target {
   id: string;
   appendText(text: string): void;
   submit(): void;
-  /** Replace the dimmed live tail with `text` (empty clears it). */
-  setLive(text: string): void;
-  /** Replace the live tail with solid `text` (empty just clears the tail). */
-  commitLive(text: string): void;
+  /** Replace the dimmed live tail with `text` for phrase `seq` (empty clears it). */
+  setLive(text: string, seq: number): void;
+  /** Replace the live tail with solid `text` for phrase `seq` (empty just clears the tail). */
+  commitLive(text: string, seq: number): void;
 }
 export interface StreamHandlers {
-  onPartial(text: string): void;
-  onFinal(text: string): void;
+  onPartial(text: string, seq: number): void;
+  onFinal(text: string, seq: number): void;
   onCommand(name: "send" | "stop"): void;
   onEnded(reason: EndReason): void;
   onError(message: string): void;
@@ -72,6 +72,7 @@ export class DictationController {
   #stopRequested = false;
   #stream: StreamHandle | null = null;
   #live = "";
+  #liveSeq = 0;
 
   constructor(deps: DictationDeps | null) {
     this.#deps = deps;
@@ -121,12 +122,13 @@ export class DictationController {
     this.#stopRequested = false;
     this.#live = "";
     const handlers: StreamHandlers = {
-      onPartial: (text) => {
+      onPartial: (text, seq) => {
         if (!deps.prefs().livePreview || this.snapshot().phase === "idle") return;
         this.#live = text;
-        target.setLive(text);
+        this.#liveSeq = seq;
+        target.setLive(text, seq);
       },
-      onFinal: (text) => { this.#live = ""; target.commitLive(text); },
+      onFinal: (text, seq) => { this.#live = ""; target.commitLive(text, seq); },
       onCommand: (name) => { if (name === "send") target.submit(); },
       onError: (message) => deps.notify("error", message),
       onEnded: (reason) => this.#streamEnded(deps, target, reason),
@@ -155,7 +157,7 @@ export class DictationController {
   #streamEnded(deps: DictationDeps, target: Target, reason: EndReason): void {
     if (this.snapshot().phase === "idle") return;
     if (reason === "error") {
-      if (this.#live) target.commitLive(this.#live);
+      if (this.#live) target.commitLive(this.#live, this.#liveSeq);
       deps.notify("info", "Dictation connection lost; the last phrase may be incomplete.");
       this.#cue("error");
     } else {
@@ -241,7 +243,7 @@ export class DictationController {
       this.#stream?.cancel();
       this.#stream = null;
       this.#live = "";
-      target?.setLive("");
+      target?.setLive("", this.#liveSeq);
       this.#set(IDLE);
       this.#cue("cancel");
       return;

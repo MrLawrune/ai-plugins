@@ -56,8 +56,8 @@ export async function startBrowserStream(url: string, h: StreamHandlers, onInter
         return;
       }
       switch (e.type) {
-        case "partial": h.onPartial(e.text); break;
-        case "final": h.onFinal(e.text); break;
+        case "partial": h.onPartial(e.text, e.seq); break;
+        case "final": h.onFinal(e.text, e.seq); break;
         case "command": h.onCommand(e.name); break;
         case "error": h.onError(e.message); break;
         case "ended": ended = true; release(); h.onEnded(e.reason); onEnd?.(); ws.close(); break;

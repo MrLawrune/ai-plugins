@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { appendDictation, controller, matchesShortcut, type DictationDeps, type Target } from "./dictation.ts";
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "./dictation-prefs.ts";
-import { liveTail, replaceTail, tailRange } from "./draft-tail.ts";
+import { applyLive, liveState, tailRange } from "./draft-tail.ts";
 import { ParakeetPage } from "./page/parakeet-page.tsx";
 import { createPressDetector } from "./press.ts";
 import { blobToBase64, extensionFor, startBrowserRecording } from "./recorder.ts";
@@ -63,14 +63,14 @@ function makeTarget(id: string, composer: () => ComposerApi): Target {
     id,
     appendText: (text) => composer().updateText((current) => appendDictation(current, text, prefsNow().trailingSpace)),
     submit: () => { void composer().experimental_submit({ experimental_data: {} }); },
-    setLive: (text) => composer().updateText((d) => {
-      const r = replaceTail(d, liveTail.get(), text);
-      liveTail.set(r.tail);
+    setLive: (text, seq) => composer().updateText((d) => {
+      const r = applyLive(d, liveState.get(), seq, text, false);
+      liveState.set(r.state);
       return r.draft;
     }),
-    commitLive: (text) => composer().updateText((d) => {
-      const r = replaceTail(d, liveTail.get(), text);
-      liveTail.set("");
+    commitLive: (text, seq) => composer().updateText((d) => {
+      const r = applyLive(d, liveState.get(), seq, text, true);
+      liveState.set(r.state);
       return r.draft;
     }),
   };
@@ -181,7 +181,7 @@ export default definePluginApp((app) => {
         id: "live-tail",
         className: "opacity-50",
         match: (text) => {
-          const r = tailRange(text, liveTail.get());
+          const r = tailRange(text, liveState.get().tail);
           return r ? [r] : [];
         },
       }],

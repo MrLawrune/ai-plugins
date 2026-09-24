@@ -239,9 +239,9 @@ test("continuous: partials set the live tail, finals commit, send submits, stop 
   const s = streamHarness();
   await s.c.toggle();
   assert.equal(s.c.snapshot().phase, "streaming");
-  s.h().onPartial("hello wor");
+  s.h().onPartial("hello wor", 0);
   assert.equal(s.live(), "hello wor");
-  s.h().onFinal("Hello world.");
+  s.h().onFinal("Hello world.", 0);
   assert.equal(s.live(), "");
   assert.equal(s.draft(), "Start. Hello world.");
   s.h().onCommand("send");
@@ -254,7 +254,7 @@ test("continuous: partials set the live tail, finals commit, send submits, stop 
 test("continuous: live preview off ignores partials", async () => {
   const s = streamHarness({ prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "continuous", livePreview: false }) });
   await s.c.start();
-  s.h().onPartial("ignored");
+  s.h().onPartial("ignored", 0);
   assert.equal(s.live(), "");
 });
 
@@ -269,7 +269,7 @@ test("continuous: connect failure falls back to one-shot", async () => {
 test("continuous: disconnect keeps the live text as solid and warns", async () => {
   const s = streamHarness();
   await s.c.start();
-  s.h().onPartial("half a sen");
+  s.h().onPartial("half a sen", 0);
   s.h().onError("Parakeet STT stream closed (1006)");
   s.h().onEnded("error");
   assert.equal(s.c.snapshot().phase, "idle");
@@ -288,7 +288,7 @@ test("continuous: silence end notifies", async () => {
 test("continuous: cancel clears the tail and stops streaming", async () => {
   const s = streamHarness();
   await s.c.start();
-  s.h().onPartial("draft words");
+  s.h().onPartial("draft words", 0);
   s.c.cancel();
   assert.equal(s.live(), "");
   assert.ok(s.log.includes("stream:cancel"));

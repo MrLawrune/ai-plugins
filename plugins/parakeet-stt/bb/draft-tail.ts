@@ -17,8 +17,30 @@ export function tailRange(draft: string, tail: string): { from: number; to: numb
   return { from: draft.length - tail.length + lead, to: draft.length };
 }
 
-let current = "";
-export const liveTail = {
-  get: (): string => current,
-  set: (t: string): void => { current = t; },
+
+export interface LiveState {
+  /** The dimmed suffix currently in the draft ("" when none). */
+  tail: string;
+  /** Phrase whose grey text was sent or cleared; its later partials and final are dropped. */
+  dropSeq: number | null;
+}
+
+/**
+ * Apply a partial (final=false) or final for phrase `seq` to the draft. If the draft is empty while a
+ * tail was showing, the user sent or cleared it: the rest of that phrase is dropped instead of being
+ * re-inserted into the next message.
+ */
+export function applyLive(draft: string, state: LiveState, seq: number, text: string, final: boolean): { draft: string; state: LiveState } {
+  if (state.dropSeq === seq) return { draft, state: final ? { tail: "", dropSeq: null } : state };
+  if (state.tail && !draft.endsWith(state.tail) && draft.trim() === "") {
+    return { draft, state: { tail: "", dropSeq: final ? null : seq } };
+  }
+  const r = replaceTail(draft, state.tail, text);
+  return { draft: r.draft, state: { tail: final ? "" : r.tail, dropSeq: null } };
+}
+
+let current: LiveState = { tail: "", dropSeq: null };
+export const liveState = {
+  get: (): LiveState => current,
+  set: (s: LiveState): void => { current = s; },
 };
