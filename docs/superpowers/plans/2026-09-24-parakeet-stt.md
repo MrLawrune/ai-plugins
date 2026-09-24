@@ -1910,7 +1910,7 @@ Expected: all TS tests pass; tsc clean.
 - [ ] **Step 5: Install and check registration**
 
 ```bash
-bb plugin install /data/dev/projects/ai-plugins/plugins/parakeet-stt --yes
+bb plugin install ./plugins/parakeet-stt --yes
 bb plugin list | grep -A3 parakeet-stt
 bb settings ai-services | grep parakeet
 ```
@@ -2679,10 +2679,10 @@ git commit -m "docs(parakeet-stt): catalog entries, README, release script, CI j
 
 ### Task 12: Lab deployment + end-to-end verification
 
-Lab specifics (hostnames, IPs, CT id, credentials) live in the private admin runbook, not in this repo: `/data/dev/admin/.agents/mops/parakeet-stt-deployment.md`. This task writes that runbook and executes it.
+Lab specifics (hostnames, IPs, CT id, credentials) live in a private deployment runbook, not in this repo. This task writes that runbook and executes it.
 
-- [ ] **Step 1:** Write the runbook (CT creation from the node's Debian 12 template with static IP outside the DHCP pool, uv install, code sync to `/opt/parakeet-stt/server`, `/etc/parakeet-stt.env` 0600 with `PARAKEET_HOST=0.0.0.0` and a generated `PARAKEET_API_KEY`, `HF_HOME=/opt/parakeet-stt/models`, systemd unit mirroring the TTS node's, Caddy site block with the LAN+tailnet `remote_ip` allowlist, internal DNS override, bb settings, rollback).
-- [ ] **Step 2:** Execute it; verify `curl https://<stt>/health` → `ready:true` and an authenticated transcription of `tests/fixtures/speech.webm` from cachtop.
+- [ ] **Step 1:** Write the runbook (CT creation from the node's Debian 12 template with static IP outside the DHCP pool, uv install, code sync to `/opt/parakeet-stt/server`, `/etc/parakeet-stt.env` 0600 with `PARAKEET_HOST=0.0.0.0` and a generated `PARAKEET_API_KEY`, `HF_HOME=/opt/parakeet-stt/models`, systemd unit mirroring the TTS node's, reverse-proxy site block with the LAN+tailnet `remote_ip` allowlist, internal DNS override, bb settings, rollback).
+- [ ] **Step 2:** Execute it; verify `curl https://<stt>/health` → `ready:true` and an authenticated transcription of `tests/fixtures/speech.webm` from the bb host.
 - [ ] **Step 3:** Configure bb (`serverUrl`, `apiKey`, `BB_TRANSCRIPTION=parakeet/parakeet-tdt-0.6b-v2`); verify `POST /api/v1/system/voice-transcription` with the fixture returns the phrase.
-- [ ] **Step 4:** Update admin docs: node doc LXC table row, Caddy reverse-proxy table row.
+- [ ] **Step 4:** Update admin docs: node doc LXC table row, reverse-proxy table row.
 - [ ] **Step 5:** Manual checks with the user: desktop mic button + `Ctrl+Space` + `Esc`; bb's native mic; Android phone (plus menu → banner → Stop, lock-screen mid-recording); iOS Safari if available.
