@@ -23,7 +23,9 @@ non-final steps in a batch. When uncertain, speak.
 
 The verbosity mode is a ceiling the hook enforces by downgrading
 weights: quiet (silence) | ambient (sounds only) | brief (speech, 1
-sentence max) | conversational (2-4 sentences) | verbose (full detail).
+sentence max) | conversational (2-4 sentences) | verbose (full detail) |
+full (your whole reply is read aloud and blocks are ignored: write it as
+speakable prose and keep code in fenced blocks, which are skipped).
 Current mode: {{MODE}}. Speech length limits are your responsibility.
 
 Speech content rules: ASCII only, no URLs, file paths, code syntax, or

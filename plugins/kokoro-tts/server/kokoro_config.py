@@ -19,7 +19,7 @@ from numpy.typing import NDArray
 
 log = logging.getLogger("kokoro-server.config")
 
-MODES = ("quiet", "ambient", "brief", "conversational", "verbose")
+MODES = ("quiet", "ambient", "brief", "conversational", "verbose", "full")
 PROVIDERS = ("cpu", "cuda", "openvino", "remote")
 SPEED_RANGE = (0.5, 2.0)
 GAIN_RANGE = (0.0, 2.0)

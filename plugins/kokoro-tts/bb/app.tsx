@@ -47,6 +47,7 @@ const MODES: { value: KokoroConfig["mode"]; label: string; hint: string }[] = [
   { value: "brief", label: "Brief", hint: "1 sentence" },
   { value: "conversational", label: "Conversational", hint: "2-4 sentences" },
   { value: "verbose", label: "Verbose", hint: "Full detail" },
+  { value: "full", label: "Full", hint: "Reads the whole reply" },
 ];
 
 const LANGS: { value: string; label: string }[] = [

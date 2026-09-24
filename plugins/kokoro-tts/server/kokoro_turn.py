@@ -7,11 +7,13 @@ Pure functions; no I/O.
 import re
 
 MAX_FALLBACK_CHARS = 240
+# "full" mode reads the whole reply; about six minutes of speech at most.
+FULL_MAX_CHARS = 6000
 SOUNDS = ("working", "done", "attention", "error")
 
 WEIGHT_RANK = {"silent": 0, "sound:working": 1, "sound:done": 2, "sound:attention": 3, "speech": 4}
 RANK_WEIGHT = {rank: weight for weight, rank in WEIGHT_RANK.items()}
-MODE_CEILING = {"quiet": 0, "ambient": 3, "brief": 4, "conversational": 4, "verbose": 4}
+MODE_CEILING = {"quiet": 0, "ambient": 3, "brief": 4, "conversational": 4, "verbose": 4, "full": 4}
 
 BLOCK_MULTILINE = re.compile(
     r'<!--\s*TTS_RESPONSE\s+weight="([^"]+)"\s*\n([\s\S]*?)\nTTS_RESPONSE\s*-->'
@@ -21,6 +23,9 @@ BLOCK_LEGACY = re.compile(r"<!--\s*TTS_SUMMARY\s*\n([\s\S]*?)\nTTS_SUMMARY\s*-->
 ANY_BLOCK = re.compile(r"<!--\s*TTS_(?:RESPONSE|SUMMARY)[\s\S]*?-->")
 CODE_FENCE = re.compile(r"```[\s\S]*?```")
 SENTENCE = re.compile(r"(.+?[.!?])(?:\s|$)")
+TABLE = re.compile(r"(?:^[ \t]*\|.*\|[ \t]*(?:\n|$))+", re.MULTILINE)
+INLINE_CODE = re.compile(r"`([^`\n]+)`")
+MAX_INLINE_CODE = 60
 
 
 def extract_block(text):
@@ -71,8 +76,44 @@ def first_sentence(text):
     return sentence[:MAX_FALLBACK_CHARS]
 
 
+def _speak_inline_code(code):
+    code = code.strip()
+    if "://" in code or len(code) > MAX_INLINE_CODE:
+        return ""
+    if "/" in code and " " not in code:
+        return code.rstrip("/").rsplit("/", 1)[-1]
+    return code
+
+
+def full_text(text):
+    """The whole reply for "full" mode, ready for the server's markdown strip.
+
+    TTS blocks go; code blocks and tables become a short spoken marker;
+    short inline code is read as written, a path as its file name.
+    Replies over FULL_MAX_CHARS are cut at a sentence or line end.
+    """
+    text = ANY_BLOCK.sub("", text)
+    text = CODE_FENCE.sub("\n\nCode block skipped.\n\n", text)
+    text = TABLE.sub("\nTable skipped.\n\n", text)
+    text = INLINE_CODE.sub(lambda m: _speak_inline_code(m.group(1)), text)
+    text = text.strip()
+    if not text:
+        return None
+    if len(text) > FULL_MAX_CHARS:
+        cut = text[:FULL_MAX_CHARS]
+        end = max(cut.rfind(". "), cut.rfind("\n"))
+        if end > FULL_MAX_CHARS // 2:
+            cut = cut[:end + 1]
+        text = cut.rstrip() + "\n\nThe rest is on screen."
+    return text
+
+
 def route_turn(text: str, mode: str, final_text: str | None = None) -> dict:
     """Decide what a finished turn sounds like."""
+    if mode == "full":
+        # The reply itself is the speech; TTS blocks and weights are ignored.
+        content = full_text(final_text or text)
+        return {"action": "speech", "text": content} if content else {"action": "silent"}
     weight, content = extract_block(text)
     if weight is None:
         fallback = first_sentence(final_text) if final_text else None

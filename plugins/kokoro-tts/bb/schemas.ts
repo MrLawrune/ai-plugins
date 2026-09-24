@@ -2,7 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 const voiceSchema = z.union([z.string(), z.record(z.string(), z.number())]);
-const modeSchema = z.enum(["quiet", "ambient", "brief", "conversational", "verbose"]);
+const modeSchema = z.enum(["quiet", "ambient", "brief", "conversational", "verbose", "full"]);
 const providerSchema = z.enum(["cpu", "cuda", "openvino", "remote"]);
 
 export const configSchema = z.object({

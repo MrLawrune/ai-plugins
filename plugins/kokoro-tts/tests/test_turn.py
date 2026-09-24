@@ -99,3 +99,37 @@ def test_cue_quiet_mode_is_silent():
 
 def test_cue_unknown_sound_is_silent():
     assert route_cue("klaxon", "brief", CFG) == {"action": "silent"}
+
+
+def test_full_reads_the_whole_reply_and_ignores_blocks():
+    text = "First point.\n\nSecond point.\n" + block("silent")
+    assert route_turn(text, "full") == {"action": "speech", "text": "First point.\n\nSecond point."}
+
+
+def test_full_prefers_the_final_message():
+    assert route_turn("Earlier text. Final text.", "full", "Final text.") == {"action": "speech", "text": "Final text."}
+
+
+def test_full_skips_code_and_tables_but_keeps_plain_inline_code():
+    text = "Run `pytest` now.\n\n```bash\nrm -rf /tmp/x\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nThen `src/app.ts` builds."
+    out = route_turn(text, "full")["text"]
+    assert "Run pytest now." in out
+    assert "Code block skipped." in out and "rm -rf" not in out
+    assert "Table skipped." in out and "| a |" not in out
+    assert "Then app.ts builds." in out
+
+
+def test_full_reads_short_commands_and_drops_urls_in_code():
+    out = route_turn("Run `bb plugin update` then open `https://x.test/a`.", "full")["text"]
+    assert out == "Run bb plugin update then open ."
+
+
+def test_full_caps_long_replies_at_a_sentence():
+    from kokoro_turn import FULL_MAX_CHARS
+    out = route_turn("This is one sentence. " * 1000, "full")["text"]
+    assert len(out) <= FULL_MAX_CHARS + 40
+    assert out.endswith("sentence.\n\nThe rest is on screen.")
+
+
+def test_full_with_only_a_block_is_silent():
+    assert route_turn(block("speech", "Words."), "full") == {"action": "silent"}

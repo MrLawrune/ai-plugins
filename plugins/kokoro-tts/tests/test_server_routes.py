@@ -276,3 +276,15 @@ def test_turn_non_string_mode_falls_back_to_config(tmp_path):
     srv = make_server(tmp_path)
     status, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "mode": ["verbose"], "session_id": "s1"})
     assert status == 200 and body["action"] == "speech"
+
+
+def test_turn_full_mode_reads_the_cleaned_reply_to_the_client(tmp_path):
+    srv = make_server(tmp_path)
+    reply = ("## Result\n\nThe **build** passed; see [the log](https://ci.example/run/1) "
+             "and `dist/app.js`.\n\n```sh\nnpm test\n```\n\n- One fix\n- Two tests\n" + BLOCK)
+    status, body = request(srv, "POST", "/turn", {"text": reply, "mode": "full", "playback": "client", "session_id": "s1"})
+    assert status == 200 and body["action"] == "speech"
+    text = body["text"]
+    assert text.startswith("Result. The build passed; see the log and app.js.")
+    assert "Code block skipped." in text and "One fix." in text and "Two tests." in text
+    assert "http" not in text and "dist/" not in text and "All done." not in text

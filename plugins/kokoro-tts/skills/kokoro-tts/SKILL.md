@@ -63,6 +63,13 @@ length limits are the model's responsibility.
 | `brief` | speech | 1 sentence max **(default)** |
 | `conversational` | speech | 2-4 sentences |
 | `verbose` | speech | full detail |
+| `full` | whole reply | none -- see below |
+
+In `full` mode the server reads the reply itself, not a block: blocks and
+weights are ignored, code blocks and tables are replaced with "Code block
+skipped." / "Table skipped.", links read as their text, and paths and URLs
+are dropped. Replies over about 6000 characters stop at a sentence end with
+"The rest is on screen." Write the reply as speakable prose.
 
 Mode switching mid-session ("go quiet", "go verbose"): acknowledge and
 apply the new ceiling to your own weight/length choices for the rest of

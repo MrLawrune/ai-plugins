@@ -237,13 +237,23 @@ class RemoteEngine:
             return None
 
     async def stream(self, text: str, voice: Any, speed: float, lang: str, trim: bool) -> AsyncIterator[tuple[NDArray[np.float32], int]]:
-        """Yield one chunk per sentence-group as the remote streams them back."""
+        """Yield one chunk per sentence-group as the remote streams them back.
+
+        The response is read at playback pace, so a long reply outlasts any
+        whole-request timeout: only connecting and each read are bounded.
+        Once audio has been yielded, a failure is raised rather than handed
+        to the fallback, which would replay the reply from the start.
+        """
+        import aiohttp
+        yielded = False
         try:
             http = await self._http()
             t = time.perf_counter()
             async with http.post(f"{self.url}/synthesize", json={
                 "text": text, "voice": voice, "speed": speed, "lang": lang, "trim": trim,
-            }, headers={"X-Kokoro-Hop": "1"}) as r:
+            }, headers={"X-Kokoro-Hop": "1"}, timeout=aiohttp.ClientTimeout(
+                total=None, sock_connect=self.timeout_s, sock_read=self.timeout_s,
+            )) as r:
                 if r.status != 200:
                     raise EngineError(f"remote returned {r.status}: {(await r.text())[:200]}")
                 sr = int(r.headers.get("X-Sample-Rate", SAMPLE_RATE))
@@ -260,12 +270,13 @@ class RemoteEngine:
                         if first:
                             self.last_latency_ms = (time.perf_counter() - t) * 1000
                             first = False
+                        yielded = True
                         yield np.frombuffer(frame, dtype=np.float32), sr
             self.last_error = None
         except Exception as e:
             self.last_error = str(e)
-            log.warning("Remote synthesis failed (%s); fallback=%s", e, bool(self.fallback))
-            if self.fallback is None:
+            log.warning("Remote synthesis failed (%s); fallback=%s", e, bool(self.fallback) and not yielded)
+            if self.fallback is None or yielded:
                 raise
             from kokoro_config import blend_voice
             style = blend_voice(voice, self.fallback.get_voice_style)
