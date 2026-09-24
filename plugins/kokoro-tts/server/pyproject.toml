@@ -1,6 +1,6 @@
 [project]
 name = "kokoro-tts-server"
-version = "0.1.0"
+version = "0.1.1"
 description = "Persistent Kokoro TTS server for Claude Code with weighted communication routing"
 requires-python = ">=3.11"
 dependencies = [
