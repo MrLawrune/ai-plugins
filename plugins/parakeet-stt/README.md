@@ -5,7 +5,13 @@ Handy-style dictation for bb, backed by a self-hosted, OpenAI-compatible Parakee
 ## Layout
 
 - `server/` — Python aiohttp server: PyAV decodes any browser recording (webm/opus, ogg, mp4/aac, wav, mp3) to 16 kHz mono; onnx-asr runs `nemo-parakeet-tdt-0.6b-v2` int8 on CPU. Clips over 90 s are split with Silero VAD.
-- `bb/` — the bb plugin: composer mic action, `+` menu item, recording banner, Ctrl+Space shortcut, settings page, and an AI service (`parakeet`) whose host entry serves bb's built-in voice button.
+- `bb/` — the bb plugin: composer mic action, `+` menu item, recording banner, Ctrl+Space shortcut, settings page, a websocket relay for continuous dictation, and an AI service (`parakeet`) whose host entry serves bb's built-in voice button.
+
+## Dictation modes
+
+- **Continuous** (default): tap the mic (or Ctrl+Space). Each phrase commits to the draft when you pause; the phrase in progress shows dimmed at the end of the draft. Ends on a tap, Esc (cancel), an optional silence timeout, or the optional voice command `stop listening`; `send it` submits the message.
+- **One-shot**: records the whole clip and transcribes when you stop. Press and hold the mic (≥ 350 ms) for one-shot push-to-talk in either mode.
+- A setting hides bb's own voice button so there is one mic.
 
 ## Run the server
 
@@ -64,6 +70,7 @@ bb's built-in voice button allows 10 s per attempt, which covers clips up to rou
 - `GET /health` — `{status, version, model, ready, uptime_s}`; 503 while loading. No auth.
 - `GET /v1/models` — OpenAI list shape.
 - `POST /v1/audio/transcriptions` — OpenAI multipart: `file`, `model` (`parakeet-tdt-0.6b-v2` or `whisper-1`), `response_format` (`json` | `text`); `prompt` and `language` are accepted and ignored. Extensions: `custom_words` (JSON string array), `remove_fillers` (`true`/`false`, default `true`), `correction_threshold` (0–1, default `0.18`).
+- `GET /v1/stream` — websocket for continuous dictation. First message (text) `{"type":"start","api_key":…,"options":{pause_ms, silence_timeout_s, commands:{send,stop}, preview, custom_words, remove_fillers, correction_threshold}}`; then binary PCM16 LE 16 kHz mono frames; `{"type":"stop"}` to finish. Server events: `ready`, `partial {seq,text}`, `final {seq,text}`, `command {name}`, `ended {reason: stopped|silence|command|limit|error}`, `error {message}`. Close codes 4400 (bad start), 4401 (auth), 4503 (loading). Silero VAD endpoints phrases (open after 64 ms of speech, close after `pause_ms`), partials re-transcribe the open phrase whenever the model is idle, phrases are force-committed at 15 s, sessions end after 15 min.
 - Errors: `{"error": {"message", "type", "code"}}` — 400 `missing_file` / `model_not_found` / `invalid_audio` / `invalid_parameter`, 401 `invalid_api_key`, 413 `file_too_large` / `audio_too_long`, 503 `model_loading` / `busy`, 500 `transcription_failed`.
 
 ## Develop

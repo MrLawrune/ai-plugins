@@ -27,8 +27,16 @@ class ParakeetEngine:
         opts = ort.SessionOptions()
         if self._cfg.threads > 0:
             opts.intra_op_num_threads = self._cfg.threads
+        # Idle intra-op threads must not busy-wait: they would starve the event loop and the VAD.
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         self._model = onnx_asr.load_model(self._cfg.model, quantization=self._cfg.quantization, sess_options=opts)
-        vad = onnx_asr.load_vad("silero")
+        # Streaming VAD runs per 32 ms frame on the event loop: keep it single-threaded and non-spinning
+        # so it stays real-time while Parakeet uses the other cores.
+        vad_opts = ort.SessionOptions()
+        vad_opts.intra_op_num_threads = 1
+        vad_opts.inter_op_num_threads = 1
+        vad_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        vad = onnx_asr.load_vad("silero", sess_options=vad_opts)
         self._vad_model = self._model.with_vad(vad)
         self._silero = vad._model  # onnxruntime session; onnx-asr is pinned (0.12.0)
         self.ready = True
