@@ -97,7 +97,16 @@ export class DictationController {
    */
   register(target: Target): () => void {
     this.#targets = [...this.#targets, target];
-    return () => { this.#targets = this.#targets.filter((t) => t !== target); };
+    this.#emit();
+    return () => {
+      this.#targets = this.#targets.filter((t) => t !== target);
+      this.#emit();
+    };
+  }
+
+  /** Number of mounted composer targets (the floating mic shows only when one exists). */
+  targetCount(): number {
+    return this.#targets.length;
   }
 
   async toggle(targetId?: string): Promise<void> {
@@ -268,6 +277,10 @@ export class DictationController {
 
   #set(next: DictationSnapshot): void {
     this.#state = next;
+    this.#emit();
+  }
+
+  #emit(): void {
     for (const l of this.#listeners) l();
   }
 }

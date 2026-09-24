@@ -30,6 +30,7 @@ export const prefsSchema = z.object({
   stopPhrase: z.string().trim().min(1).max(40),
   hideNativeMic: z.boolean(),
   keepListeningHidden: z.boolean(),
+  floatingMic: z.boolean(),
 }).strict();
 export type Prefs = z.output<typeof prefsSchema>;
 

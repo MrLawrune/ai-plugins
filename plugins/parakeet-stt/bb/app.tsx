@@ -97,14 +97,9 @@ function useSecondTick(active: boolean): void {
   }, [active]);
 }
 
-function MicAction() {
-  useControllerDeps();
-  const id = useComposerTarget();
-  const s = useDictationState();
-  const mine = s.targetId === id;
-  const live = mine && (s.phase === "recording" || s.phase === "streaming");
-  const busy = mine && (s.phase === "transcribing" || s.phase === "finishing");
-  const press = useMemo(() => createPressDetector({
+/** Tap = default mode, hold = one-shot push-to-talk. `id` undefined targets the latest composer. */
+function usePress(id?: string) {
+  return useMemo(() => createPressDetector({
     holdMs: HOLD_MS,
     onTap: () => void controller.toggle(id),
     onHoldStart: () => void controller.start(id, "oneshot"),
@@ -112,6 +107,16 @@ function MicAction() {
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
   }), [id]);
+}
+
+function MicAction() {
+  useControllerDeps();
+  const id = useComposerTarget();
+  const s = useDictationState();
+  const mine = s.targetId === id;
+  const live = mine && (s.phase === "recording" || s.phase === "streaming");
+  const busy = mine && (s.phase === "transcribing" || s.phase === "finishing");
+  const press = usePress(id);
   const label = live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk";
   return (
     <Button
@@ -131,6 +136,52 @@ function MicAction() {
     >
       <Icon name="Mic" aria-hidden />
     </Button>
+  );
+}
+
+const PHONE_QUERY = "(pointer: coarse), (max-width: 640px)";
+
+function usePhoneLayout(): boolean {
+  return useSyncExternalStore(
+    (l) => { const m = matchMedia(PHONE_QUERY); m.addEventListener("change", l); return () => m.removeEventListener("change", l); },
+    () => matchMedia(PHONE_QUERY).matches,
+  );
+}
+
+function usePrefs(): Prefs {
+  return useSyncExternalStore((l) => onDictationPrefs(() => l()), prefsNow);
+}
+
+/** Phone-only floating mic: dictate into the visible composer without opening the keyboard. */
+function FloatingMic() {
+  const s = useDictationState();
+  const targets = useSyncExternalStore((l) => controller.subscribe(l), () => controller.targetCount());
+  const prefs = usePrefs();
+  const phone = usePhoneLayout();
+  const press = usePress();
+  if (!prefs.floatingMic || !phone || targets === 0) return null;
+  const live = s.phase === "recording" || s.phase === "streaming";
+  const busy = s.phase === "transcribing" || s.phase === "finishing";
+  return (
+    <button
+      type="button"
+      aria-label={live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk"}
+      aria-pressed={live}
+      disabled={busy}
+      onPointerDown={(e) => { if (e.button !== 0) return; e.preventDefault(); press.down(); }}
+      onPointerUp={() => press.up()}
+      onPointerCancel={() => press.cancel()}
+      onContextMenu={(e) => e.preventDefault()}
+      onClick={(e) => { if (e.detail === 0) void controller.toggle(); }}
+      style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 7.5rem)" }}
+      className={cn(
+        "fixed right-4 z-50 flex size-14 touch-none select-none items-center justify-center rounded-full shadow-lg",
+        live ? "bg-red-500 text-white animate-pulse" : "bg-foreground text-background",
+        busy && "opacity-60",
+      )}
+    >
+      <Icon name="Mic" aria-hidden />
+    </button>
   );
 }
 
@@ -236,6 +287,8 @@ export default definePluginApp((app) => {
       signal.addEventListener("abort", () => { off(); style.remove(); });
     },
   });
+
+  app.slots.experimental_appOverlay({ id: "floating-mic", component: FloatingMic });
 
   app.slots.navPanel({ id: "parakeet-stt", title: "Parakeet STT", icon: "Mic", path: "parakeet", component: ParakeetPage });
 });

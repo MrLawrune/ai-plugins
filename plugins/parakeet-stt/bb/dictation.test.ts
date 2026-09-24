@@ -334,3 +334,15 @@ test("continuous: mic lost by the browser ends gracefully with a notice", async 
   assert.ok(s.log.includes("stream:stop"));
   assert.ok(s.log.some((l) => l.startsWith("info:") && l.includes("microphone")), s.log.join(" | "));
 });
+
+test("targetCount tracks registrations and notifies subscribers", () => {
+  const c = new DictationController(null);
+  let notified = 0;
+  c.subscribe(() => notified++);
+  assert.equal(c.targetCount(), 0);
+  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {} });
+  assert.equal(c.targetCount(), 1);
+  off();
+  assert.equal(c.targetCount(), 0);
+  assert.equal(notified, 2);
+});

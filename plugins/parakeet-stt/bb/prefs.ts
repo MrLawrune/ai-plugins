@@ -20,6 +20,7 @@ export const DEFAULT_PREFS: Prefs = {
   stopPhrase: "stop listening",
   hideNativeMic: true,
   keepListeningHidden: true,
+  floatingMic: true,
 };
 
 export interface KvLike {
