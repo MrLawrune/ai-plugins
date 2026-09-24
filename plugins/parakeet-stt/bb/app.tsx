@@ -274,6 +274,8 @@ export default definePluginApp((app) => {
       const style = document.createElement("style");
       style.textContent = [
         ":root [data-promptbox-compact] [data-promptbox-main]{height:auto!important;min-height:3rem!important}",
+        ":root [data-promptbox-compact] [data-promptbox-editor-scroll]{height:auto!important;max-height:none!important;min-height:3rem!important}",
+        ":root [data-promptbox-compact] [data-promptbox-editor-content]{height:auto!important;min-height:3rem!important;padding-block:0.5rem}",
         ":root [data-promptbox-compact-content] .ProseMirror[contenteditable]{white-space:pre-wrap!important;text-overflow:clip!important;max-height:6.8em!important;overflow-y:auto!important}",
         ":root [data-promptbox-compact-content] .ProseMirror[contenteditable] :where(p,li,blockquote,h1,h2,h3,h4,h5,h6){display:block!important}",
         ":root [data-promptbox-compact-content] .ProseMirror[contenteditable]>*+:before,:root [data-promptbox-compact-content] .ProseMirror[contenteditable] br:after{content:none!important}",
