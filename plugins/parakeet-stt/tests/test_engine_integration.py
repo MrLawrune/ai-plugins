@@ -16,3 +16,17 @@ def test_real_model_transcribes_fixture():
     audio = decode_to_mono16k((Path(__file__).parent / "fixtures" / "speech.webm").read_bytes())
     text = engine.transcribe(audio).lower()
     assert "session" in text and "before lunch" in text
+
+
+def test_silero_stream_detects_speech_in_fixture():
+    from parakeet_audio import decode_to_mono16k
+    from parakeet_config import ServerConfig
+    from parakeet_endpoint import FRAME
+    from parakeet_engine import ParakeetEngine
+
+    engine = ParakeetEngine(ServerConfig.from_env({}))
+    engine.load()
+    vad = engine.new_vad()
+    audio = decode_to_mono16k((Path(__file__).parent / "fixtures" / "speech.webm").read_bytes())
+    probs = [vad.prob(audio[i : i + FRAME]) for i in range(0, len(audio) - FRAME, FRAME)]
+    assert sum(p > 0.5 for p in probs) > len(probs) // 2

@@ -18,6 +18,7 @@ class ParakeetEngine:
         self.ready = False
         self._model = None
         self._vad_model = None
+        self._silero = None
 
     def load(self) -> None:
         import onnx_asr
@@ -27,7 +28,9 @@ class ParakeetEngine:
         if self._cfg.threads > 0:
             opts.intra_op_num_threads = self._cfg.threads
         self._model = onnx_asr.load_model(self._cfg.model, quantization=self._cfg.quantization, sess_options=opts)
-        self._vad_model = self._model.with_vad(onnx_asr.load_vad("silero"))
+        vad = onnx_asr.load_vad("silero")
+        self._vad_model = self._model.with_vad(vad)
+        self._silero = vad._model  # onnxruntime session; onnx-asr is pinned (0.12.0)
         self.ready = True
         log.info("loaded %s (%s)", self._cfg.model, self._cfg.quantization or "fp32")
 
@@ -38,3 +41,10 @@ class ParakeetEngine:
             return str(self._model.recognize(audio, sample_rate=SAMPLE_RATE)).strip()
         parts = (seg.text.strip() for seg in self._vad_model.recognize(audio, sample_rate=SAMPLE_RATE))
         return " ".join(p for p in parts if p)
+
+    def new_vad(self):
+        from parakeet_endpoint import SileroStream
+
+        if self._silero is None:
+            raise RuntimeError("model not loaded")
+        return SileroStream(self._silero)
