@@ -121,7 +121,8 @@ function MicAction() {
       aria-label={label}
       aria-pressed={live}
       disabled={busy}
-      onPointerDown={(e) => { if (e.button === 0) press.down(); }}
+      // preventDefault keeps focus (and the phone keyboard) on the composer while pressing the mic
+      onPointerDown={(e) => { if (e.button !== 0) return; e.preventDefault(); press.down(); }}
       onPointerUp={() => press.up()}
       onPointerCancel={() => press.cancel()}
       onContextMenu={(e) => e.preventDefault()}

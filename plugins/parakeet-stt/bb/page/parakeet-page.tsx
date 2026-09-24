@@ -44,7 +44,8 @@ export function ParakeetPage() {
   if (!prefs) return null;
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
+    <div className="h-full min-h-0 flex-1 overflow-y-auto">
+    <div className="mx-auto box-border flex w-full max-w-2xl flex-col gap-6 px-4 pb-6 pt-3 md:px-6 md:pt-4">
       <Section
         title="Server"
         description="Set the server URL and API key in Settings → Installed plugins → Parakeet STT."
@@ -129,6 +130,7 @@ export function ParakeetPage() {
           </Row>
         ))}
       </Section>
+    </div>
     </div>
   );
 }
