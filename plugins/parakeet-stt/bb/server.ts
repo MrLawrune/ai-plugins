@@ -8,6 +8,7 @@ import { HistoryStore } from "./history.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers, hostConfigFrom } from "./rpc.ts";
 import { rpcContract, SOUNDS } from "./schemas.ts";
+import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
 
 export { rpcContract } from "./schemas.ts";
@@ -36,6 +37,14 @@ export default async function plugin(bb: BbPluginApi) {
     history,
     now: Date.now,
   }));
+
+  bb.http.experimental_websocket("/stream", createStreamRelay({
+    config: () => ({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" }),
+    prefs: () => prefs.get(),
+    connect: (url) => new WebSocket(url) as unknown as UpstreamSocket,
+    log: (m) => bb.log.warn(m),
+  }));
+  bb.http.route("GET", "/prefs", () => Response.json(prefs.get()));
 
   bb.experimental_aiServices.register({ id: "parakeet", displayName: "Parakeet STT (self-hosted)", kinds: ["voice"] });
   const host = bb.hosts.experimental_client({ contract: configureContract });
