@@ -26,7 +26,7 @@ the phone ends the session and keeps all spoken text.
 GPU, a streaming-native model, word timestamps, editing inside the live tail,
 more than one simultaneous stream per user, bb's native mic streaming.
 
-## Measured constraints (pv03 CT 242, CPU, sustained load)
+## Measured constraints (reference LXC: 8 vCPU on an i9-12900HK, CPU, sustained load)
 
 | Phrase so far | Partial pass |
 |---|---|
