@@ -46,7 +46,7 @@ from kokoro_config import (
 from kokoro_engine import SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
 from kokoro_turn import route_cue, route_turn
 
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.1.2"
 PREVIEW_TEXT = "This is how I will sound when reading your updates."
 from mistune.plugins.formatting import strikethrough as strikethrough_plugin
 

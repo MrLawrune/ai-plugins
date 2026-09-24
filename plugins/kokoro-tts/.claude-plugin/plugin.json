@@ -1,7 +1,7 @@
 {
   "name": "kokoro-tts",
   "description": "Weighted voice communication for Claude Code -- speech, sounds, and silence via a persistent, runtime-configurable Kokoro TTS server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": {
     "name": "MrLawrune"
   },
