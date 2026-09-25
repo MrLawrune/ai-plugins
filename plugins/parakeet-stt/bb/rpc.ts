@@ -1,7 +1,7 @@
 import type { HostConfig } from "./configure-contract.ts";
 import type { HistoryStore } from "./history.ts";
 import type { PrefsStore } from "./prefs.ts";
-import type { HealthResult, Prefs } from "./schemas.ts";
+import type { DeviceKind, HealthResult, Prefs } from "./schemas.ts";
 import type { SttClient } from "./stt-client.ts";
 
 export const TRANSCRIBE_TIMEOUT_MS = 120_000;
@@ -52,8 +52,18 @@ export function createRpcHandlers(deps: RpcDeps) {
       await deps.history.add(text, durationMs);
       return { text, durationMs };
     },
-    async getPrefs() { return deps.prefs.get(); },
-    async setPrefs(patch: Partial<Prefs>) { return deps.prefs.update(patch); },
+    async hello(input: { deviceId: string; name: string; kind: DeviceKind }) {
+      const device = await deps.prefs.hello(input.deviceId, input.name, input.kind, deps.now());
+      return { device, prefs: deps.prefs.get(device.profileId) };
+    },
+    async getPrefs(input: { profileId: string }) { return deps.prefs.get(input.profileId); },
+    async setPrefs(input: { profileId: string; patch: Partial<Prefs> }) { return deps.prefs.update(input.profileId, input.patch); },
+    async listProfiles() { return { profiles: deps.prefs.profiles(), devices: deps.prefs.devices() }; },
+    async createProfile(input: { name: string; copyFrom: string }) { return deps.prefs.createProfile(input.name, input.copyFrom); },
+    async renameProfile(input: { id: string; name: string }) { return deps.prefs.renameProfile(input.id, input.name); },
+    async deleteProfile(input: { id: string }) { await deps.prefs.deleteProfile(input.id); return { deleted: true as const }; },
+    async updateDevice(input: { id: string; name?: string; profileId?: string }) { return deps.prefs.updateDevice(input.id, input); },
+    async forgetDevice(input: { id: string }) { await deps.prefs.forgetDevice(input.id); return { forgotten: true as const }; },
     async listHistory() { return { entries: await deps.history.list() }; },
     async clearHistory() { await deps.history.clear(); return { cleared: true as const }; },
   };

@@ -40,11 +40,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.http.experimental_websocket("/stream", createStreamRelay({
     config: () => ({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" }),
-    prefs: () => prefs.get(),
+    prefs: (device) => prefs.forDevice(device),
     connect: (url) => new WebSocket(url) as unknown as UpstreamSocket,
     log: (m) => bb.log.warn(m),
   }));
-  bb.http.route("GET", "/prefs", () => Response.json(prefs.get()));
+  bb.http.route("GET", "/prefs", (c) => Response.json(prefs.forDevice(c.req.query("device"))));
 
   bb.experimental_aiServices.register({ id: "parakeet", displayName: "Parakeet STT (self-hosted)", kinds: ["voice"] });
   const host = bb.hosts.experimental_client({ contract: configureContract });

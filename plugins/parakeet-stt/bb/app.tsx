@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { appendDictation, controller, matchesShortcut, type DictationDeps, type Target } from "./dictation.ts";
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "./dictation-prefs.ts";
 import { notePluginEdit, takeCaret, trackCaret } from "./caret-tracker.ts";
+import { thisDevice } from "./device.ts";
 import { applyLive, beginAt, liveRange, liveState } from "./draft-tail.ts";
 import { ParakeetPage } from "./page/parakeet-page.tsx";
 import { followBottom } from "./follow-bottom.ts";
@@ -30,7 +31,8 @@ function useDictationState() {
 function useControllerDeps() {
   const rpc = useRpc<typeof rpcContract>();
   useEffect(() => {
-    void rpc.call("getPrefs").then(setDictationPrefs, () => undefined);
+    const me = thisDevice();
+    void rpc.call("hello", { deviceId: me.id, name: me.name, kind: me.kind }).then((r) => setDictationPrefs(r.prefs), () => undefined);
     let recordingMime = "audio/webm";
     const deps: DictationDeps = {
       startRecording: async (onInterrupt) => {
@@ -48,7 +50,7 @@ function useControllerDeps() {
       },
       startStream: (h, onInterrupt) => {
         const proto = location.protocol === "https:" ? "wss" : "ws";
-        return startBrowserStream(`${proto}://${location.host}${PLUGIN_BASE}/stream`, h, onInterrupt, () => prefsNow().keepListeningHidden);
+        return startBrowserStream(`${proto}://${location.host}${PLUGIN_BASE}/stream`, h, onInterrupt, () => prefsNow().keepListeningHidden, thisDevice().id);
       },
       prefs: prefsNow,
       playSound: (name: SoundName) => { void new Audio(`${PLUGIN_BASE}/sound/${name}`).play().catch(() => undefined); },
@@ -369,7 +371,7 @@ export default definePluginApp((app) => {
       };
       apply();
       const off = onDictationPrefs(apply);
-      void fetch(`${PLUGIN_BASE}/prefs`, { signal })
+      void fetch(`${PLUGIN_BASE}/prefs?device=${encodeURIComponent(thisDevice().id)}`, { signal })
         .then((r) => (r.ok ? r.json() : null))
         .then((p: Prefs | null) => { if (p) setDictationPrefs(p); })
         .catch(() => undefined);

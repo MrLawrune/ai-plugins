@@ -13,6 +13,12 @@ Handy-style dictation for bb, backed by a self-hosted, OpenAI-compatible Parakee
 - **One-shot**: records the whole clip and transcribes when you stop. Press and hold the mic (≥ 350 ms) for one-shot push-to-talk in either mode.
 - A setting hides bb's own voice button so there is one mic.
 
+## Devices and profiles
+
+Each browser is a device: it keeps a random id in localStorage (browsers expose no MAC or stable IP; clearing site data makes it a new device) and registers with a guessed name (`Android phone`, `iPad`, `Linux PC`) and kind (phone, tablet, desktop). A new device uses the profile for its kind — Phone, Tablet (created from Phone), or Desktop. Rename devices, assign any profile to any device, forget old devices, and copy, rename, or delete profiles under **Devices and profiles** on the settings page; the settings below it edit the selected profile.
+
+Per profile: shortcut, hold to talk, auto-submit, trailing space, sound cues, mode, live preview, pause, end on silence, voice commands on/off, wait for a start phrase, hide bb's voice button, keep listening with the screen off, floating mic, collapsed-composer lines. Shared by all devices: custom words, filler removal, correction strength, history size, and the command phrases. Up to 20 profiles and 50 devices (the least recently seen are dropped).
+
 ## Run the server
 
 ```bash

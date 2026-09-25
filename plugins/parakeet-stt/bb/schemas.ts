@@ -41,6 +41,34 @@ export const prefsSchema = z.object({
 }).strict();
 export type Prefs = z.output<typeof prefsSchema>;
 
+/** Settings that differ per device profile; everything else (vocabulary, phrase wording, history) is shared. */
+export const PROFILE_KEYS = [
+  "shortcut", "holdToTalk", "autoSubmit", "trailingSpace", "soundCues", "mode", "livePreview", "pauseMs",
+  "endOnSilence", "silenceTimeoutS", "voiceCommands", "waitForStart", "hideNativeMic", "keepListeningHidden",
+  "floatingMic", "expandCompactDraft",
+] as const satisfies readonly (keyof Prefs)[];
+export type ProfileKey = (typeof PROFILE_KEYS)[number];
+export type ProfilePrefs = Pick<Prefs, ProfileKey>;
+export type SharedPrefs = Omit<Prefs, ProfileKey>;
+
+export const DEVICE_KINDS = ["phone", "tablet", "desktop"] as const;
+export type DeviceKind = (typeof DEVICE_KINDS)[number];
+
+const idSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const nameSchema = z.string().trim().min(1).max(64);
+
+export const profileInfoSchema = z.object({ id: idSchema, name: nameSchema });
+export type ProfileInfo = z.infer<typeof profileInfoSchema>;
+
+export const deviceSchema = z.object({
+  id: idSchema,
+  name: nameSchema,
+  kind: z.enum(DEVICE_KINDS),
+  profileId: idSchema,
+  lastSeen: z.number(),
+});
+export type DeviceRecord = z.infer<typeof deviceSchema>;
+
 export const historyEntrySchema = z.object({ id: z.string(), text: z.string(), at: z.number(), durationMs: z.number() });
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 
@@ -60,8 +88,25 @@ export const rpcContract = defineRpcContract({
     input: z.object({ audioBase64: z.string().min(1), mimeType: z.string().min(1), filename: z.string().min(1) }).strict(),
     output: z.object({ text: z.string(), durationMs: z.number() }),
   },
-  getPrefs: { input: z.null(), output: prefsSchema },
-  setPrefs: { input: z.object(prefsSchema.shape).partial().strict(), output: prefsSchema },
+  /** Register (or refresh) this browser; returns its record and effective prefs. */
+  hello: {
+    input: z.object({ deviceId: idSchema, name: nameSchema, kind: z.enum(DEVICE_KINDS) }).strict(),
+    output: z.object({ device: deviceSchema, prefs: prefsSchema }),
+  },
+  getPrefs: { input: z.object({ profileId: idSchema }).strict(), output: prefsSchema },
+  setPrefs: {
+    input: z.object({ profileId: idSchema, patch: z.object(prefsSchema.shape).partial().strict() }).strict(),
+    output: prefsSchema,
+  },
+  listProfiles: { input: z.null(), output: z.object({ profiles: z.array(profileInfoSchema), devices: z.array(deviceSchema) }) },
+  createProfile: { input: z.object({ name: nameSchema, copyFrom: idSchema }).strict(), output: profileInfoSchema },
+  renameProfile: { input: profileInfoSchema.strict(), output: profileInfoSchema },
+  deleteProfile: { input: z.object({ id: idSchema }).strict(), output: z.object({ deleted: z.literal(true) }) },
+  updateDevice: {
+    input: z.object({ id: idSchema, name: nameSchema.optional(), profileId: idSchema.optional() }).strict(),
+    output: deviceSchema,
+  },
+  forgetDevice: { input: z.object({ id: idSchema }).strict(), output: z.object({ forgotten: z.literal(true) }) },
   listHistory: { input: z.null(), output: z.object({ entries: z.array(historyEntrySchema) }) },
   clearHistory: { input: z.null(), output: z.object({ cleared: z.literal(true) }) },
 });

@@ -24,11 +24,11 @@ function upstream() {
   return u;
 }
 
-function relay(serverUrl = "https://stt.example") {
+function relay(serverUrl = "https://stt.example", devices: (string | null)[] = []) {
   const up = upstream();
   const handler = createStreamRelay({
     config: () => ({ serverUrl, apiKey: "k" }),
-    prefs: () => ({ ...DEFAULT_PREFS, customWords: ["tmux"] }),
+    prefs: (device) => { devices.push(device); return { ...DEFAULT_PREFS, customWords: ["tmux"], pauseMs: device === "phone-1" ? 900 : 600 }; },
     connect: (url) => { up.url = url; return up; },
     log: () => {},
   })();
@@ -49,6 +49,15 @@ test("start opens upstream with key and prefs, then pipes both ways", () => {
   assert.deepEqual(up.sent[1], new Uint8Array([1, 2]));
   up.onmessage!({ data: '{"type":"ready"}' });
   assert.deepEqual(p.sent, ['{"type":"ready"}']);
+});
+
+test("uses the prefs of the device named in the start message", () => {
+  const devices: (string | null)[] = [];
+  const { up, handler } = relay("https://stt.example", devices);
+  handler.onMessage(page(), '{"type":"start","device":"phone-1"}');
+  up.readyState = 1; up.onopen!();
+  assert.deepEqual(devices, ["phone-1"]);
+  assert.equal(JSON.parse(up.sent[0] as string).options.pause_ms, 900);
 });
 
 test("queues frames until upstream opens", () => {

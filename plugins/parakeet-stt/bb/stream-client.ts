@@ -8,7 +8,7 @@ import { WORKLET_SOURCE } from "./worklet.ts";
 const READY_TIMEOUT_MS = 5000;
 const STOP_TIMEOUT_MS = 30000;
 
-export async function startBrowserStream(url: string, h: StreamHandlers, onInterrupt: (why: Interruption) => void, keepListeningHidden: () => boolean = () => true): Promise<StreamHandle> {
+export async function startBrowserStream(url: string, h: StreamHandlers, onInterrupt: (why: Interruption) => void, keepListeningHidden: () => boolean = () => true, device?: string): Promise<StreamHandle> {
   if (!navigator.mediaDevices?.getUserMedia || typeof AudioWorkletNode === "undefined") throw new Error("this browser cannot stream audio");
   const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   let ctx: AudioContext;
@@ -46,7 +46,7 @@ export async function startBrowserStream(url: string, h: StreamHandlers, onInter
 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => { ws.close(); release(); reject(new Error("stream did not become ready")); }, READY_TIMEOUT_MS);
-    ws.onopen = () => ws.send(JSON.stringify({ type: "start" }));
+    ws.onopen = () => ws.send(JSON.stringify({ type: "start", device }));
     ws.onmessage = (ev) => {
       const e = parseServerEvent(ev.data);
       if (!e) return;

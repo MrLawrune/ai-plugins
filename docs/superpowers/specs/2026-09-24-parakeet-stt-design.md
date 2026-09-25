@@ -114,7 +114,8 @@ Laid out like `kokoro-tts/bb`.
 | `host.ts` | `bb.host` entry: `ai.voice.transcribe` (+ unused `ai.inference.complete` → `request_failed`) and `stt.configure`. |
 | `host-contract.ts` | `experimental_aiServicesHostContract` extended with `stt.configure`. |
 | `schemas.ts` | Zod: prefs, history entries, RPC contract. |
-| `prefs.ts` | `PrefsStore` over `bb.storage.kv` (same pattern as kokoro-tts). |
+| `prefs.ts` | `PrefsStore` over `bb.storage.kv`: shared prefs, named profiles, registered devices. |
+| `device.ts` | Browser identity: random id in localStorage, kind and name from the user agent. |
 | `history.ts` | Last-N transcriptions in kv. |
 | `rpc.ts` | RPC handlers. |
 | `app.tsx` | Frontend registration: composer action, plus-menu item, banner, shortcut content script, settings page. |
@@ -124,14 +125,25 @@ Laid out like `kokoro-tts/bb`.
 **Settings** (`bb.settings.define`): `serverUrl` (string, default empty =
 not configured), `apiKey` (secret).
 
-**Prefs** (kv, edited on the settings page): `shortcut` (`ctrl+space`
-default, toggle), `holdToTalk` (false), `autoSubmit` (false),
-`trailingSpace` (false), `soundCues` (true), `customWords` ([]),
-`removeFillers` (true), `correctionThreshold` (0.18), `historyLimit` (5).
+**Prefs** (kv key `profiles-v1`, edited on the settings page): `shared`
+(vocabulary — `customWords` [], `removeFillers` true, `correctionThreshold`
+0.18 — `historyLimit` 5, and the command phrases), `profiles` (id → name +
+the `PROFILE_KEYS` prefs: `shortcut` `ctrl+space`, `holdToTalk` false,
+`autoSubmit` false, `trailingSpace` false, `soundCues` true, and the streaming
+behavior prefs), and `devices` (id → name, kind, profileId, lastSeen). A
+device's effective prefs are shared + its profile. New devices get the profile
+named after their kind (`phone`, `tablet`, `desktop`; created on demand, a
+tablet copying Phone). Starter profiles are Desktop and Phone, both seeded
+from the pre-profile `prefs` key when present.
 
 **RPC contract**: `health`, `transcribe({audioBase64, mimeType, filename})
-→ {text, durationMs}`, `getPrefs`, `patchPrefs`, `listHistory`,
-`clearHistory`. `transcribe` applies prefs server-side and appends to history.
+→ {text, durationMs}`, `hello({deviceId, name, kind}) → {device, prefs}`,
+`getPrefs({profileId})`, `setPrefs({profileId, patch})`, `listProfiles`,
+`createProfile({name, copyFrom})`, `renameProfile`, `deleteProfile`,
+`updateDevice({id, name?, profileId?})`, `forgetDevice`, `listHistory`,
+`clearHistory`. `transcribe` applies the shared vocabulary prefs server-side
+and appends to history. The stream relay and `GET /prefs?device=` use the
+calling device's effective prefs (the page's stream `start` carries its id).
 
 **Host config**: the host entry has no access to plugin settings, so the
 server pushes `{serverUrl, apiKey, customWords, removeFillers,

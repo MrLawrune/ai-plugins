@@ -3,8 +3,10 @@ import { useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { thisDevice } from "../device.ts";
 import { setDictationPrefs } from "../dictation-prefs.ts";
-import { SHORTCUTS, type HealthResult, type HistoryEntry, type Prefs, type rpcContract } from "../schemas.ts";
+import { SHORTCUTS, type DeviceRecord, type HealthResult, type HistoryEntry, type Prefs, type ProfileInfo, type rpcContract } from "../schemas.ts";
+import { ProfilesSection, type ProfilesApi } from "./profiles-section.tsx";
 import { errorText, Row, Section, SliderRow, SwitchRow } from "./ui.tsx";
 
 function statusText(h: HealthResult | null): string {
@@ -21,11 +23,28 @@ export function ParakeetPage() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [words, setWords] = useState("");
   const [starts, setStarts] = useState("");
+  const [me, setMe] = useState<DeviceRecord | null>(null);
+  const [devices, setDevices] = useState<DeviceRecord[]>([]);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    const [p, h, hist] = await Promise.all([rpc.call("getPrefs"), rpc.call("health"), rpc.call("listHistory")]);
+  const loadProfiles = useCallback(async () => {
+    const d = thisDevice();
+    const hello = await rpc.call("hello", { deviceId: d.id, name: d.name, kind: d.kind });
+    const list = await rpc.call("listProfiles");
+    setMe(hello.device);
+    setDictationPrefs(hello.prefs);
+    setDevices(list.devices);
+    setProfiles(list.profiles);
+    return hello.device;
+  }, [rpc]);
+
+  const refresh = useCallback(async (profileId?: string) => {
+    const mine = await loadProfiles();
+    const target = profileId ?? mine.profileId;
+    const [p, h, hist] = await Promise.all([rpc.call("getPrefs", { profileId: target }), rpc.call("health"), rpc.call("listHistory")]);
+    setEditing(target);
     setPrefs(p);
-    setDictationPrefs(p);
     setHealth(h);
     setHistory(hist.entries);
     setWords(p.customWords.join(", "));
@@ -34,17 +53,30 @@ export function ParakeetPage() {
   useEffect(() => { void refresh().catch((e) => toast.error(errorText(e))); }, [refresh]);
 
   const patch = async (p: Partial<Prefs>) => {
+    if (!editing || !me) return;
     try {
-      const next = await rpc.call("setPrefs", p);
+      const next = await rpc.call("setPrefs", { profileId: editing, patch: p });
       setPrefs(next);
-      setDictationPrefs(next);
+      // shared keys change this device's prefs even when another profile is being edited
+      setDictationPrefs(editing === me.profileId ? next : await rpc.call("getPrefs", { profileId: me.profileId }));
       setWords(next.customWords.join(", "));
       setStarts(next.startPhrases.join(", "));
     } catch (e) {
       toast.error(errorText(e));
     }
   };
-  if (!prefs) return null;
+  const profilesApi: ProfilesApi = {
+    renameDevice: async (id, name) => { await rpc.call("updateDevice", { id, name }); await loadProfiles(); },
+    assign: async (id, profileId) => { await rpc.call("updateDevice", { id, profileId }); await loadProfiles(); },
+    forget: async (id) => { await rpc.call("forgetDevice", { id }); await loadProfiles(); },
+    create: async (name, copyFrom) => { const p = await rpc.call("createProfile", { name, copyFrom }); await loadProfiles(); return p; },
+    rename: async (id, name) => { await rpc.call("renameProfile", { id, name }); await loadProfiles(); },
+    remove: async (id) => { await rpc.call("deleteProfile", { id }); await loadProfiles(); },
+  };
+  const edit = (profileId: string) => void refresh(profileId).catch((e) => toast.error(errorText(e)));
+  const editingName = profiles.find((x) => x.id === editing)?.name ?? "";
+
+  if (!prefs || !me || !editing) return null;
 
   return (
     <div className="h-full min-h-0 flex-1 overflow-y-auto">
@@ -52,13 +84,16 @@ export function ParakeetPage() {
       <Section
         title="Server"
         description="Set the server URL and API key in Settings → Installed plugins → Parakeet STT."
-        actions={<Button size="sm" variant="outline" onClick={() => void refresh().catch((e) => toast.error(errorText(e)))}>Check</Button>}
+        actions={<Button size="sm" variant="outline" onClick={() => void refresh(editing).catch((e) => toast.error(errorText(e)))}>Check</Button>}
       >
         <Row label="Status"><span className="text-sm">{statusText(health)}</span></Row>
         {health?.lastLatencyMs != null && <Row label="Last transcription"><span className="text-sm">{health.lastLatencyMs} ms</span></Row>}
       </Section>
 
-      <Section title="Dictation">
+      <ProfilesSection me={me} devices={devices} profiles={profiles} editing={editing} onEdit={edit} api={profilesApi} />
+
+      <div key={editing} className="contents">
+      <Section title="Dictation" description={`Profile: ${editingName}`}>
         <Row label="Shortcut" hint="Works while bb has focus. Esc cancels a recording." htmlFor="shortcut">
           <select
             id="shortcut"
@@ -75,7 +110,7 @@ export function ParakeetPage() {
         <SwitchRow id="sounds" label="Sound cues" checked={prefs.soundCues} onChange={(v) => void patch({ soundCues: v })} />
       </Section>
 
-      <Section title="Continuous dictation" description="Tap the mic for your default mode; press and hold for one-shot push-to-talk.">
+      <Section title="Continuous dictation" description={`Profile: ${editingName}. Tap the mic for your default mode; press and hold for one-shot push-to-talk. Command phrases are shared.`}>
         <Row label="Default mode" htmlFor="mode">
           <select id="mode" className="rounded-md border bg-transparent px-2 py-1 text-sm" value={prefs.mode}
             onChange={(e) => void patch({ mode: e.target.value as Prefs["mode"] })}>
@@ -109,7 +144,7 @@ export function ParakeetPage() {
         <SwitchRow id="native" label="Hide bb's voice button" hint="Keep one mic in the composer" checked={prefs.hideNativeMic} onChange={(v) => void patch({ hideNativeMic: v })} />
       </Section>
 
-      <Section title="Vocabulary">
+      <Section title="Vocabulary" description="Shared by all devices">
         <Row label="Custom words" hint="Comma-separated; fixes spelling and case (e.g. tmux, CLAUDE.md)" htmlFor="words">
           <Input id="words" value={words} onChange={(e) => setWords(e.target.value)} onBlur={() => void patch({ customWords: words.split(",") })} />
         </Row>
@@ -126,6 +161,8 @@ export function ParakeetPage() {
           onChange={(v) => void patch({ correctionThreshold: v })}
         />
       </Section>
+
+      </div>
 
       <Section
         title="History"

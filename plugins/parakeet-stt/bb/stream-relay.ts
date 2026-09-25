@@ -24,7 +24,8 @@ const MAX_QUEUED_BYTES = 5 * 16000 * 2; // ~5 s of PCM16
 
 export function createStreamRelay(deps: {
   config(): { serverUrl: string; apiKey: string };
-  prefs(): Prefs;
+  /** Prefs for the page's device (from its start message; null when it sent none). */
+  prefs(device: string | null): Prefs;
   connect(url: string): UpstreamSocket;
   log(msg: string): void;
 }) {
@@ -45,7 +46,7 @@ export function createStreamRelay(deps: {
       page.close(1011, "stream ended");
     };
 
-    const openUpstream = (page: PageSocket) => {
+    const openUpstream = (page: PageSocket, device: string | null) => {
       const { serverUrl, apiKey } = deps.config();
       if (!serverUrl.trim()) return end(page, "Parakeet STT server URL is not set");
       let url: string;
@@ -55,7 +56,7 @@ export function createStreamRelay(deps: {
       sock.binaryType = "arraybuffer";
       sock.onopen = () => {
         open = true;
-        sock.send(JSON.stringify({ type: "start", api_key: apiKey, options: streamOptionsFrom(deps.prefs()) }));
+        sock.send(JSON.stringify({ type: "start", api_key: apiKey, options: streamOptionsFrom(deps.prefs(device)) }));
         for (const m of queue.splice(0)) sock.send(m);
         queuedBytes = 0;
       };
@@ -76,9 +77,10 @@ export function createStreamRelay(deps: {
       onMessage(page: PageSocket, data: string | Uint8Array) {
         if (finished) return;
         if (typeof data === "string") {
-          let kind: unknown;
-          try { kind = (JSON.parse(data) as { type?: unknown }).type; } catch { return; }
-          if (kind === "start" && !up) return openUpstream(page);
+          let msg: { type?: unknown; device?: unknown };
+          try { msg = JSON.parse(data) as typeof msg; } catch { return; }
+          const kind = msg.type;
+          if (kind === "start" && !up) return openUpstream(page, typeof msg.device === "string" ? msg.device : null);
           if (kind !== "stop" || !up) return;
         } else if (!up) {
           return;
