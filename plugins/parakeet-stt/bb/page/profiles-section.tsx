@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import type { DeviceRecord, ProfileInfo } from "../schemas.ts";
 import { errorText, Row, Section } from "./ui.tsx";
 
+const KIND_LABEL = { touch: "touch screen", desktop: "desktop" } as const;
 const SELECT = "rounded-md border bg-transparent px-2 py-1 text-sm";
 
 function ago(ms: number, now: number): string {
@@ -48,7 +49,7 @@ export function ProfilesSection({ me, devices, profiles, editing, onEdit, api }:
       title="Devices and profiles"
       description="Each browser is a device and uses one profile. Settings marked shared apply to every profile."
     >
-      <Row label="This device" hint={`${me.kind} · uses ${nameOf(me.profileId)}`} htmlFor="device-name">
+      <Row label="This device" hint={`${KIND_LABEL[me.kind]} · uses ${nameOf(me.profileId)}`} htmlFor="device-name">
         <Input id="device-name" value={deviceName} onChange={(e) => setDeviceName(e.target.value)}
           onBlur={() => { if (deviceName.trim() && deviceName !== me.name) run(api.renameDevice(me.id, deviceName)); }} />
       </Row>
@@ -71,7 +72,7 @@ export function ProfilesSection({ me, devices, profiles, editing, onEdit, api }:
           onBlur={() => { if (profileName.trim() && profileName !== current?.name) run(api.rename(editing, profileName)); }} />
       </Row>
       {devices.map((d) => (
-        <Row key={d.id} label={d.id === me.id ? `${d.name} (this device)` : d.name} hint={`${d.kind} · seen ${ago(d.lastSeen, now)}`} htmlFor={`dev-${d.id}`}>
+        <Row key={d.id} label={d.id === me.id ? `${d.name} (this device)` : d.name} hint={`${KIND_LABEL[d.kind]} · seen ${ago(d.lastSeen, now)}`} htmlFor={`dev-${d.id}`}>
           <div className="flex items-center gap-2">
             <select id={`dev-${d.id}`} className={SELECT} value={d.profileId} onChange={(e) => run(api.assign(d.id, e.target.value))}>
               {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}

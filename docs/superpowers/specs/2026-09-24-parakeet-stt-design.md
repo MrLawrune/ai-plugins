@@ -131,10 +131,12 @@ not configured), `apiKey` (secret).
 the `PROFILE_KEYS` prefs: `shortcut` `ctrl+space`, `holdToTalk` false,
 `autoSubmit` false, `trailingSpace` false, `soundCues` true, and the streaming
 behavior prefs), and `devices` (id → name, kind, profileId, lastSeen). A
-device's effective prefs are shared + its profile. New devices get the profile
-named after their kind (`phone`, `tablet`, `desktop`; created on demand, a
-tablet copying Phone). Starter profiles are Desktop and Phone, both seeded
-from the pre-profile `prefs` key when present.
+device's effective prefs are shared + its profile. A device's kind is `touch`
+(coarse primary pointer, or a phone/tablet user agent) or `desktop`; new
+devices get the profile named after their kind (created from Desktop when
+missing). Starter profiles are Desktop and Touch screen, both seeded from the
+pre-profile `prefs` key when present. The device id lives in localStorage, so
+all tabs of a browser are one device.
 
 **RPC contract**: `health`, `transcribe({audioBase64, mimeType, filename})
 → {text, durationMs}`, `hello({deviceId, name, kind}) → {device, prefs}`,

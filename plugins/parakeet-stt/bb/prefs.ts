@@ -2,6 +2,7 @@
 // Each browser registers with a random id (see device.ts) and gets the profile for its kind until
 // it is assigned another one.
 import {
+  deviceKindSchema,
   PROFILE_KEYS,
   prefsSchema,
   type DeviceKind,
@@ -40,7 +41,7 @@ export const DEFAULT_PREFS: Prefs = {
   expandCompactDraft: true,
 };
 
-export const KIND_PROFILE_NAMES: Record<DeviceKind, string> = { phone: "Phone", tablet: "Tablet", desktop: "Desktop" };
+export const KIND_PROFILE_NAMES: Record<DeviceKind, string> = { touch: "Touch screen", desktop: "Desktop" };
 const MAX_PROFILES = 20;
 const MAX_DEVICES = 50;
 const STATE_KEY = "profiles-v1";
@@ -73,14 +74,14 @@ function parsePrefs(raw: unknown): Prefs {
   return parsed.success ? parsed.data : DEFAULT_PREFS;
 }
 
-/** Starter state: `base` becomes the shared settings and the Desktop and Phone profiles. */
+/** Starter state: `base` becomes the shared settings and the Desktop and Touch screen profiles. */
 function freshState(base: Prefs): State {
   const { shared, profile } = split(base);
   return {
     shared,
     profiles: {
       desktop: { name: KIND_PROFILE_NAMES.desktop, prefs: { ...profile } },
-      phone: { name: KIND_PROFILE_NAMES.phone, prefs: { ...profile } },
+      touch: { name: KIND_PROFILE_NAMES.touch, prefs: { ...profile } },
     },
     devices: {},
   };
@@ -103,7 +104,17 @@ export class PrefsStore {
       for (const [id, p] of Object.entries(stored.profiles)) {
         profiles[id] = { name: p.name, prefs: split(parsePrefs({ ...shared, ...p.prefs })).profile };
       }
-      this.#state = { shared, profiles, devices: stored.devices ?? {} };
+      const devices: Record<string, DeviceRecord> = {};
+      for (const [id, d] of Object.entries(stored.devices ?? {})) {
+        devices[id] = { ...d, kind: deviceKindSchema.catch("desktop").parse(d.kind) };
+      }
+      // The earlier Phone profile is the touch-screen profile.
+      if (profiles.phone && !profiles.touch) {
+        profiles.touch = { ...profiles.phone, name: profiles.phone.name === "Phone" ? KIND_PROFILE_NAMES.touch : profiles.phone.name };
+        delete profiles.phone;
+        for (const d of Object.values(devices)) if (d.profileId === "phone") d.profileId = "touch";
+      }
+      this.#state = { shared, profiles, devices };
       return;
     }
     // Settings saved before profiles existed seed every starter profile.
@@ -203,13 +214,12 @@ export class PrefsStore {
     return () => this.#listeners.delete(listener);
   }
 
-  /** The profile for a device kind, created (from Phone for tablets, else Desktop) when missing. */
+  /** The profile for a device kind, created from Desktop when missing. */
   #kindProfile(kind: DeviceKind): string {
     if (this.#state.profiles[kind]) return kind;
     const ids = Object.keys(this.#state.profiles);
     if (ids.length >= MAX_PROFILES) return ids[0]!;
-    const template = kind === "tablet" && this.#state.profiles.phone ? "phone" : "desktop";
-    this.#state.profiles[kind] = { name: KIND_PROFILE_NAMES[kind], prefs: split(this.get(template)).profile };
+    this.#state.profiles[kind] = { name: KIND_PROFILE_NAMES[kind], prefs: split(this.get("desktop")).profile };
     return kind;
   }
 

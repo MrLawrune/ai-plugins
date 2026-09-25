@@ -51,8 +51,11 @@ export type ProfileKey = (typeof PROFILE_KEYS)[number];
 export type ProfilePrefs = Pick<Prefs, ProfileKey>;
 export type SharedPrefs = Omit<Prefs, ProfileKey>;
 
-export const DEVICE_KINDS = ["phone", "tablet", "desktop"] as const;
+/** Touch screen (phones, tablets) or desktop (mouse and keyboard). */
+export const DEVICE_KINDS = ["touch", "desktop"] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
+/** Also accepts the earlier phone/tablet kinds, which are both touch screens. */
+export const deviceKindSchema = z.preprocess((v) => (v === "phone" || v === "tablet" ? "touch" : v), z.enum(DEVICE_KINDS));
 
 const idSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const nameSchema = z.string().trim().min(1).max(64);
@@ -63,7 +66,7 @@ export type ProfileInfo = z.infer<typeof profileInfoSchema>;
 export const deviceSchema = z.object({
   id: idSchema,
   name: nameSchema,
-  kind: z.enum(DEVICE_KINDS),
+  kind: deviceKindSchema,
   profileId: idSchema,
   lastSeen: z.number(),
 });
@@ -90,7 +93,7 @@ export const rpcContract = defineRpcContract({
   },
   /** Register (or refresh) this browser; returns its record and effective prefs. */
   hello: {
-    input: z.object({ deviceId: idSchema, name: nameSchema, kind: z.enum(DEVICE_KINDS) }).strict(),
+    input: z.object({ deviceId: idSchema, name: nameSchema, kind: deviceKindSchema }).strict(),
     output: z.object({ device: deviceSchema, prefs: prefsSchema }),
   },
   getPrefs: { input: z.object({ profileId: idSchema }).strict(), output: prefsSchema },

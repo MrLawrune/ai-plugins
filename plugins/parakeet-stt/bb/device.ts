@@ -19,16 +19,21 @@ export function readDeviceId(s: StorageLike, gen: () => string = () => crypto.ra
 }
 
 /** iPadOS reports itself as a Mac; touch points tell them apart. */
-export function deviceKind(ua: string, maxTouchPoints: number): DeviceKind {
-  if (/iPhone|iPod/.test(ua) || (/Android/.test(ua) && /Mobile/.test(ua))) return "phone";
-  if (/iPad|Tablet|Android/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1)) return "tablet";
+const isIpad = (ua: string, maxTouchPoints: number) => /iPad/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1);
+
+/**
+ * Touch screen when touch is the primary input (phones, tablets, even one asking for the desktop
+ * site); a touchscreen laptop with a mouse or trackpad is a desktop.
+ */
+export function deviceKind(ua: string, maxTouchPoints: number, coarsePointer: boolean): DeviceKind {
+  if (coarsePointer || /iPhone|iPod|Android/.test(ua) || isIpad(ua, maxTouchPoints)) return "touch";
   return "desktop";
 }
 
-export function guessDeviceName(ua: string, kind: DeviceKind): string {
+export function guessDeviceName(ua: string, maxTouchPoints: number): string {
   if (/iPhone/.test(ua)) return "iPhone";
-  if (/iPad/.test(ua) || (kind === "tablet" && /Macintosh/.test(ua))) return "iPad";
-  if (/Android/.test(ua)) return kind === "phone" ? "Android phone" : "Android tablet";
+  if (isIpad(ua, maxTouchPoints)) return "iPad";
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android phone" : "Android tablet";
   if (/Macintosh|Mac OS X/.test(ua)) return "Mac";
   if (/Windows/.test(ua)) return "Windows PC";
   if (/CrOS/.test(ua)) return "Chromebook";
@@ -42,8 +47,10 @@ let cached: ThisDevice | null = null;
 
 export function thisDevice(): ThisDevice {
   if (!cached) {
-    const kind = deviceKind(navigator.userAgent, navigator.maxTouchPoints ?? 0);
-    cached = { id: readDeviceId(localStorage), kind, name: guessDeviceName(navigator.userAgent, kind) };
+    const ua = navigator.userAgent;
+    const touchPoints = navigator.maxTouchPoints ?? 0;
+    const kind = deviceKind(ua, touchPoints, matchMedia("(pointer: coarse)").matches);
+    cached = { id: readDeviceId(localStorage), kind, name: guessDeviceName(ua, touchPoints) };
   }
   return cached;
 }
