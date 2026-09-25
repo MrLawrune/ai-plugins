@@ -11,6 +11,8 @@ export interface DictationSnapshot {
   startedAt: number | null;
   /** Streaming, but ignoring speech until a start phrase is heard. */
   waiting: boolean;
+  /** While waiting: the last thing heard (so a missed start phrase is visible). */
+  heard: string | null;
 }
 export interface Target {
   id: string;
@@ -31,6 +33,8 @@ export interface StreamHandlers {
   onCommand(name: CommandName): void;
   /** The session started or stopped waiting for a start phrase. */
   onState(waiting: boolean): void;
+  /** Speech heard while waiting that was not a start phrase. */
+  onHeard(text: string): void;
   onEnded(reason: EndReason): void;
   onError(message: string): void;
 }
@@ -47,7 +51,7 @@ export interface DictationDeps {
   now(): number;
 }
 
-const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null, waiting: false };
+const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null, waiting: false, heard: null };
 const INTERRUPT_NOTICE: Record<Interruption, string> = {
   hidden: "Recording stopped because the page was hidden; transcribing what was captured.",
   limit: "Recording reached the 5-minute limit; transcribing.",
@@ -140,7 +144,7 @@ export class DictationController {
   }
 
   async #startStream(deps: DictationDeps, target: Target): Promise<void> {
-    this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now(), waiting: false });
+    this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
     let gated = false; // the session uses a start phrase
     this.#stopRequested = false;
     this.#live = "";
@@ -159,7 +163,10 @@ export class DictationController {
       },
       onState: (waiting) => {
         gated = true;
-        if (this.snapshot().phase === "streaming") this.#set({ ...this.snapshot(), waiting });
+        if (this.snapshot().phase === "streaming") this.#set({ ...this.snapshot(), waiting, heard: null });
+      },
+      onHeard: (heard) => {
+        if (this.snapshot().phase === "streaming") this.#set({ ...this.snapshot(), heard });
       },
       onError: (message) => deps.notify("error", message),
       onEnded: (reason) => this.#streamEnded(deps, target, reason),
@@ -193,7 +200,7 @@ export class DictationController {
       this.#cue("error");
     } else {
       if (reason === "silence") deps.notify("info", "Dictation stopped after silence.");
-      if (reason === "limit") deps.notify("info", "Dictation reached the 15-minute limit.");
+      if (reason === "limit") deps.notify("info", "Dictation reached its 4-hour limit.");
       this.#cue("stop");
     }
     this.#live = "";
@@ -203,7 +210,7 @@ export class DictationController {
 
   async #startOneShot(deps: DictationDeps, target: Target): Promise<void> {
     // Enter "recording" before the mic prompt resolves so a double press is ignored.
-    this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now(), waiting: false });
+    this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
     this.#stopRequested = false;
     let handle: RecordingHandle;
     try {

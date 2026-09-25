@@ -275,6 +275,16 @@ test("continuous: start phrase waits, starts, sends, and waits again", async () 
   assert.equal(s.c.snapshot().waiting, false);
 });
 
+test("continuous: heard text shows while waiting and clears on start", async () => {
+  const s = streamHarness();
+  await s.c.start();
+  s.h().onState(true);
+  s.h().onHeard("star new replay");
+  assert.equal(s.c.snapshot().heard, "star new replay");
+  s.h().onState(false);
+  assert.equal(s.c.snapshot().heard, null);
+});
+
 test("continuous: clear empties the draft and keeps listening", async () => {
   const s = streamHarness();
   await s.c.start();

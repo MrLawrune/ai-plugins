@@ -62,6 +62,25 @@ function useControllerDeps() {
 /** Draft as left by the last plugin edit; if unchanged at the next start, continue where it ended. */
 let lastPluginDraft: string | null = null;
 
+/**
+ * Send once the composer shows the plugin's last edit: a voice "send" arrives right after the final
+ * that precedes it, before bb has re-rendered the draft. Refusals are shown instead of swallowed.
+ */
+async function submitWhenSettled(composer: () => ComposerApi): Promise<void> {
+  for (let i = 0; i < 20 && lastPluginDraft !== null && composer().text !== lastPluginDraft; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  if (!composer().text.trim()) {
+    toast("Nothing to send");
+    return;
+  }
+  try {
+    await composer().experimental_submit({ experimental_data: {} });
+  } catch (e) {
+    toast.error(`Could not send: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /** A dictation target bound to one composer; the live state is shared (one session at a time). */
 function makeTarget(id: string, composer: () => ComposerApi): Target {
   const edit = (fn: (d: string) => string) => composer().updateText((d) => {
@@ -88,7 +107,7 @@ function makeTarget(id: string, composer: () => ComposerApi): Target {
       liveState.set(r.state);
       return r.state.anchor === null ? appendDictation(d, text, prefsNow().trailingSpace) : r.draft;
     }),
-    submit: () => { void composer().experimental_submit({ experimental_data: {} }); },
+    submit: () => void submitWhenSettled(composer),
     clear: () => edit(() => {
       liveState.set({ anchor: null, tail: "", dropSeq: null });
       return "";
@@ -226,7 +245,8 @@ function RecordingBanner() {
   if (s.targetId !== id || s.phase === "idle") return null;
   const secs = s.startedAt ? Math.floor((Date.now() - s.startedAt) / 1000) : 0;
   const elapsed = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-  const label = s.phase === "streaming" && s.waiting ? `Waiting for “${prefsNow().startPhrases[0] ?? "start phrase"}”… ${elapsed}`
+  const heard = s.heard ? ` · heard “${s.heard.length > 40 ? `${s.heard.slice(0, 40)}…` : s.heard}”` : "";
+  const label = s.phase === "streaming" && s.waiting ? `Waiting for “${prefsNow().startPhrases[0] ?? "start phrase"}”… ${elapsed}${heard}`
     : s.phase === "streaming" ? `Listening (continuous)… ${elapsed}`
     : s.phase === "recording" ? `Listening… ${elapsed}`
       : s.phase === "finishing" ? "Finishing…" : "Transcribing…";

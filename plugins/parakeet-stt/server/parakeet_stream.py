@@ -5,7 +5,7 @@ Audio time (frames fed), not wall time, drives every decision so behavior is det
 from __future__ import annotations
 
 import asyncio
-import re
+import logging
 from collections import deque
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -20,6 +20,7 @@ from parakeet_text import postprocess
 __all__ = ["StreamOptions", "StreamSession", "strip_command"]
 
 FRAME_S = FRAME / SAMPLE_RATE
+log = logging.getLogger("parakeet.stream")
 MAX_START_PHRASES = 10
 
 
@@ -35,7 +36,7 @@ class StreamOptions:
     remove_fillers: bool = True
     correction_threshold: float = 0.18
     max_phrase_s: float = 15.0
-    max_session_s: float = 900.0
+    max_session_s: float = 4 * 3600.0
     preroll_ms: int = 200
 
     @classmethod
@@ -85,6 +86,7 @@ class StreamSession:
         self._finals_pending = 0
         self._ending = False
         self._waiting = bool(options.start)
+        self._carry = ""
         self._tasks: set[asyncio.Task] = set()
         self.done = asyncio.Event()
 
@@ -117,7 +119,7 @@ class StreamSession:
             self._phrase.append(frame)
             self._probs.append(prob)
             if event == "end":
-                self._close(len(self._phrase))
+                self._close(len(self._phrase), "pause")
             elif len(self._phrase) * FRAME_S >= self._o.max_phrase_s:
                 self._force_cut()
         if self._phrase is not None:
@@ -133,10 +135,12 @@ class StreamSession:
         window = min(len(self._probs), max(1, round(2.0 / FRAME_S)))
         start = len(self._probs) - window
         quiet = start + int(np.argmin(self._probs[start:]))
-        self._close(quiet + 1)
+        self._close(quiet + 1, "force")
 
-    def _close(self, k: int) -> None:
+    def _close(self, k: int, why: str) -> None:
         assert self._phrase is not None
+        # durations only, never text: enough to see why a phrase committed late
+        log.info("phrase %d closed by %s after %.1fs", self._open_seq, why, k * FRAME_S)
         audio = np.concatenate(self._phrase[:k])
         rest, rest_probs = self._phrase[k:], self._probs[k:]
         seq = self._open_seq
@@ -158,8 +162,8 @@ class StreamSession:
             await self._emit({"type": "error", "message": f"transcription failed: {exc}"})
         text = postprocess(raw, custom_words=list(self._o.custom_words), remove_fillers_=self._o.remove_fillers, threshold=self._o.correction_threshold)
         was_waiting = self._waiting
-        parsed = parse(text, self._o.commands or {}, self._o.start, self._waiting)
-        self._waiting = parsed.waiting
+        parsed = parse(text, self._o.commands or {}, self._o.start, self._waiting, self._carry)
+        self._waiting, self._carry = parsed.waiting, parsed.carry
         self._finals_pending -= 1
         for name in parsed.before:
             await self._emit({"type": "command", "name": name})
@@ -167,6 +171,8 @@ class StreamSession:
         if started:
             await self._emit({"type": "state", "waiting": False})
         await self._emit({"type": "final", "seq": seq, "text": parsed.text})
+        if was_waiting and parsed.waiting and not started and text:
+            await self._emit({"type": "heard", "text": text})
         if parsed.after:
             await self._emit({"type": "command", "name": parsed.after})
         if parsed.waiting and (started or not was_waiting):
@@ -211,7 +217,7 @@ class StreamSession:
             if len(self._pending):
                 self._phrase.append(self._pending)
                 self._pending = np.zeros(0, dtype=np.float32)
-            self._close(len(self._phrase))
+            self._close(len(self._phrase), "finish")
         if self._partial_task is not None:
             self._partial_task.cancel()
         if self._finals is not None:

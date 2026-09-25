@@ -8,11 +8,16 @@ _CONTEXT = 64
 
 
 class Endpointer:
-    def __init__(self, pause_frames: int, start_frames: int = 2, on: float = 0.5, off: float = 0.35) -> None:
+    """A phrase opens after `start_frames` frames >= `on` and closes after `pause_frames` quiet frames.
+    During a pause, a noise blip shorter than `resume_frames` holds the count instead of restarting it."""
+
+    def __init__(self, pause_frames: int, start_frames: int = 2, on: float = 0.5, off: float = 0.35, resume_frames: int = 3) -> None:
         self.pause_frames, self.start_frames, self.on, self.off = pause_frames, start_frames, on, off
+        self.resume_frames = resume_frames
         self.active = False
         self._run = 0
         self._quiet = 0
+        self._loud = 0
 
     def push(self, prob: float) -> str | None:
         if not self.active:
@@ -21,7 +26,13 @@ class Endpointer:
                 self.active, self._quiet = True, 0
                 return "start"
             return None
-        self._quiet = self._quiet + 1 if prob < self.off else 0
+        if prob < self.off:
+            self._loud = 0
+            self._quiet += 1
+        else:
+            self._loud += 1
+            if self._loud >= self.resume_frames:
+                self._quiet = 0  # sustained sound: speech resumed (a shorter blip just pauses the count)
         if self._quiet >= self.pause_frames:
             self.active, self._run = False, 0
             return "end"

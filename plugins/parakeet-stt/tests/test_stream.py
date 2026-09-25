@@ -264,3 +264,22 @@ def test_options_from_json_validates():
         StreamOptions.from_json({"start": ["ok", ""]})
     with pytest.raises(ValueError):
         StreamOptions.from_json({"start": "start new reply"})
+
+
+def test_waiting_reports_what_it_heard_and_joins_split_start_phrases():
+    texts = ["Start new.", "Reply. Hello there."]
+    h = Harness(texts=list(texts), preview=False, pause_ms=96, commands={"send": "send it"}, start=("start new reply",))
+    async def go():
+        s = h.session()
+        for _ in texts:
+            await s.feed(pcm(0.9, 10) + pcm(0.0, 3))
+            await asyncio.sleep(0)
+        await s.finish()
+    asyncio.run(go())
+    shown = [e for e in h.events if e["type"] in ("heard", "command", "final")]
+    assert shown == [
+        {"type": "final", "seq": 0, "text": ""},
+        {"type": "heard", "text": "Start new."},
+        {"type": "command", "name": "start"},
+        {"type": "final", "seq": 1, "text": "Hello there."},
+    ]

@@ -26,12 +26,12 @@ export const prefsSchema = z.object({
   endOnSilence: z.boolean(),
   silenceTimeoutS: z.number().int().min(3).max(60),
   voiceCommands: z.boolean(),
-  sendPhrase: z.string().trim().min(1).max(40),
-  stopPhrase: z.string().trim().min(1).max(40),
-  clearPhrase: z.string().trim().min(1).max(40),
+  sendPhrase: z.string().trim().min(1).max(120),
+  stopPhrase: z.string().trim().min(1).max(120),
+  clearPhrase: z.string().trim().min(1).max(120),
   waitForStart: z.boolean(),
   startPhrases: z
-    .array(z.string().max(40))
+    .array(z.string().max(60))
     .max(10)
     .transform((phrases) => [...new Set(phrases.map((p) => p.trim()).filter(Boolean))]),
   hideNativeMic: z.boolean(),

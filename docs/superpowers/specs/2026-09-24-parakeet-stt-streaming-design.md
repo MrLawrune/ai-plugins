@@ -74,6 +74,7 @@ Server → client (text JSON):
 - `{"type":"command","name":"start"|"clear"}` — before the final whose remaining text follows the phrase.
 - `{"type":"command","name":"send"|"stop"}` — after the final that contained it.
 - `{"type":"state","waiting":bool}` — sessions with start phrases: sent after `ready` (waiting) and on every change.
+- `{"type":"heard","text":…}` — speech heard while waiting that held no start phrase (shown in the banner).
 - `{"type":"ended","reason":"stopped"|"silence"|"command"|"limit"|"error"}` — last message; server then closes.
 - `{"type":"error","message":…}` — followed by `ended` (`error`) and close.
 Auth failures close with code 4401, model not ready 4503.
@@ -83,7 +84,9 @@ Auth failures close with code 4401, model not ready 4503.
 - Audio time, not wall time, drives every decision (deterministic tests).
 - **Endpointing:** Silero probability per 512-sample frame; a phrase opens
   after 2 consecutive frames ≥ 0.5 and closes after `pause_ms` of frames
-  < 0.35. 200 ms of pre-roll is prepended to each phrase.
+  < 0.35; a run of fewer than 3 louder frames (a noise blip) holds the pause
+  count instead of resetting it. Each close is logged with its length and
+  reason, without text. 200 ms of pre-roll is prepended to each phrase.
 - **Partials** (if `preview`): whenever no partial is running, the phrase is
   ≥ 0.5 s, and ≥ 0.25 s of new audio arrived since the last pass, transcribe
   the whole open phrase. Partials never wait for the inference lock — if it
@@ -95,7 +98,7 @@ Auth failures close with code 4401, model not ready 4503.
   within the last 2 s; the remainder opens the next phrase.
 - **Silence timeout:** with no open phrase and `silence_timeout_s` of audio
   since the last speech (or start), the session finishes with `silence`.
-- **Session limit:** 15 min of audio → finish with `limit`.
+- **Session limit:** 4 h of audio → finish with `limit`.
 - **Commands** (`parakeet_commands.py`): matched case/punctuation-insensitively
   on whole words; the matched words are removed from the emitted text and from
   partials. `send`/`stop` match only at the *end* of a phrase. `clear` matches
@@ -104,8 +107,14 @@ Auth failures close with code 4401, model not ready 4503.
 - **Start phrases:** while waiting, finals are emitted empty and no partials
   are sent; `stop` and `clear` still work, `send` does not. The earliest start
   phrase in a final emits `start`, then `state` (not waiting), and the text
-  after it (capitalized) is the final's text. Once dictating, start phrases are
-  ordinary text. `send` returns the session to waiting.
+  after it (capitalized) is the final's text. The previous waiting phrase is
+  joined with the current one, so a start phrase split by a pause matches.
+  Once dictating, start phrases are ordinary text. `send` returns the session
+  to waiting.
+- **Phrase matching:** each setting may list comma-separated alternatives.
+  Phrases of 10+ letters also match loosely (character similarity ≥ 0.85 over
+  word windows one shorter to one longer than the phrase); exact matches win.
+  Shorter phrases (`send it`) match exactly so near words never trigger them.
 
 ### Plugin backend
 
@@ -168,7 +177,7 @@ Auth failures close with code 4401, model not ready 4503.
 | Page hidden (phone lock) | `stop` sent; open phrase finalized; normal end |
 | Draft edited mid-session | edits kept; tail re-anchored at the end |
 | Inference busy | partials skipped; finals queue |
-| 15 min session | ends with `limit` + toast |
+| 4 h session | ends with `limit` + toast |
 
 ## Testing
 

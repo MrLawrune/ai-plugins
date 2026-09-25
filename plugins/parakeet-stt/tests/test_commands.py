@@ -6,8 +6,8 @@ START = ("start new reply", "send new message")
 
 def test_find_phrase_matches_whole_words_ignoring_case_and_punctuation():
     assert find_phrase("Okay. Start new reply, fix the bug.", "start new reply") == ("Okay.", "fix the bug.")
-    assert find_phrase("restart new reply", "start new reply") is None
-    assert find_phrase("start new replying", "start new reply") is None
+    assert find_phrase("restart new reply", "start new reply", fuzzy=False) is None
+    assert find_phrase("start new replying", "start new reply", fuzzy=False) is None
     assert find_phrase("a b a b", "a b", last=True) == ("a b", "")
 
 
@@ -67,3 +67,29 @@ def test_start_phrase_is_plain_text_once_dictating():
 def test_no_commands_passes_text_through():
     p = parse("Send it.", {}, (), waiting=False)
     assert (p.before, p.text, p.after, p.waiting) == ((), "Send it.", None, False)
+
+
+def test_long_phrases_match_loosely():
+    assert find_phrase("Okay start a new reply. Hello.", "start new reply") == ("Okay", "Hello.")
+    assert find_phrase("Star new replay, hello", "start new reply") == ("", "hello")
+    assert find_phrase("Clear all the response text.", "clear all response text") == ("", "")
+    assert find_phrase("clear all responsibilities", "clear all response text") is None
+    assert find_phrase("I started a new thread", "start new reply") is None
+
+
+def test_short_phrases_stay_exact():
+    assert strip_command("Buy it and spend it.", {"send": "send it"}) == ("Buy it and spend it.", None)
+    assert strip_command("That's it. Sent it.", {"send": "send it"}) == ("That's it. Sent it.", None)
+
+
+def test_alternatives_are_comma_separated():
+    assert strip_command("Looks good. Sunday.", {"send": "send it, sunday"}) == ("Looks good.", "send")
+    p = parse("New message please, hi", CMDS, ("start new reply", "new message please"), waiting=True)
+    assert (p.before, p.text) == (("start",), "Hi")
+
+
+def test_start_phrase_split_by_a_pause():
+    first = parse("Start new.", CMDS, START, waiting=True)
+    assert (first.before, first.waiting, first.carry) == ((), True, "Start new.")
+    p = parse("Reply. Fix the bug.", CMDS, START, waiting=True, carry=first.carry)
+    assert (p.before, p.text, p.waiting, p.carry) == (("start",), "Fix the bug.", False, "")

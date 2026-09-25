@@ -11,6 +11,7 @@ const serverEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("final"), seq: z.number().int(), text: z.string() }),
   z.object({ type: z.literal("command"), name: z.enum(["send", "stop", "clear", "start"]) }),
   z.object({ type: z.literal("state"), waiting: z.boolean() }),
+  z.object({ type: z.literal("heard"), text: z.string() }),
   z.object({ type: z.literal("ended"), reason: endReason }),
   z.object({ type: z.literal("error"), message: z.string() }),
 ]);
