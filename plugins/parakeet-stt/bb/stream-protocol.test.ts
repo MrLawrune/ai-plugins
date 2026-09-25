@@ -6,6 +6,8 @@ import { parseServerEvent, streamOptionsFrom, upstreamUrl } from "./stream-proto
 test("parses known events and rejects junk", () => {
   assert.deepEqual(parseServerEvent('{"type":"partial","seq":2,"text":"hi"}'), { type: "partial", seq: 2, text: "hi" });
   assert.deepEqual(parseServerEvent('{"type":"ended","reason":"silence"}'), { type: "ended", reason: "silence" });
+  assert.deepEqual(parseServerEvent('{"type":"state","waiting":true}'), { type: "state", waiting: true });
+  assert.deepEqual(parseServerEvent('{"type":"command","name":"clear"}'), { type: "command", name: "clear" });
   assert.equal(parseServerEvent("nope"), null);
   assert.equal(parseServerEvent('{"type":"ended","reason":"bored"}'), null);
   assert.equal(parseServerEvent(new Uint8Array([1])), null);
@@ -13,13 +15,16 @@ test("parses known events and rejects junk", () => {
 
 test("options follow prefs", () => {
   assert.deepEqual(streamOptionsFrom({ ...DEFAULT_PREFS, customWords: ["tmux"] }), {
-    pause_ms: 600, silence_timeout_s: null, commands: null, preview: true,
+    pause_ms: 600, silence_timeout_s: null, commands: null, start: [], preview: true,
     custom_words: ["tmux"], remove_fillers: true, correction_threshold: 0.18,
   });
   const o = streamOptionsFrom({ ...DEFAULT_PREFS, endOnSilence: true, voiceCommands: true, livePreview: false });
   assert.equal(o.silence_timeout_s, 8);
-  assert.deepEqual(o.commands, { send: "send it", stop: "stop listening" });
+  assert.deepEqual(o.commands, { send: "send it", stop: "stop listening", clear: "clear all response text" });
+  assert.deepEqual(o.start, []);
   assert.equal(o.preview, false);
+  assert.deepEqual(streamOptionsFrom({ ...DEFAULT_PREFS, voiceCommands: true, waitForStart: true }).start, ["start new reply", "send new message"]);
+  assert.deepEqual(streamOptionsFrom({ ...DEFAULT_PREFS, voiceCommands: false, waitForStart: true }).start, []);
 });
 
 test("upstream url", () => {

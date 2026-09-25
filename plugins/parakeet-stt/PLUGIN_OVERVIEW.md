@@ -2,7 +2,7 @@ Talk to your agents instead of typing. Tap the mic (or press Ctrl+Space) and kee
 
 ## What you get
 
-- **Continuous dictation**: phrases commit at each pause while you keep talking; the phrase in progress shows dimmed. End it with a tap, after a silence timeout, or by saying "stop listening"; say "send it" to send.
+- **Continuous dictation**: phrases commit at each pause while you keep talking; the phrase in progress shows dimmed. End it with a tap, after a silence timeout, or by saying "stop listening"; say "send it" to send, or "clear all response text" to start the message over. Optionally, a session waits for "start new reply" before typing anything and goes back to waiting after each send.
 - **One-shot**: hold the mic to talk, release to transcribe (or make one-shot the default).
 - A mic button in every bb composer, plus a **Dictate** item in the composer's `+` menu for phones and compact layouts; bb's own voice button can be hidden so there is one mic.
 - Ctrl+Space to start and stop (or hold to talk), Esc to cancel.

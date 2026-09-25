@@ -9,7 +9,7 @@ Handy-style dictation for bb, backed by a self-hosted, OpenAI-compatible Parakee
 
 ## Dictation modes
 
-- **Continuous** (default): tap the mic (or Ctrl+Space). Each phrase commits to the draft when you pause; the phrase in progress shows dimmed at the end of the draft. Ends on a tap, Esc (cancel), an optional silence timeout, or the optional voice command `stop listening`; `send it` submits the message.
+- **Continuous** (default): tap the mic (or Ctrl+Space). Each phrase commits to the draft when you pause; the phrase in progress shows dimmed at the end of the draft. Ends on a tap, Esc (cancel), an optional silence timeout, or the optional voice command `stop listening`; `send it` submits the message and `clear all response text` empties the message box and keeps listening. With **Wait for a start phrase** on, a session ignores speech until you say a start phrase (`start new reply` or `send new message` by default; anything said after it is kept), and `send it` sends and goes back to waiting — reply after reply without touching the screen. `send it` and `stop listening` count at the end of a sentence; the clear and start phrases count anywhere. All phrases are editable in settings.
 - **One-shot**: records the whole clip and transcribes when you stop. Press and hold the mic (≥ 350 ms) for one-shot push-to-talk in either mode.
 - A setting hides bb's own voice button so there is one mic.
 

@@ -153,10 +153,85 @@ def test_stop_command_ends_session():
     assert {"type": "final", "seq": 0, "text": "That's all."} in h.events
 
 
-def test_command_only_at_phrase_end():
-    assert strip_command("I'll send it tomorrow.", {"send": "send it"}) == ("I'll send it tomorrow.", None)
-    assert strip_command("Okay, SEND IT!", {"send": "send it"}) == ("Okay", "send")
-    assert strip_command("send it", {"send": "send it"}) == ("", "send")
+def test_strip_command_still_exported():
+    assert strip_command("Okay, send it", {"send": "send it"}) == ("Okay", "send")
+
+
+def test_start_phrase_gates_a_session():
+    cmds = {"send": "send it", "stop": "stop listening", "clear": "clear all response text"}
+    texts = ["Chatting with someone.", "Start new reply. Fix the bug.", "Send it.", "More chatter."]
+    h = Harness(texts=list(texts), preview=False, pause_ms=96, commands=cmds, start=("start new reply",))
+    async def go():
+        s = h.session()
+        await s.announce()
+        for _ in texts:
+            await s.feed(pcm(0.9, 10) + pcm(0.0, 3))
+            await asyncio.sleep(0)
+        await s.finish()
+    asyncio.run(go())
+    shown = [e for e in h.events if e["type"] in ("state", "command", "final")]
+    assert shown == [
+        {"type": "state", "waiting": True},
+        {"type": "final", "seq": 0, "text": ""},
+        {"type": "command", "name": "start"},
+        {"type": "state", "waiting": False},
+        {"type": "final", "seq": 1, "text": "Fix the bug."},
+        {"type": "final", "seq": 2, "text": ""},
+        {"type": "command", "name": "send"},
+        {"type": "state", "waiting": True},
+        {"type": "final", "seq": 3, "text": ""},
+    ]
+
+
+def test_no_preview_while_waiting():
+    class Scripted(Harness):
+        async def transcribe(self, audio, partial):
+            return "partial" if partial else "Start new reply."
+    h = Scripted(pause_ms=96, commands={"send": "send it"}, start=("start new reply",))
+    async def go():
+        s = h.session()
+        for _ in range(2):
+            for _ in range(8):
+                await s.feed(pcm(0.9, 10))
+                await asyncio.sleep(0)
+            await s.feed(pcm(0.0, 3))
+            for _ in range(5):
+                await asyncio.sleep(0)
+        await s.finish()
+    asyncio.run(go())
+    partials = [e for e in h.events if e["type"] == "partial"]
+    assert partials and all(p["seq"] == 1 for p in partials)  # phrase 0 was heard while waiting
+
+
+def test_partials_hide_command_words():
+    class Scripted(Harness):
+        async def transcribe(self, audio, partial):
+            return "Wrong. Clear all response text. Take two, send it" if partial else "Take two."
+    h = Scripted(pause_ms=96, commands={"send": "send it", "clear": "clear all response text"})
+    async def go():
+        s = h.session()
+        for _ in range(8):
+            await s.feed(pcm(0.9, 10))
+            await asyncio.sleep(0)
+        await s.finish()
+    asyncio.run(go())
+    partials = {e["text"] for e in h.events if e["type"] == "partial"}
+    assert partials == {"Take two"}
+
+
+def test_clear_command_precedes_the_remaining_text():
+    h = Harness(texts=["Oops. Clear all response text. Take two."], preview=False, pause_ms=96,
+                commands={"clear": "clear all response text"})
+    async def go():
+        s = h.session()
+        await s.announce()
+        await s.feed(pcm(0.9, 10) + pcm(0.0, 3))
+        await s.finish()
+    asyncio.run(go())
+    assert [e for e in h.events if e["type"] in ("state", "command", "final")] == [
+        {"type": "command", "name": "clear"},
+        {"type": "final", "seq": 0, "text": "Take two."},
+    ]
 
 
 def test_partial_skipped_when_transcriber_busy():
@@ -183,3 +258,9 @@ def test_options_from_json_validates():
         StreamOptions.from_json({"pause_ms": 50})
     with pytest.raises(ValueError):
         StreamOptions.from_json({"commands": {"launch": "go"}})
+    o = StreamOptions.from_json({"commands": {"clear": "clear all response text"}, "start": [" start new reply "]})
+    assert (o.commands, o.start) == ({"clear": "clear all response text"}, ("start new reply",))
+    with pytest.raises(ValueError):
+        StreamOptions.from_json({"start": ["ok", ""]})
+    with pytest.raises(ValueError):
+        StreamOptions.from_json({"start": "start new reply"})

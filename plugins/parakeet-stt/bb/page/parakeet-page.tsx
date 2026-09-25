@@ -20,6 +20,7 @@ export function ParakeetPage() {
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [words, setWords] = useState("");
+  const [starts, setStarts] = useState("");
 
   const refresh = useCallback(async () => {
     const [p, h, hist] = await Promise.all([rpc.call("getPrefs"), rpc.call("health"), rpc.call("listHistory")]);
@@ -28,6 +29,7 @@ export function ParakeetPage() {
     setHealth(h);
     setHistory(hist.entries);
     setWords(p.customWords.join(", "));
+    setStarts(p.startPhrases.join(", "));
   }, [rpc]);
   useEffect(() => { void refresh().catch((e) => toast.error(errorText(e))); }, [refresh]);
 
@@ -37,6 +39,7 @@ export function ParakeetPage() {
       setPrefs(next);
       setDictationPrefs(next);
       setWords(next.customWords.join(", "));
+      setStarts(next.startPhrases.join(", "));
     } catch (e) {
       toast.error(errorText(e));
     }
@@ -86,11 +89,18 @@ export function ParakeetPage() {
         {prefs.endOnSilence && (
           <SliderRow id="silence-s" label="Silence timeout" value={prefs.silenceTimeoutS} min={3} max={60} step={1} format={(v) => `${v} s`} onChange={(v) => void patch({ silenceTimeoutS: v })} />
         )}
-        <SwitchRow id="commands" label="Voice commands" hint="Say the phrase at the end of a sentence" checked={prefs.voiceCommands} onChange={(v) => void patch({ voiceCommands: v })} />
+        <SwitchRow id="commands" label="Voice commands" hint="Send and stop count at the end of a sentence; clear and start phrases count anywhere" checked={prefs.voiceCommands} onChange={(v) => void patch({ voiceCommands: v })} />
         {prefs.voiceCommands && (
           <>
             <Row label="Send phrase" htmlFor="send-phrase"><Input id="send-phrase" defaultValue={prefs.sendPhrase} onBlur={(e) => void patch({ sendPhrase: e.target.value })} /></Row>
             <Row label="Stop phrase" htmlFor="stop-phrase"><Input id="stop-phrase" defaultValue={prefs.stopPhrase} onBlur={(e) => void patch({ stopPhrase: e.target.value })} /></Row>
+            <Row label="Clear phrase" hint="Empties the message box and keeps listening" htmlFor="clear-phrase"><Input id="clear-phrase" defaultValue={prefs.clearPhrase} onBlur={(e) => void patch({ clearPhrase: e.target.value })} /></Row>
+            <SwitchRow id="wait-start" label="Wait for a start phrase" hint="The mic ignores speech until you say a start phrase; the send phrase sends and goes back to waiting" checked={prefs.waitForStart} onChange={(v) => void patch({ waitForStart: v })} />
+            {prefs.waitForStart && (
+              <Row label="Start phrases" hint="Comma-separated; anything said after one is kept" htmlFor="start-phrases">
+                <Input id="start-phrases" value={starts} onChange={(e) => setStarts(e.target.value)} onBlur={() => void patch({ startPhrases: starts.split(",") })} />
+              </Row>
+            )}
           </>
         )}
         <SwitchRow id="hidden" label="Keep listening when the screen is off" hint="Off: locking the phone ends dictation" checked={prefs.keepListeningHidden} onChange={(v) => void patch({ keepListeningHidden: v })} />

@@ -13,6 +13,11 @@ preview of the phrase in progress. Extends
   of the draft, refined as you speak, solid on commit.
 - **Session endings**, each a setting: manual stop (default on, always
   available), silence timeout, voice commands (`send it`, `stop listening`).
+- **Voice editing and hands-free replies:** `clear all response text` empties
+  the draft and keeps listening; optional start phrases (`start new reply`,
+  `send new message`) gate a session so speech is ignored until one is said,
+  and `send it` returns to waiting. Sessions still start and stop with the
+  mic button.
 - **One mic:** a setting hides bb's native voice button (default on).
 - **Gestures:** tap = default mode; press-and-hold ≥ 350 ms = one-shot
   push-to-talk (records while held); Ctrl+Space / hold-to-talk unchanged.
@@ -53,7 +58,9 @@ page (AudioWorklet → 16 kHz PCM16) ──ws /api/v1/plugins/parakeet-stt/http/
 Client → server:
 - text `{"type":"start","api_key":…,"options":{…}}` — first message, within 10 s.
   Options: `pause_ms` (300–1500, default 600), `silence_timeout_s` (number or
-  null), `commands` (`{"send": "send it", "stop": "stop listening"}` or null),
+  null), `commands` (`{"send": "send it", "stop": "stop listening", "clear":
+  "clear all response text"}`, any subset, or null), `start` (list of up to 10
+  start phrases; non-empty makes the session wait for one),
   `preview` (bool), `custom_words`, `remove_fillers`, `correction_threshold`.
   The page sends `{"type":"start"}`; the relay fills key and options from the
   plugin settings/prefs.
@@ -64,7 +71,9 @@ Server → client (text JSON):
 - `{"type":"ready"}`
 - `{"type":"partial","seq":n,"text":…}` — in-progress phrase `n`.
 - `{"type":"final","seq":n,"text":…}` — phrase `n` committed (post-processed; command words removed; may be empty).
-- `{"type":"command","name":"send"}` — after the final that contained it.
+- `{"type":"command","name":"start"|"clear"}` — before the final whose remaining text follows the phrase.
+- `{"type":"command","name":"send"|"stop"}` — after the final that contained it.
+- `{"type":"state","waiting":bool}` — sessions with start phrases: sent after `ready` (waiting) and on every change.
 - `{"type":"ended","reason":"stopped"|"silence"|"command"|"limit"|"error"}` — last message; server then closes.
 - `{"type":"error","message":…}` — followed by `ended` (`error`) and close.
 Auth failures close with code 4401, model not ready 4503.
@@ -87,9 +96,16 @@ Auth failures close with code 4401, model not ready 4503.
 - **Silence timeout:** with no open phrase and `silence_timeout_s` of audio
   since the last speech (or start), the session finishes with `silence`.
 - **Session limit:** 15 min of audio → finish with `limit`.
-- **Commands:** matched case/punctuation-insensitively against the *end* of a
-  final phrase; the matched words are removed from the emitted text. `stop`
-  finishes the session with reason `command`.
+- **Commands** (`parakeet_commands.py`): matched case/punctuation-insensitively
+  on whole words; the matched words are removed from the emitted text and from
+  partials. `send`/`stop` match only at the *end* of a phrase. `clear` matches
+  anywhere (last occurrence); only the text after it is kept. `stop` finishes
+  the session with reason `command`.
+- **Start phrases:** while waiting, finals are emitted empty and no partials
+  are sent; `stop` and `clear` still work, `send` does not. The earliest start
+  phrase in a final emits `start`, then `state` (not waiting), and the text
+  after it (capitalized) is the final's text. Once dictating, start phrases are
+  ordinary text. `send` returns the session to waiting.
 
 ### Plugin backend
 
@@ -115,7 +131,10 @@ Auth failures close with code 4401, model not ready 4503.
   new tail is appended after their edits.
 - `dictation.ts`: controller gains mode (`continuous` | `oneshot`), phase
   `streaming`, and continuous handlers (partial → live tail, final → commit,
-  command send → submit, ended → idle). Stream failure at start → one-shot
+  command send → submit, start → re-capture the insertion point + start cue,
+  clear → empty the draft + cancel cue, state → `waiting` in the snapshot,
+  ended → idle). While waiting, the mic and banner show amber ("Waiting for
+  “start new reply”…"). Stream failure at start → one-shot
   fallback with a toast. Disconnect mid-session → live tail becomes solid,
   toast "last phrase may be incomplete".
 - Live tail painted with a composer rich-text effect (`opacity-50`).
@@ -133,7 +152,8 @@ Auth failures close with code 4401, model not ready 4503.
 | `livePreview` | `true` |
 | `pauseMs` (300–1500) | `600` |
 | `endOnSilence` / `silenceTimeoutS` (3–60) | `false` / `8` |
-| `voiceCommands` / `sendPhrase` / `stopPhrase` | `false` / `send it` / `stop listening` |
+| `voiceCommands` / `sendPhrase` / `stopPhrase` / `clearPhrase` | `false` / `send it` / `stop listening` / `clear all response text` |
+| `waitForStart` / `startPhrases` (≤ 10) | `false` / `start new reply`, `send new message` |
 | `hideNativeMic` | `true` |
 
 `autoSubmit` applies to one-shot only.
@@ -162,4 +182,5 @@ Auth failures close with code 4401, model not ready 4503.
   fake sockets; controller continuous flow (partials, finals, send, stop,
   fallback, disconnect, cancel); press-vs-tap timing helper.
 - Manual (phone): continuous dictation, lock mid-session, silence timeout,
-  voice commands, press-and-hold one-shot, native mic hidden.
+  voice commands (send, stop, clear, start phrases), press-and-hold one-shot,
+  native mic hidden.

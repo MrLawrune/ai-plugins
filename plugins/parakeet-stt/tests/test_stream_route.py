@@ -110,3 +110,11 @@ def test_http_routes_still_require_bearer():
         r = await c.get("/v1/models")
         return r.status
     assert run(fn) == 401
+
+
+def test_stream_announces_waiting_with_start_phrases():
+    async def fn(c):
+        ws = await c.ws_connect("/v1/stream")
+        await ws.send_json({"type": "start", "api_key": "secret", "options": {"start": ["start new reply"]}})
+        return await ws.receive_json(), await ws.receive_json()
+    assert run(fn) == ({"type": "ready"}, {"type": "state", "waiting": True})

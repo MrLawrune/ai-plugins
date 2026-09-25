@@ -1,11 +1,17 @@
 // Frontend dictation state machine shared by the composer action, plus-menu item, banner,
 // and keyboard shortcut. Browser specifics are injected so the logic runs under node:test.
 import type { SoundName } from "./schemas.ts";
-import type { EndReason } from "./stream-protocol.ts";
+import type { CommandName, EndReason } from "./stream-protocol.ts";
 
 export type Mode = "continuous" | "oneshot";
 export type Phase = "idle" | "recording" | "transcribing" | "streaming" | "finishing";
-export interface DictationSnapshot { phase: Phase; targetId: string | null; startedAt: number | null }
+export interface DictationSnapshot {
+  phase: Phase;
+  targetId: string | null;
+  startedAt: number | null;
+  /** Streaming, but ignoring speech until a start phrase is heard. */
+  waiting: boolean;
+}
 export interface Target {
   id: string;
   appendText(text: string): void;
@@ -16,11 +22,15 @@ export interface Target {
   commitLive(text: string, seq: number): void;
   /** Capture where this session's text goes (caret, selection, or end) before recording starts. */
   begin(): void;
+  /** Empty the whole draft. */
+  clear(): void;
 }
 export interface StreamHandlers {
   onPartial(text: string, seq: number): void;
   onFinal(text: string, seq: number): void;
-  onCommand(name: "send" | "stop"): void;
+  onCommand(name: CommandName): void;
+  /** The session started or stopped waiting for a start phrase. */
+  onState(waiting: boolean): void;
   onEnded(reason: EndReason): void;
   onError(message: string): void;
 }
@@ -37,7 +47,7 @@ export interface DictationDeps {
   now(): number;
 }
 
-const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null };
+const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null, waiting: false };
 const INTERRUPT_NOTICE: Record<Interruption, string> = {
   hidden: "Recording stopped because the page was hidden; transcribing what was captured.",
   limit: "Recording reached the 5-minute limit; transcribing.",
@@ -130,7 +140,8 @@ export class DictationController {
   }
 
   async #startStream(deps: DictationDeps, target: Target): Promise<void> {
-    this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now() });
+    this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now(), waiting: false });
+    let gated = false; // the session uses a start phrase
     this.#stopRequested = false;
     this.#live = "";
     const handlers: StreamHandlers = {
@@ -141,7 +152,15 @@ export class DictationController {
         target.setLive(text, seq);
       },
       onFinal: (text, seq) => { this.#live = ""; target.commitLive(text, seq); },
-      onCommand: (name) => { if (name === "send") target.submit(); },
+      onCommand: (name) => {
+        if (name === "start") { target.begin(); this.#cue("start"); }
+        if (name === "clear") { this.#live = ""; target.clear(); this.#cue("cancel"); }
+        if (name === "send") { target.submit(); if (gated) this.#cue("stop"); }
+      },
+      onState: (waiting) => {
+        gated = true;
+        if (this.snapshot().phase === "streaming") this.#set({ ...this.snapshot(), waiting });
+      },
       onError: (message) => deps.notify("error", message),
       onEnded: (reason) => this.#streamEnded(deps, target, reason),
     };
@@ -184,7 +203,7 @@ export class DictationController {
 
   async #startOneShot(deps: DictationDeps, target: Target): Promise<void> {
     // Enter "recording" before the mic prompt resolves so a double press is ignored.
-    this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now() });
+    this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now(), waiting: false });
     this.#stopRequested = false;
     let handle: RecordingHandle;
     try {

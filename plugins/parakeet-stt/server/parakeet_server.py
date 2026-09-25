@@ -168,6 +168,7 @@ async def stream(request: web.Request) -> web.WebSocketResponse:
 
     session = StreamSession(options, transcribe=transcribe, vad_prob=request.app[VAD_FACTORY]().prob, emit=emit)
     await ws.send_json({"type": "ready"})
+    await session.announce()
     try:
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:

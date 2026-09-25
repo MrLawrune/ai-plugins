@@ -9,11 +9,13 @@ const serverEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("ready") }),
   z.object({ type: z.literal("partial"), seq: z.number().int(), text: z.string() }),
   z.object({ type: z.literal("final"), seq: z.number().int(), text: z.string() }),
-  z.object({ type: z.literal("command"), name: z.enum(["send", "stop"]) }),
+  z.object({ type: z.literal("command"), name: z.enum(["send", "stop", "clear", "start"]) }),
+  z.object({ type: z.literal("state"), waiting: z.boolean() }),
   z.object({ type: z.literal("ended"), reason: endReason }),
   z.object({ type: z.literal("error"), message: z.string() }),
 ]);
 export type ServerEvent = z.infer<typeof serverEventSchema>;
+export type CommandName = Extract<ServerEvent, { type: "command" }>["name"];
 
 export function parseServerEvent(data: unknown): ServerEvent | null {
   if (typeof data !== "string") return null;
@@ -29,7 +31,8 @@ export function streamOptionsFrom(p: Prefs): Record<string, unknown> {
   return {
     pause_ms: p.pauseMs,
     silence_timeout_s: p.endOnSilence ? p.silenceTimeoutS : null,
-    commands: p.voiceCommands ? { send: p.sendPhrase, stop: p.stopPhrase } : null,
+    commands: p.voiceCommands ? { send: p.sendPhrase, stop: p.stopPhrase, clear: p.clearPhrase } : null,
+    start: p.voiceCommands && p.waitForStart ? p.startPhrases : [],
     preview: p.livePreview,
     custom_words: p.customWords,
     remove_fillers: p.removeFillers,

@@ -20,7 +20,7 @@ function harness(over: Partial<DictationDeps> = {}) {
   };
   const c = new DictationController(deps);
   let draft = "fix the";
-  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") });
+  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") });
   return { c, log, draft: () => draft, interrupt: (w: Interruption) => interrupt!(w) };
 }
 
@@ -159,7 +159,7 @@ test("composer closed before the transcript arrives: user is told where the text
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  const unregister = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: () => log.push("appended"), submit: () => {} });
+  const unregister = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: () => log.push("appended"), submit: () => {} });
   await c.start("t1");
   unregister();
   await c.stop();
@@ -177,8 +177,8 @@ test("two surfaces for one composer: unmounting one keeps the other usable", asy
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: (t) => log.push(`action:${t}`), submit: () => {} });
-  const unregisterBanner = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
+  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => log.push(`action:${t}`), submit: () => {} });
+  const unregisterBanner = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
   unregisterBanner();
   await c.toggle("t1");
   assert.equal(c.snapshot().phase, "recording");
@@ -232,6 +232,7 @@ function streamHarness(over: Partial<DictationDeps> = {}) {
     setLive: (t) => { live = t; },
     commitLive: (t) => { live = ""; if (t) draft = `${draft} ${t}`; },
     begin: () => log.push("begin"),
+    clear: () => { draft = ""; log.push("clear"); },
   });
   return { c, log, h: () => handlers!, interrupt: (w: Interruption) => interrupt!(w), draft: () => draft, live: () => live };
 }
@@ -250,6 +251,38 @@ test("continuous: partials set the live tail, finals commit, send submits, stop 
   await s.c.toggle();
   assert.equal(s.c.snapshot().phase, "idle");
   assert.ok(s.log.includes("stream:stop"));
+});
+
+test("continuous: start phrase waits, starts, sends, and waits again", async () => {
+  const cues: string[] = [];
+  const s = streamHarness({
+    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: true, mode: "continuous", livePreview: true }),
+    playSound: (n) => cues.push(n),
+  });
+  await s.c.start();
+  s.h().onState(true);
+  assert.equal(s.c.snapshot().waiting, true);
+  s.h().onCommand("start");
+  s.h().onState(false);
+  assert.equal(s.c.snapshot().waiting, false);
+  s.h().onFinal("Fix it.", 1);
+  s.h().onCommand("send");
+  s.h().onState(true);
+  assert.equal(s.c.snapshot().waiting, true);
+  assert.deepEqual(s.log.filter((l) => l === "begin" || l === "submit"), ["begin", "begin", "submit"]);
+  assert.deepEqual(cues, ["start", "start", "stop"]);
+  await s.c.stop();
+  assert.equal(s.c.snapshot().waiting, false);
+});
+
+test("continuous: clear empties the draft and keeps listening", async () => {
+  const s = streamHarness();
+  await s.c.start();
+  s.h().onFinal("Wrong words.", 0);
+  s.h().onCommand("clear");
+  s.h().onFinal("Take two.", 1);
+  assert.equal(s.draft(), " Take two.");
+  assert.equal(s.c.snapshot().phase, "streaming");
 });
 
 test("continuous: live preview off ignores partials", async () => {
@@ -341,7 +374,7 @@ test("targetCount tracks registrations and notifies subscribers", () => {
   let notified = 0;
   c.subscribe(() => notified++);
   assert.equal(c.targetCount(), 0);
-  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {}, begin() {} });
+  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {}, begin() {}, clear() {} });
   assert.equal(c.targetCount(), 1);
   off();
   assert.equal(c.targetCount(), 0);

@@ -89,6 +89,10 @@ function makeTarget(id: string, composer: () => ComposerApi): Target {
       return r.state.anchor === null ? appendDictation(d, text, prefsNow().trailingSpace) : r.draft;
     }),
     submit: () => { void composer().experimental_submit({ experimental_data: {} }); },
+    clear: () => edit(() => {
+      liveState.set({ anchor: null, tail: "", dropSeq: null });
+      return "";
+    }),
     setLive: (text, seq) => edit((d) => {
       const r = applyLive(d, liveState.get(), seq, text, false);
       liveState.set(r.state);
@@ -142,8 +146,9 @@ function MicAction() {
   const mine = s.targetId === id;
   const live = mine && (s.phase === "recording" || s.phase === "streaming");
   const busy = mine && (s.phase === "transcribing" || s.phase === "finishing");
+  const waiting = live && s.waiting;
   const press = usePress(id);
-  const label = live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk";
+  const label = waiting ? "Stop dictation (waiting for the start phrase)" : live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk";
   return (
     <Button
       type="button"
@@ -158,7 +163,7 @@ function MicAction() {
       onPointerCancel={() => press.cancel()}
       onContextMenu={(e) => e.preventDefault()}
       onClick={(e) => { if (e.detail === 0) void controller.toggle(id); }}
-      className={cn("touch-none select-none", live ? "text-red-500 animate-pulse" : busy ? "opacity-60 animate-pulse" : undefined)}
+      className={cn("touch-none select-none", waiting ? "text-amber-500" : live ? "text-red-500 animate-pulse" : busy ? "opacity-60 animate-pulse" : undefined)}
     >
       <Icon name="Mic" aria-hidden />
     </Button>
@@ -188,10 +193,11 @@ function FloatingMic() {
   if (!prefs.floatingMic || !phone || targets === 0) return null;
   const live = s.phase === "recording" || s.phase === "streaming";
   const busy = s.phase === "transcribing" || s.phase === "finishing";
+  const waiting = live && s.waiting;
   return (
     <button
       type="button"
-      aria-label={live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk"}
+      aria-label={waiting ? "Stop dictation (waiting for the start phrase)" : live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk"}
       aria-pressed={live}
       disabled={busy}
       onPointerDown={(e) => { if (e.button !== 0) return; e.preventDefault(); press.down(); }}
@@ -202,7 +208,7 @@ function FloatingMic() {
       style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 7.5rem)" }}
       className={cn(
         "fixed right-4 z-50 flex size-14 touch-none select-none items-center justify-center rounded-full shadow-lg",
-        live ? "bg-red-500 text-white animate-pulse" : "bg-foreground text-background",
+        waiting ? "bg-amber-500 text-white" : live ? "bg-red-500 text-white animate-pulse" : "bg-foreground text-background",
         busy && "opacity-60",
       )}
     >
@@ -220,12 +226,13 @@ function RecordingBanner() {
   if (s.targetId !== id || s.phase === "idle") return null;
   const secs = s.startedAt ? Math.floor((Date.now() - s.startedAt) / 1000) : 0;
   const elapsed = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-  const label = s.phase === "streaming" ? `Listening (continuous)… ${elapsed}`
+  const label = s.phase === "streaming" && s.waiting ? `Waiting for “${prefsNow().startPhrases[0] ?? "start phrase"}”… ${elapsed}`
+    : s.phase === "streaming" ? `Listening (continuous)… ${elapsed}`
     : s.phase === "recording" ? `Listening… ${elapsed}`
       : s.phase === "finishing" ? "Finishing…" : "Transcribing…";
   return (
     <div className="flex items-center gap-2 px-3 py-2 text-sm" role="status" aria-live="polite">
-      <span className="size-2 rounded-full bg-red-500 animate-pulse" aria-hidden />
+      <span className={cn("size-2 rounded-full", s.waiting ? "bg-amber-500" : "bg-red-500 animate-pulse")} aria-hidden />
       <span className="flex-1">{label}</span>
       {active && (
         <>

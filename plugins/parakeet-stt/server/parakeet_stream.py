@@ -13,11 +13,14 @@ from typing import Awaitable, Callable
 import numpy as np
 
 from parakeet_audio import SAMPLE_RATE
+from parakeet_commands import COMMAND_NAMES, parse, strip_command
 from parakeet_endpoint import FRAME, Endpointer
 from parakeet_text import postprocess
 
+__all__ = ["StreamOptions", "StreamSession", "strip_command"]
+
 FRAME_S = FRAME / SAMPLE_RATE
-COMMAND_NAMES = ("send", "stop")
+MAX_START_PHRASES = 10
 
 
 @dataclass(frozen=True)
@@ -25,6 +28,8 @@ class StreamOptions:
     pause_ms: int = 600
     silence_timeout_s: float | None = None
     commands: dict[str, str] | None = None
+    start: tuple[str, ...] = ()
+    """Start phrases: when set, the session waits for one before inserting anything."""
     preview: bool = True
     custom_words: tuple[str, ...] = ()
     remove_fillers: bool = True
@@ -42,6 +47,9 @@ class StreamOptions:
             commands = raw.get("commands")
             words = tuple(str(w) for w in raw.get("custom_words", []))
             threshold = float(raw.get("correction_threshold", 0.18))
+            start = raw.get("start") or []
+            if not isinstance(start, list) or len(start) > MAX_START_PHRASES or any(not isinstance(p, str) or not p.strip() for p in start):
+                raise ValueError(f"start must be a list of up to {MAX_START_PHRASES} phrases")
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid stream options: {exc}") from exc
         if not 300 <= pause_ms <= 1500:
@@ -50,29 +58,10 @@ class StreamOptions:
             raise ValueError("silence_timeout_s must be 1-600 or null")
         if commands is not None:
             if not isinstance(commands, dict) or any(k not in COMMAND_NAMES or not isinstance(v, str) or not v.strip() for k, v in commands.items()):
-                raise ValueError("commands must map send/stop to phrases")
-        return cls(pause_ms=pause_ms, silence_timeout_s=timeout, commands=commands or None, preview=bool(raw.get("preview", True)),
+                raise ValueError("commands must map send/stop/clear to phrases")
+        return cls(pause_ms=pause_ms, silence_timeout_s=timeout, commands=commands or None, start=tuple(p.strip() for p in start), preview=bool(raw.get("preview", True)),
                    custom_words=words, remove_fillers=bool(raw.get("remove_fillers", True)), correction_threshold=threshold)
 
-
-def _words(s: str) -> list[str]:
-    return re.findall(r"[a-z0-9']+", s.lower())
-
-
-def strip_command(text: str, commands: dict[str, str]) -> tuple[str, str | None]:
-    tokens = text.split()
-    for name, phrase in commands.items():
-        want = _words(phrase)
-        if not want:
-            continue
-        got: list[str] = []
-        i = len(tokens)
-        while i > 0 and len(got) < len(want):
-            i -= 1
-            got = _words(tokens[i]) + got
-        if got == want:
-            return " ".join(tokens[:i]).rstrip(" ,;:-"), name
-    return text, None
 
 
 class StreamSession:
@@ -95,6 +84,7 @@ class StreamSession:
         self._finals: asyncio.Task | None = None
         self._finals_pending = 0
         self._ending = False
+        self._waiting = bool(options.start)
         self._tasks: set[asyncio.Task] = set()
         self.done = asyncio.Event()
 
@@ -167,18 +157,25 @@ class StreamSession:
             raw = ""
             await self._emit({"type": "error", "message": f"transcription failed: {exc}"})
         text = postprocess(raw, custom_words=list(self._o.custom_words), remove_fillers_=self._o.remove_fillers, threshold=self._o.correction_threshold)
-        command = None
-        if self._o.commands:
-            text, command = strip_command(text, self._o.commands)
+        was_waiting = self._waiting
+        parsed = parse(text, self._o.commands or {}, self._o.start, self._waiting)
+        self._waiting = parsed.waiting
         self._finals_pending -= 1
-        await self._emit({"type": "final", "seq": seq, "text": text})
-        if command:
-            await self._emit({"type": "command", "name": command})
-            if command == "stop":
-                self._spawn(self.finish("command"))
+        for name in parsed.before:
+            await self._emit({"type": "command", "name": name})
+        started = "start" in parsed.before
+        if started:
+            await self._emit({"type": "state", "waiting": False})
+        await self._emit({"type": "final", "seq": seq, "text": parsed.text})
+        if parsed.after:
+            await self._emit({"type": "command", "name": parsed.after})
+        if parsed.waiting and (started or not was_waiting):
+            await self._emit({"type": "state", "waiting": True})
+        if parsed.after == "stop":
+            self._spawn(self.finish("command"))
 
     def _maybe_partial(self) -> None:
-        if (not self._o.preview or self._ending or self._phrase is None or self._finals_pending
+        if (not self._o.preview or self._ending or self._waiting or self._phrase is None or self._finals_pending
                 or (self._partial_task is not None and not self._partial_task.done())):
             return
         n = len(self._phrase)
@@ -192,11 +189,19 @@ class StreamSession:
             text = await self._transcribe(audio, True)
         except Exception:  # a failed preview is not worth surfacing; the final will report
             return
-        if text is None or self._ending or seq != self._open_seq or self._phrase is None or self._finals_pending:
+        if text is None or self._ending or self._waiting or seq != self._open_seq or self._phrase is None or self._finals_pending:
             return
-        await self._emit({"type": "partial", "seq": seq, "text": text.strip()})
+        text = text.strip()
+        if self._o.commands:  # show what will be inserted, not the command words
+            text = parse(text, self._o.commands, (), False).text
+        await self._emit({"type": "partial", "seq": seq, "text": text})
 
     # ---- lifecycle ----
+    async def announce(self) -> None:
+        """Tell the client the initial state (only sessions with start phrases have one)."""
+        if self._o.start:
+            await self._emit({"type": "state", "waiting": True})
+
     async def finish(self, reason: str = "stopped") -> None:
         if self._ending:
             await self.done.wait()
