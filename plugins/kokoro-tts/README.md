@@ -14,7 +14,10 @@ for the end-user pitch.
   audio plays -- Play audio on: this browser or the server host.
 - Playback devices (when audio plays in the browser): open bb windows
   grouped by device. Play on: the last-used window, a pinned device, or
-  every window. Rename this device.
+  every window. Rename this device. Replies play one at a time, and wait
+  for a device that briefly drops off instead of playing somewhere else.
+- Pause other media while speech plays here (only on the computer running
+  bb, on Linux with playerctl).
 - Voice: single voice grouped by language, or a weighted blend; preview.
 - Speech: mode ceiling, speed, speech volume, language, strip markdown, trim.
 - Sounds: cue volume, working tick, attention ping, test buttons.

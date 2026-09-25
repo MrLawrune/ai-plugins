@@ -12,6 +12,8 @@ export interface VoiceDeps {
   hub: Pick<PlayerHub, "speak" | "sound" | "stop" | "hasReadyClient" | "onReadyChange">;
   prefs: Pick<PrefsStore, "get">;
   contract: string | null;
+  /** Short contract for full mode, which reads the whole reply and ignores blocks. */
+  contractFull?: string | null;
 }
 
 export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
@@ -40,14 +42,22 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
           mode = (await client.call<ConfigResponse>("GET", "/config")).config.mode;
           await client.call("POST", "/runtime", { bb_plugin: canVoice() });
         } catch {
-          // server down or starting; keep the last known mode
+          // Server down or (re)starting: keep the last known mode and retry
+          // soon, so the new server learns bb is voicing before a hook asks.
+          await sleep(1_000, signal);
+          continue;
         }
         await sleep(10_000, signal);
       }
     },
   });
 
-  bb.agents.contributeInstructions(() => (deps.contract ? deps.contract.replaceAll("{{MODE}}", mode) : null));
+  // Full mode reads the whole reply and ignores blocks, so it gets a short
+  // contract that tells the agent not to write them.
+  bb.agents.contributeInstructions(() => {
+    const contract = mode === "full" && deps.contractFull ? deps.contractFull : deps.contract;
+    return contract ? contract.replaceAll("{{MODE}}", mode) : null;
+  });
 
   const deliver = (raw: unknown, sessionId: string) => {
     const parsed = turnResultSchema.safeParse(raw);

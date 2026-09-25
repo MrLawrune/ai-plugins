@@ -408,7 +408,7 @@ function SoundsSection({ config, patch, rpc }: { config: KokoroConfig; patch: (p
       title="Sounds"
       description="Short cues for working, done, and attention states."
       actions={
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           {(["working", "done", "attention", "error"] as const).map((s) => (
             <Button key={s} variant="ghost" size="sm" onClick={() => void play(s)} aria-label={`Play ${s} sound`}>
               <Icon name="Play" className="size-3.5" />
@@ -476,6 +476,7 @@ function KokoroPage() {
                 outputDevices={devices}
                 patch={patch}
                 setupState={setupState}
+                pauseSupported={data.pause_other_audio_supported}
               />
             ) : null}
             <VoiceSection config={data.config} voices={voices} patch={patch} rpc={rpc} />
@@ -486,9 +487,7 @@ function KokoroPage() {
           <p className="text-sm text-muted-foreground">Loading configuration…</p>
         ) : null}
         <p className="text-xs text-muted-foreground">
-          Changes save immediately and apply on the next spoken turn. In Claude Code outside bb, per-session
-          env vars (<code className="font-mono">KOKORO_MODE</code>, <code className="font-mono">KOKORO_VOICE</code>,
-          <code className="ml-1 font-mono">KOKORO_SPEED</code>) still override them.
+          Changes save immediately and apply on the next spoken turn.
         </p>
       </div>
     </div>

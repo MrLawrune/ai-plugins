@@ -115,6 +115,14 @@ def test_session_start_emits_contract_otherwise(fake_server):
     assert "Voice Output" in json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
 
 
+def test_session_start_full_mode_gets_the_short_contract_without_blocks(fake_server):
+    r = run_hook("tts-session-start.sh", {}, fake_server.port, KOKORO_MODE="full")
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "whole reply is read aloud" in ctx
+    assert "Do not add TTS_RESPONSE blocks" in ctx
+    assert "weight=" not in ctx
+
+
 @pytest.mark.parametrize("script,path", [("tts-interrupt.sh", "/interrupt"), ("tts-session-end.sh", "/cleanup")])
 def test_guard_skips_posting_when_bb_plugin_active(fake_server, script, path):
     fake_server.bb_active = True

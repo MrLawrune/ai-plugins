@@ -9,6 +9,7 @@ executor for all sounddevice calls, avoiding portaudio corruption.
 """
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import html
@@ -43,6 +44,7 @@ from kokoro_config import (
     blend_voice,
     voice_metadata,
 )
+from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
 from kokoro_turn import route_cue, route_turn
 
@@ -214,6 +216,23 @@ def play_queue_interruptible(q: "queue.Queue[np.ndarray | None]", sr: int, cance
 # --- Speech log ---
 
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))) / "kokoro-tts"
+BB_CLAIM_FILE = STATE_DIR / "bb-plugin-claim"
+REPEAT_WINDOW_S = 10
+
+
+def _read_bb_claim() -> float:
+    try:
+        return float(BB_CLAIM_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _write_bb_claim(ts: float) -> None:
+    try:
+        BB_CLAIM_FILE.parent.mkdir(parents=True, exist_ok=True)
+        BB_CLAIM_FILE.write_text(str(ts))
+    except OSError:
+        pass
 
 
 def _norm_text(text: str) -> str:
@@ -316,9 +335,15 @@ class KokoroServer:
         self.latency_samples: deque[float] = deque(maxlen=20)
         self.spoken_count = 0
         self.speech_log = SpeechLog(STATE_DIR / "speech-log.jsonl")
+        self.pauser = MediaPauser()
         self.active_playbacks: dict[str, asyncio.Task] = {}
         self.cancel_events: dict[str, threading.Event] = {}
-        self.bb_plugin_seen = 0.0
+        # The bb plugin's "I'm voicing" claim survives a server restart, so the
+        # Claude Code hooks don't speak over it in the seconds before its next
+        # heartbeat reaches the new server.
+        self.bb_plugin_seen = _read_bb_claim()
+        self.last_turn: dict[str, str] = {}
+        self.recent_turns: deque[tuple[float, str]] = deque(maxlen=20)
         self._audio_executor = None
         self.engine: LocalEngine | RemoteEngine = self._make_engine(self.config.get())
         try:
@@ -423,6 +448,7 @@ class KokoroServer:
             "defaults": DEFAULTS,
             "muted": self.muted,
             "providers_available": available_providers(),
+            "pause_other_audio_supported": pause_supported(),
             "restart_required": self._restart_block(),
             "restart_command": (
                 "When bb manages the server, turn Manage server off and on again on the Server card "
@@ -468,6 +494,7 @@ class KokoroServer:
                     log.info("First audio after %.0fms (%d chars, provider=%s)", self.last_first_audio_ms, len(text), cfg["provider"])
                     if entry:
                         self.speech_log.update(entry, "playing", first_audio_ms=round(self.last_first_audio_ms))
+                    await self.pauser.start(f"server:{session_id}", cfg["other_audio"])
                     if sr != stream_sr:
                         # Rare: engine produced a different rate. Restart the player at that rate.
                         log.warning("Engine sample rate %d != %d; reopening stream", sr, stream_sr)
@@ -501,6 +528,7 @@ class KokoroServer:
                 self.speech_log.update(entry, "error", error=str(e)[:200])
         finally:
             q.put(None)
+            await self.pauser.end(f"server:{session_id}")
             self.active_playbacks.pop(session_id, None)
             self.cancel_events.pop(session_id, None)
 
@@ -796,6 +824,18 @@ class KokoroServer:
 
         return {"status": "playing", "sound": sound, "session_id": session_id}, 200
 
+    def _is_repeat_turn(self, session_id: str, text: str) -> bool:
+        """A reply already voiced: the same text again for this session (stopping a
+        thread re-reports its previous reply), or from any caller within a few
+        seconds (a hook and the bb plugin both reporting one turn)."""
+        key = hashlib.sha1(text.encode()).hexdigest()
+        now = time.time()
+        repeat = self.last_turn.get(session_id) == key or any(
+            k == key and now - t < REPEAT_WINDOW_S for t, k in self.recent_turns)
+        self.last_turn[session_id] = key
+        self.recent_turns.append((now, key))
+        return repeat
+
     async def handle_turn(self, request: web.Request) -> web.Response:
         try:
             data = await request.json()
@@ -815,6 +855,8 @@ class KokoroServer:
         if self.muted:
             return web.json_response({"action": "silent", "muted": True})
         session_id = str(data.get("session_id") or "default")
+        if self._is_repeat_turn(session_id, text):
+            return web.json_response({"action": "silent", "repeat": True})
         playback = "client" if data.get("playback") == "client" else "server"
         cfg = self.config.get()
         mode = data.get("mode")
@@ -898,7 +940,23 @@ class KokoroServer:
         if not isinstance(data, dict):
             return web.json_response({"error": "body must be an object"}, status=400)
         self.bb_plugin_seen = time.time() if data.get("bb_plugin") is True else 0.0
+        _write_bb_claim(self.bb_plugin_seen)
         return web.json_response({"status": "ok"})
+
+    async def handle_other_audio(self, request: web.Request) -> web.Response:
+        """Speech started or ended in a bb window on this computer (the bb plugin only calls for those)."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json"}, status=400)
+        if not isinstance(data, dict) or data.get("action") not in ("start", "end") or not isinstance(data.get("key"), str):
+            return web.json_response({"error": "need action start|end and a string key"}, status=400)
+        key = f"bb:{data['key']}"
+        if data["action"] == "end":
+            await self.pauser.end(key)
+            return web.json_response({"paused": False})
+        on = await self.pauser.start(key, self.config.get()["other_audio"])
+        return web.json_response({"paused": on})
 
     def _output_device_ok(self) -> bool:
         if HEADLESS:
@@ -994,6 +1052,7 @@ def build_app(server: "KokoroServer", host: str | None = None) -> web.Applicatio
     app.router.add_post("/cue", server.handle_cue)
     app.router.add_post("/speech-log/status", server.handle_speech_log_status)
     app.router.add_post("/runtime", server.handle_runtime)
+    app.router.add_post("/other-audio", server.handle_other_audio)
     return app
 
 

@@ -1,4 +1,5 @@
 // bb-plugin-kokoro-tts -- backend entry. Composes the modules in bb/.
+import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +41,12 @@ export default async function plugin(bb: BbPluginApi) {
     registry,
     routing: () => prefs.get(),
     synthesize: (text, signal) => client.synthesize(text, signal),
+    log: (message) => bb.log.info(message),
+    // Other media is only paused for a window on this computer.
+    speaking: ({ key, on, local }) => {
+      if (on && !local) return;
+      void client.call("POST", "/other-audio", { action: on ? "start" : "end", key }).catch(() => undefined);
+    },
     reportStatus: async (id, status, extra) => {
       await client.call("POST", "/speech-log/status", {
         id, status, first_audio_ms: extra?.firstAudioMs, error: extra?.error,
@@ -47,6 +54,19 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   bb.onDispose(() => hub.dispose());
+  bb.background.service("player-keepalive", {
+    async start(signal) {
+      while (!signal.aborted) {
+        await sleep(25_000, signal);
+        hub.pingAll();
+      }
+    },
+  });
+  prefs.onChange((next, prev) => {
+    if (next.playOn !== prev.playOn || next.pinnedDevice !== prev.pinnedDevice || next.playback !== prev.playback) {
+      hub.routingChanged();
+    }
+  });
 
   let supervisor: Supervisor | null = null;
   let serverUrl = (await settings.get()).serverUrl;
@@ -107,10 +127,17 @@ export default async function plugin(bb: BbPluginApi) {
     if (next.runtime !== prev.runtime || next.manageServer !== prev.manageServer) sup.restart();
   });
 
-  bb.http.experimental_websocket("/player", () => ({
-    onMessage: (socket, data) => hub.onMessage(socket, data),
-    onClose: (socket) => hub.onClose(socket),
-  }));
+  bb.http.experimental_websocket("/player", (ctx) => {
+    const local = isLocalRequest(ctx.url, ctx.headers);
+    return {
+      onOpen: (socket) => {
+        hub.markLocal(socket, local);
+        bb.log.info(`player window connected: ${local ? "on this computer" : "on another device"}`);
+      },
+      onMessage: (socket, data) => hub.onMessage(socket, data),
+      onClose: (socket) => hub.onClose(socket),
+    };
+  });
   for (const sound of SOUNDS) {
     bb.http.route("GET", `/sound/${sound}`, () => {
       const wav = fs.readFileSync(path.join(root, "assets", `${sound}.wav`));
@@ -122,5 +149,24 @@ export default async function plugin(bb: BbPluginApi) {
     hub,
     prefs,
     contract: readText(path.join(root, "hooks", "context", "tts-contract.md")),
+    contractFull: readText(path.join(root, "hooks", "context", "tts-contract-full.md")),
   });
+}
+
+/** Addresses of this computer, for telling a window here from one on another device. */
+export function localAddresses(): Set<string> {
+  const out = new Set<string>(["127.0.0.1", "::1"]);
+  for (const list of Object.values(os.networkInterfaces())) for (const a of list ?? []) out.add(a.address);
+  return out;
+}
+
+/**
+ * Whether a player socket comes from a browser on this computer. bb may sit
+ * behind a reverse proxy (even for the desktop), so the client is the first
+ * X-Forwarded-For hop when present, else the host the socket reached.
+ */
+export function isLocalRequest(url: URL, headers: Headers, ours: Set<string> = localAddresses()): boolean {
+  const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const client = (forwarded || url.hostname).replace(/^\[|\]$/g, "").replace(/^::ffff:/, "");
+  return client === "localhost" || /^127\./.test(client) || ours.has(client);
 }

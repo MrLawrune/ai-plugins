@@ -5,6 +5,7 @@ Every bb agent gets a voice. When a thread finishes, you hear a short spoken sum
 - Spoken turn summaries for Claude Code, Codex, and Pi threads, written by the agent to be heard, with a one-sentence default.
 - Sounds instead of speech when you prefer: ambient and quiet modes. Or full mode, which reads the whole reply aloud and skips code.
 - Audio in the bb window you used last, so it follows you from desktop to laptop to phone. Pin a device or play everywhere instead.
+- Replies from different threads play one at a time, and replies for a device that drops off wait for it instead of playing at home.
 - A settings page for voice, blends, speed, volume, mode, and sounds, with a preview button.
 
 ## How it works

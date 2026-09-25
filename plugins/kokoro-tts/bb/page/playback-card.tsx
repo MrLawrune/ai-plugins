@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { DEVICE_NAME_EVENT, readClientId, readDeviceName, writeDeviceName } from "../player/device.ts";
 import type { DeviceInfo, KokoroConfig, Prefs, PublicClientInfo, rpcContract, SetupState } from "../schemas.ts";
-import { Row, Section, SliderRow, useDebouncedPatch } from "./ui.tsx";
+import { Row, Section, SliderRow, SwitchRow, useDebouncedPatch } from "./ui.tsx";
 
 type Patch = Partial<KokoroConfig>;
 
@@ -41,13 +41,15 @@ function groupByDevice(clients: PublicClientInfo[]): DeviceGroup[] {
   return groups.sort((a, b) => b.mostRecentFocus - a.mostRecentFocus);
 }
 
-export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, setupState }: {
+export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, setupState, pauseSupported }: {
   prefs: Prefs;
   setPrefs: (p: Partial<Prefs>) => Promise<void>;
   config: KokoroConfig;
   outputDevices: DeviceInfo[];
   patch: (p: Patch) => Promise<void>;
   setupState: SetupState | null;
+  /** The server can pause other media (Linux with playerctl). */
+  pauseSupported: boolean;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const debounced = useDebouncedPatch(patch);
@@ -56,7 +58,6 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
   const [name, setName] = useState(() => readDeviceName(localStorage, navigator.userAgent));
 
   useEffect(() => {
-    if (prefs.playback !== "client") return;
     let live = true;
     const tick = () => rpc.call("listClients").then((r) => live && setClients(r.clients), () => undefined);
     void tick();
@@ -65,7 +66,7 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
       live = false;
       clearInterval(timer);
     };
-  }, [rpc, prefs.playback]);
+  }, [rpc]);
 
   const deviceNames = useMemo(() => {
     const names = new Set(clients.map((c) => c.deviceName));
@@ -74,6 +75,8 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
   }, [clients, prefs.pinnedDevice]);
 
   const deviceGroups = useMemo(() => groupByDevice(clients), [clients]);
+  // Whether this window is on the computer running bb (only there can other media be paused).
+  const thisWindowLocal = clients.find((c) => c.clientId === myId)?.local;
 
   const saveName = () => {
     writeDeviceName(localStorage, name);
@@ -94,6 +97,16 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
           </SelectContent>
         </Select>
       </Row>
+
+      {thisWindowLocal && pauseSupported ? (
+        <SwitchRow
+          id="other_audio"
+          label="Pause other media while speech plays here"
+          hint="Music and videos on this computer pause while a reply plays here or on its speakers, then resume. Replies going to another device leave them alone."
+          checked={config.other_audio === "pause"}
+          onChange={(v) => void patch({ other_audio: v ? "pause" : "keep" })}
+        />
+      ) : null}
 
       {prefs.playback === "client" ? (
         <>

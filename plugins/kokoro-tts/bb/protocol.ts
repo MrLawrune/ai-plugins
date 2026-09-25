@@ -29,7 +29,9 @@ export type ServerMsg =
   | { type: "speak"; entryId: number; sessionId: string; sampleRate: number; gain: number }
   | { type: "end"; entryId: number }
   | { type: "sound"; sound: SoundName; volume: number; sessionId: string }
-  | { type: "stop"; sessionId: string | null };
+  | { type: "stop"; sessionId: string | null }
+  /** Server keepalive; the window answers with its own ping. */
+  | { type: "ping" };
 
 export function parseClientMsg(raw: string): ClientMsg | null {
   try {

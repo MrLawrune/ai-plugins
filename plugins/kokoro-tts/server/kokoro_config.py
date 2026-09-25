@@ -20,6 +20,7 @@ from numpy.typing import NDArray
 log = logging.getLogger("kokoro-server.config")
 
 MODES = ("quiet", "ambient", "brief", "conversational", "verbose", "full")
+OTHER_AUDIO = ("keep", "pause")
 PROVIDERS = ("cpu", "cuda", "openvino", "remote")
 SPEED_RANGE = (0.5, 2.0)
 GAIN_RANGE = (0.0, 2.0)
@@ -38,6 +39,8 @@ DEFAULTS: dict[str, Any] = {
     "output_device": None,
     "lead_in_ms": 300,
     "gap_ms": 60,
+    # other media on this computer while speech plays here: keep | pause
+    "other_audio": "keep",
     # engine
     "provider": "cpu",
     "remote_url": None,
@@ -127,6 +130,11 @@ def validate_patch(patch: dict[str, Any], voices: list[str]) -> dict[str, Any]:
         elif key == "mode":
             if value not in MODES:
                 errors[key] = f"must be one of {', '.join(MODES)}"
+            else:
+                out[key] = value
+        elif key == "other_audio":
+            if value not in OTHER_AUDIO:
+                errors[key] = f"must be one of {', '.join(OTHER_AUDIO)}"
             else:
                 out[key] = value
         elif key == "lang":

@@ -38,6 +38,9 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
     send({ type: "hello", clientId, deviceName: readDeviceName(localStorage, navigator.userAgent), focusedAt, audioUnlocked: unlocked() });
 
   const unlock = () => {
+    // Clicking or typing marks this window as the one you use, even when it
+    // never lost focus (a desktop window you keep working in).
+    if (Date.now() - focusedAt > 2_000) onFocus();
     void audio().resume().then(() => {
       if (unlocked() && !wasUnlocked) {
         wasUnlocked = true;
@@ -66,6 +69,8 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
     sock.onopen = () => {
       retryMs = 1_000;
       hello();
+      // A hidden page's timers are throttled; the server's pings, answered
+      // below, keep the socket alive then.
       pingTimer = setInterval(() => send({ type: "ping" }), 15_000);
     };
     sock.onmessage = (ev) => {
@@ -121,6 +126,9 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
         return;
       case "stop":
         stopAll(m.sessionId);
+        return;
+      case "ping":
+        send({ type: "ping" });
         return;
     }
   }

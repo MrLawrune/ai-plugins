@@ -19,6 +19,8 @@ export const configSchema = z.object({
   output_device: z.number().int().nullable(),
   lead_in_ms: z.number().int(),
   gap_ms: z.number().int(),
+  /** Other media on the computer running bb while speech plays there. Default covers older servers. */
+  other_audio: z.enum(["keep", "pause"]).catch("keep"),
   provider: providerSchema,
   remote_url: z.string().nullable(),
   fallback_to_cpu: z.boolean(),
@@ -67,6 +69,8 @@ const configResponseSchema = z.object({
   config: configSchema,
   muted: z.boolean(),
   providers_available: availableSchema,
+  /** Linux with playerctl: other media can be paused while speech plays. */
+  pause_other_audio_supported: z.boolean().default(false),
   restart_required: restartSchema,
   restart_command: z.string(),
 });
@@ -151,6 +155,8 @@ export const clientInfoSchema = z.object({
   deviceName: z.string(),
   focusedAt: z.number(),
   audioUnlocked: z.boolean(),
+  /** The window is on the computer running bb and Kokoro (reached over loopback). */
+  local: z.boolean().optional(),
 });
 export type PublicClientInfo = z.infer<typeof clientInfoSchema>;
 

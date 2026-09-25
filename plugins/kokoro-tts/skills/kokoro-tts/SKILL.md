@@ -69,7 +69,9 @@ In `full` mode the server reads the reply itself, not a block: blocks and
 weights are ignored, code blocks and tables are replaced with "Code block
 skipped." / "Table skipped.", links read as their text, and paths and URLs
 are dropped. Replies over about 6000 characters stop at a sentence end with
-"The rest is on screen." Write the reply as speakable prose.
+"The rest is on screen." Write the reply as speakable prose, and skip the
+TTS_RESPONSE block: in full mode the injected contract is a short version
+that says so, to save tokens.
 
 Mode switching mid-session ("go quiet", "go verbose"): acknowledge and
 apply the new ceiling to your own weight/length choices for the rest of
@@ -94,9 +96,28 @@ Claude Code sessions outside BB.
   contract as agent instructions. Audio plays in the bb window you used last
   (`playback=client`, default) or on the server host's speakers
   (`playback=server`). The Playback devices card picks the window: follow,
-  pinned device, or all.
+  pinned device, or all; a click or keypress marks a window as last used.
+  Replies play one at a time: a reply from another thread waits (already
+  synthesized) until the current one ends, and a newer reply in the same
+  thread replaces its queued one. If the window holding the output drops
+  off (follow or pinned; a phone losing signal or freezing), its replies are
+  synthesized and held for up to 15 minutes and play when it reconnects (a
+  reply cut off mid-way replays from the start); using another device under
+  follow takes the output and the held replies. The server pings every
+  window every 25 s, since a hidden page's own timers are throttled. A phone
+  browser can't play with the screen locked for long: Chrome freezes the
+  page, so held replies play when you open it again.
+  "Pause other media while speech plays here" (`other_audio`: keep or
+  pause) shows only in a bb window on the computer running bb (its browser
+  address is one of that computer's) when the server supports it (Linux with
+  playerctl). It applies while speech plays in such a window or on that
+  computer's speakers; replies to other devices never touch it. Only players
+  that were playing get paused, and only those resume.
 - **Claude Code outside BB**: the plugin's hooks call `/turn` and `/cue`.
-  Inside a BB thread they stand down while the BB plugin is active.
+  Inside a BB thread they stand down while the BB plugin is active (its
+  claim is kept across server restarts). The server also stays silent for
+  a repeated turn: the same text again in a session (stopping a thread
+  re-reports its last reply) or from any caller within 10 seconds.
 - **Server**: the BB plugin installs and runs it (uv, verified model
   download to the data dir, CPU or GPU runtime, audio probe) unless a server
   already answers at the configured URL. Outside BB, the SessionStart hook

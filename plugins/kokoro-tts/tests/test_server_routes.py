@@ -19,6 +19,12 @@ from kokoro_config import ConfigStore  # noqa: E402
 VOICES = ["af_sky", "af_bella"]
 
 
+@pytest.fixture(autouse=True)
+def _claim_file(tmp_path, monkeypatch):
+    """Keep /runtime from writing the real bb-plugin claim file."""
+    monkeypatch.setattr(ks, "BB_CLAIM_FILE", tmp_path / "claim")
+
+
 def make_server(tmp_path):
     srv = object.__new__(ks.KokoroServer)
     srv.config = ConfigStore(str(tmp_path / "config.json"), VOICES)
@@ -27,6 +33,8 @@ def make_server(tmp_path):
     srv.active_playbacks = {}
     srv.cancel_events = {}
     srv.bb_plugin_seen = 0.0
+    srv.last_turn = {}
+    srv.recent_turns = deque(maxlen=20)
     srv.model_path = "kokoro-v1.0.onnx"
     srv.started_at = time.time()
     srv.latency_samples = deque()
@@ -288,3 +296,59 @@ def test_turn_full_mode_reads_the_cleaned_reply_to_the_client(tmp_path):
     assert text.startswith("Result. The build passed; see the log and app.js.")
     assert "Code block skipped." in text and "One fix." in text and "Two tests." in text
     assert "http" not in text and "dist/" not in text and "All done." not in text
+
+
+def test_other_audio_route_uses_the_config(tmp_path):
+    srv = make_server(tmp_path)
+    seen = []
+
+    class FakePauser:
+        async def start(self, key, mode):
+            seen.append(("start", key, mode))
+            return mode == "pause"
+
+        async def end(self, key):
+            seen.append(("end", key))
+
+    srv.pauser = FakePauser()
+    srv.config.patch({"other_audio": "pause"})
+    assert request(srv, "POST", "/other-audio", {"action": "start", "key": "7"}) == (200, {"paused": True})
+    assert request(srv, "POST", "/other-audio", {"action": "end", "key": "7"}) == (200, {"paused": False})
+    assert request(srv, "POST", "/other-audio", {"action": "nope", "key": "7"})[0] == 400
+    assert seen == [("start", "bb:7", "pause"), ("end", "bb:7")]
+
+
+def test_other_audio_config_validates(tmp_path):
+    srv = make_server(tmp_path)
+    assert srv.config.get()["other_audio"] == "keep"
+    assert srv.config.patch({"other_audio": "pause"})["other_audio"] == "pause"
+    for bad in ({"other_audio": "mute"}, {"other_audio": "lower"}):
+        try:
+            srv.config.patch(bad)
+        except ks.ConfigError:
+            continue
+        raise AssertionError(f"accepted {bad}")
+
+
+def test_turn_repeat_for_the_same_session_is_silent(tmp_path):
+    srv = make_server(tmp_path)
+    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "s1"})[1]["action"] == "speech"
+    # stopping the thread re-reports the previous reply
+    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "s1"})[1] == {"action": "silent", "repeat": True}
+    assert len(srv.calls) == 1
+
+
+def test_turn_same_text_from_another_caller_moments_later_is_silent(tmp_path):
+    srv = make_server(tmp_path)
+    request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "claude-session"})
+    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_1", "playback": "client"})[1]["action"] == "silent"
+    srv.recent_turns = deque([(t - 60, k) for t, k in srv.recent_turns], maxlen=20)
+    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_2"})[1]["action"] == "speech"
+
+
+def test_runtime_claim_survives_a_restart(tmp_path):
+    srv = make_server(tmp_path)
+    request(srv, "POST", "/runtime", {"bb_plugin": True})
+    assert time.time() - ks._read_bb_claim() < 5
+    request(srv, "POST", "/runtime", {"bb_plugin": False})
+    assert ks._read_bb_claim() == 0.0

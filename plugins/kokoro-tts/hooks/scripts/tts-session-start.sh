@@ -9,6 +9,7 @@ SERVER="http://127.0.0.1:$PORT"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "$SCRIPT_DIR")")}"
 CONTRACT="$SCRIPT_DIR/../context/tts-contract.md"
+CONTRACT_FULL="$SCRIPT_DIR/../context/tts-contract-full.md"
 MANIFEST="${KOKORO_MODELS_MANIFEST:-$PLUGIN_DIR/server/models.json}"
 DATA_DIR="${KOKORO_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kokoro-tts}"
 UV_INSTALL_COMMAND="curl -LsSf https://astral.sh/uv/install.sh | sh"
@@ -21,7 +22,11 @@ emit_context() {
   if [ -f "$CONTRACT" ]; then
     # shellcheck source=tts-config.sh
     source "$SCRIPT_DIR/tts-config.sh"
-    sed "s/{{MODE}}/$MODE/g" "$CONTRACT" | jq -Rs --arg msg "$msg" \
+    # Full mode reads the whole reply and ignores blocks: a short contract
+    # that tells the agent not to spend tokens on them.
+    local contract="$CONTRACT"
+    [ "$MODE" = "full" ] && [ -f "$CONTRACT_FULL" ] && contract="$CONTRACT_FULL"
+    sed "s/{{MODE}}/$MODE/g" "$contract" | jq -Rs --arg msg "$msg" \
       '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: .}}
        + (if $msg != "" then {systemMessage: $msg} else {} end)'
   else
