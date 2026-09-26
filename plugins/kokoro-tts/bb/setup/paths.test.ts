@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { dataDir, locatePluginRoot, pythonIn, stateDir, venvDir } from "./paths.ts";
 
 test("dataDir follows XDG, then ~/.local/share, then macOS", () => {
-  assert.equal(dataDir({ XDG_DATA_HOME: "/x" }, "linux", "/home/u"), "/x/kokoro-tts");
-  assert.equal(dataDir({}, "linux", "/home/u"), "/home/u/.local/share/kokoro-tts");
+  assert.equal(dataDir({ XDG_DATA_HOME: "/x" }, "linux", "/h/u"), "/x/kokoro-tts");
+  assert.equal(dataDir({}, "linux", "/h/u"), "/h/u/.local/share/kokoro-tts");
   assert.equal(dataDir({}, "darwin", "/Users/u"), "/Users/u/Library/Application Support/kokoro-tts");
 });
 
@@ -20,6 +20,6 @@ test("locatePluginRoot walks up from dist/", () => {
 });
 
 test("stateDir follows XDG_STATE_HOME, else ~/.local/state, on every platform", () => {
-  assert.equal(stateDir({ XDG_STATE_HOME: "/s" }, "/home/u"), "/s/kokoro-tts");
+  assert.equal(stateDir({ XDG_STATE_HOME: "/s" }, "/h/u"), "/s/kokoro-tts");
   assert.equal(stateDir({}, "/Users/u"), "/Users/u/.local/state/kokoro-tts");
 });

@@ -266,9 +266,9 @@ def test_loopback_host_headers_are_allowed(tmp_path, host):
 
 def test_lan_bind_accepts_any_host_but_still_refuses_origin(tmp_path):
     srv = make_server(tmp_path)
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": "desk.lan:6789"}, host="0.0.0.0")
+    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": "desk.example:6789"}, host="0.0.0.0")
     assert status == 200
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Origin": "http://desk.lan"}, host="0.0.0.0")
+    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Origin": "http://desk.example"}, host="0.0.0.0")
     assert status == 403
 
 

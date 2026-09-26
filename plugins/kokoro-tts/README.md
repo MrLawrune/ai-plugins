@@ -62,6 +62,18 @@ resumable, checksum-verified, into `~/.local/share/kokoro-tts`) and tells the
 user speech starts on a later session; without `uv` it prints the install
 command instead.
 
+Hook diagnostics go to `~/.local/state/kokoro-tts/hook.log`
+(`KOKORO_HOOK_LOG` overrides the path). Inside a bb thread with the bb plugin
+loaded, the hooks do nothing and bb runs the server. The "server not
+responding" notice appears once per session and never inside bb.
+
+## Remote node
+
+A headless node (`KOKORO_HOST=0.0.0.0`) can serve speech to other machines.
+Nodes and clients negotiate terminated frames with `X-Kokoro-Frames: 2`;
+older nodes keep working. `/health` lists `started_by`, naming the launcher
+that started the server.
+
 ## Server security
 
 The server has no authentication and trusts only local, non-browser

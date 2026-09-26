@@ -10,7 +10,7 @@ Every bb agent gets a voice. When a thread finishes, you hear a short spoken sum
 
 ## How it works
 
-The plugin runs the open-source Kokoro-82M model on your own machine. On first start it downloads the model (about 355 MB, checksum-verified) and installs a private Python runtime with `uv`. Nothing you say or your agents write leaves your machine.
+The plugin runs the open-source Kokoro-82M model on your own machine. On first start it downloads the model (about 355 MB, checksum-verified) and installs a private Python runtime with `uv`. Synthesis runs on your machine unless you point it at a remote Kokoro node; audio goes only to the bb windows you choose.
 
 ## Requirements
 

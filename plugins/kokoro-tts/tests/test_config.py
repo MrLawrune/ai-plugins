@@ -140,8 +140,8 @@ def test_voice_metadata():
 def test_engine_defaults_and_validation():
     assert DEFAULTS["provider"] == "cpu"
     assert DEFAULTS["remote_url"] is None
-    out = validate_patch({"provider": "remote", "remote_url": "http://192.168.1.50:6789/", "idle_unload_minutes": 0, "intra_op_threads": 6, "gpu_mem_limit_mb": 1024}, VOICES)
-    assert out["remote_url"] == "http://192.168.1.50:6789"
+    out = validate_patch({"provider": "remote", "remote_url": "http://192.0.2.10:6789/", "idle_unload_minutes": 0, "intra_op_threads": 6, "gpu_mem_limit_mb": 1024}, VOICES)
+    assert out["remote_url"] == "http://192.0.2.10:6789"
     assert out["intra_op_threads"] == 6
     assert validate_patch({"remote_url": None}, VOICES) == {"remote_url": None}
 

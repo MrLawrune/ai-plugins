@@ -47,7 +47,7 @@ test("call reports an unreachable server", async () => {
 test("url helpers", () => {
   assert.equal(isLoopback("http://127.0.0.1:6789"), true);
   assert.equal(isLoopback("http://localhost:6789"), true);
-  assert.equal(isLoopback("http://192.168.1.50:6789"), false);
+  assert.equal(isLoopback("http://192.0.2.10:6789"), false);
   assert.equal(isLoopback("not a url"), false);
   assert.equal(portOf("http://127.0.0.1:6789"), 6789);
   assert.equal(portOf("https://tts.example"), 443);

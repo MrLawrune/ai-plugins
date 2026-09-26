@@ -148,7 +148,7 @@ export function EngineCard({ data, patch, rpc, prefs, setPrefs, setupState, up }
                 const v = url.trim();
                 if (v !== (cfg.remote_url ?? "") && (v === "" || /^https?:\/\//.test(v))) void patch({ remote_url: v === "" ? null : v });
               }}
-              placeholder="http://192.168.1.50:6789"
+              placeholder="http://192.0.2.10:6789"
               className="font-mono text-xs"
             />
           </div>
@@ -192,7 +192,7 @@ export function EngineCard({ data, patch, rpc, prefs, setPrefs, setupState, up }
           <SliderRow
             id="intra_op_threads"
             label="CPU threads"
-            hint="ONNX intra-op threads. 0 is automatic; 6 measured fastest on a 12-core desktop."
+            hint="ONNX intra-op threads. 0 is automatic."
             value={cfg.intra_op_threads}
             min={0}
             max={32}
