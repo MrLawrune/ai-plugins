@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 import types
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 
 import pytest
@@ -34,7 +34,7 @@ def make_server(tmp_path):
     srv.active_playbacks = {}
     srv.cancel_events = {}
     srv.bb_plugin_seen = 0.0
-    srv.last_turn = {}
+    srv.last_turn = OrderedDict()
     srv.recent_turns = deque(maxlen=20)
     srv.model_path = "kokoro-v1.0.onnx"
     srv.started_at = time.time()
@@ -339,12 +339,38 @@ def test_turn_repeat_for_the_same_session_is_silent(tmp_path):
     assert len(srv.calls) == 1
 
 
-def test_turn_same_text_from_another_caller_moments_later_is_silent(tmp_path):
+def test_turn_same_text_from_the_other_surface_moments_later_is_silent(tmp_path):
     srv = make_server(tmp_path)
-    request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "claude-session"})
-    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_1", "playback": "client"})[1]["action"] == "silent"
-    srv.recent_turns = deque([(t - 60, k) for t, k in srv.recent_turns], maxlen=20)
-    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_2"})[1]["action"] == "speech"
+    request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "claude-session", "source": "claude-code"})
+    _, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_1", "playback": "client", "source": "bb"})
+    assert body["action"] == "silent"
+    srv.recent_turns = deque([(t - 60, k, s) for t, k, s in srv.recent_turns], maxlen=20)
+    _, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_2", "source": "bb"})
+    assert body["action"] == "speech"
+
+
+def test_two_threads_on_one_surface_may_say_the_same_thing(tmp_path):
+    srv = make_server(tmp_path)
+    for thread in ("thr_1", "thr_2"):
+        _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": thread, "source": "bb"})
+        assert body["action"] == "speech"
+    assert len(srv.calls) == 2
+
+
+def test_cleanup_forgets_the_sessions_last_reply(tmp_path):
+    srv = make_server(tmp_path)
+    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "source": "bb"})
+    request(srv, "POST", "/cleanup", {"session_id": "s1"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "source": "bb"})
+    assert body["action"] == "speech"
+
+
+def test_last_turn_memory_is_bounded(tmp_path):
+    srv = make_server(tmp_path)
+    for i in range(ks.LAST_TURN_MAX + 5):
+        srv._is_repeat_turn(f"s{i}", f"reply {i}", "bb")
+    assert len(srv.last_turn) == ks.LAST_TURN_MAX
+    assert "s0" not in srv.last_turn
 
 
 def test_runtime_claim_survives_a_restart(tmp_path):

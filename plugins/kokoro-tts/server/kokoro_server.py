@@ -13,7 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import html
-from collections import deque
+from collections import OrderedDict, deque
 import queue
 from statistics import median
 import logging
@@ -218,6 +218,7 @@ def play_queue_interruptible(q: "queue.Queue[np.ndarray | None]", sr: int, cance
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))) / "kokoro-tts"
 BB_CLAIM_FILE = STATE_DIR / "bb-plugin-claim"
 REPEAT_WINDOW_S = 10
+LAST_TURN_MAX = 500
 
 
 def _read_bb_claim() -> float:
@@ -342,8 +343,8 @@ class KokoroServer:
         # Claude Code hooks don't speak over it in the seconds before its next
         # heartbeat reaches the new server.
         self.bb_plugin_seen = _read_bb_claim()
-        self.last_turn: dict[str, str] = {}
-        self.recent_turns: deque[tuple[float, str]] = deque(maxlen=20)
+        self.last_turn: OrderedDict[str, str] = OrderedDict()
+        self.recent_turns: deque[tuple[float, str, str]] = deque(maxlen=20)
         self._audio_executor = None
         self.engine: LocalEngine | RemoteEngine = self._make_engine(self.config.get())
         try:
@@ -751,6 +752,7 @@ class KokoroServer:
         self._cancel_session(session_id)
         self.active_playbacks.pop(session_id, None)
         self.cancel_events.pop(session_id, None)
+        self.last_turn.pop(session_id, None)
         return web.json_response({"status": "cleaned", "session_id": session_id})
 
     async def handle_interrupt_all(self, request: web.Request) -> web.Response:
@@ -829,16 +831,20 @@ class KokoroServer:
 
         return {"status": "playing", "sound": sound, "session_id": session_id}, 200
 
-    def _is_repeat_turn(self, session_id: str, text: str) -> bool:
+    def _is_repeat_turn(self, session_id: str, text: str, source: str) -> bool:
         """A reply already voiced: the same text again for this session (stopping a
-        thread re-reports its previous reply), or from any caller within a few
-        seconds (a hook and the bb plugin both reporting one turn)."""
+        thread re-reports its previous reply), or the same turn reported seconds
+        ago by the other surface (a Claude Code hook and the bb plugin both
+        reporting one turn). Two threads on one surface may say the same thing."""
         key = hashlib.sha1(text.encode()).hexdigest()
         now = time.time()
         repeat = self.last_turn.get(session_id) == key or any(
-            k == key and now - t < REPEAT_WINDOW_S for t, k in self.recent_turns)
+            k == key and s != source and now - t < REPEAT_WINDOW_S for t, k, s in self.recent_turns)
         self.last_turn[session_id] = key
-        self.recent_turns.append((now, key))
+        self.last_turn.move_to_end(session_id)
+        while len(self.last_turn) > LAST_TURN_MAX:
+            self.last_turn.popitem(last=False)
+        self.recent_turns.append((now, key, source))
         return repeat
 
     async def handle_turn(self, request: web.Request) -> web.Response:
@@ -860,7 +866,8 @@ class KokoroServer:
         if self.muted:
             return web.json_response({"action": "silent", "muted": True})
         session_id = str(data.get("session_id") or "default")
-        if self._is_repeat_turn(session_id, text):
+        source = str(data.get("source") or "unknown")
+        if self._is_repeat_turn(session_id, text, source):
             return web.json_response({"action": "silent", "repeat": True})
         playback = "client" if data.get("playback") == "client" else "server"
         cfg = self.config.get()
