@@ -34,3 +34,32 @@ test("update validates, persists, and notifies", async () => {
   await assert.rejects(store.update({ runtime: "tpu" as never }));
   assert.equal(store.get().runtime, "gpu");
 });
+
+test("concurrent updates both persist", async () => {
+  const data: Record<string, unknown> = {};
+  const slowKv: KvLike = {
+    async get<T>(k: string) { return data[k] as T | undefined; },
+    async set(k, v) { await new Promise((r) => setTimeout(r, 5)); data[k] = v; },
+  };
+  const store = new PrefsStore(slowKv);
+  await store.load();
+  await Promise.all([store.update({ runtime: "gpu" }), store.update({ playOn: "all" })]);
+  assert.equal(store.get().runtime, "gpu");
+  assert.equal(store.get().playOn, "all");
+  assert.deepEqual(data.prefs, store.get());
+});
+
+test("a failed write keeps the old value and does not block the next write", async () => {
+  let fail = true;
+  const data: Record<string, unknown> = {};
+  const kv: KvLike = {
+    async get<T>(k: string) { return data[k] as T | undefined; },
+    async set(k, v) { if (fail) { fail = false; throw new Error("kv down"); } data[k] = v; },
+  };
+  const store = new PrefsStore(kv);
+  await store.load();
+  await assert.rejects(store.update({ runtime: "gpu" }), /kv down/);
+  assert.equal(store.get().runtime, "cpu");
+  await store.update({ playOn: "all" });
+  assert.equal(store.get().playOn, "all");
+});
