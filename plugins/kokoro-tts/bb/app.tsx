@@ -2,6 +2,7 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { mountPlayer } from "./player/script.ts";
 import { KokoroPanel } from "./page/panel.tsx";
+import { KokoroHeader } from "./page/header.tsx";
 import type { IconSvgElement } from "@hugeicons/react";
 import {
   CancelCircleIcon,
@@ -300,5 +301,6 @@ export default definePluginApp((app) => {
     icon: "Mic",
     path: "kokoro",
     component: KokoroPanel,
+    headerContent: KokoroHeader,
   });
 });
