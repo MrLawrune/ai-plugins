@@ -405,3 +405,10 @@ def test_sound_cleanup_after_replacement_keeps_the_new_sound(tmp_path):
     # ...then the first sound's finally block runs.
     srv._release_playback("s1", first)
     assert srv.active_playbacks["s1"] == "second"
+
+
+def test_turn_sound_respects_the_working_tick_switch(tmp_path):
+    srv = make_server(tmp_path)
+    srv.config.patch({"working_sound": False})
+    _, body = request(srv, "POST", "/turn", {"text": '<!-- TTS_RESPONSE weight="sound:working" -->'})
+    assert body["action"] == "silent" and srv.calls == []

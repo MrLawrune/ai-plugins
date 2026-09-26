@@ -46,7 +46,7 @@ from kokoro_config import (
 )
 from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
-from kokoro_turn import route_cue, route_turn
+from kokoro_turn import apply_cue_prefs, route_cue, route_turn
 
 SERVER_VERSION = "0.1.3"
 PREVIEW_TEXT = "This is how I will sound when reading your updates."
@@ -874,7 +874,7 @@ class KokoroServer:
         mode = data.get("mode")
         if not isinstance(mode, str) or not mode:
             mode = cfg["mode"]
-        result = route_turn(text, mode, final_text)
+        result = apply_cue_prefs(route_turn(text, mode, final_text), cfg)
 
         if playback == "server":
             if result["action"] == "speech":

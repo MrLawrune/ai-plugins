@@ -133,3 +133,22 @@ def test_full_caps_long_replies_at_a_sentence():
 
 def test_full_with_only_a_block_is_silent():
     assert route_turn(block("speech", "Words."), "full") == {"action": "silent"}
+
+
+def test_cue_prefs_silence_a_disabled_working_tick():
+    from kokoro_turn import apply_cue_prefs
+    r = apply_cue_prefs({"action": "sound", "sound": "working"}, {"working_sound": False})
+    assert r == {"action": "silent"}
+
+
+def test_cue_prefs_turn_a_disabled_attention_ping_into_done():
+    from kokoro_turn import apply_cue_prefs
+    r = apply_cue_prefs({"action": "sound", "sound": "attention"}, {"attention_sound": False})
+    assert r == {"action": "sound", "sound": "done"}
+
+
+def test_cue_prefs_leave_speech_and_enabled_sounds_alone():
+    from kokoro_turn import apply_cue_prefs
+    cfg = {"working_sound": True, "attention_sound": True}
+    for r in ({"action": "speech", "text": "Hi."}, {"action": "sound", "sound": "working"}, {"action": "silent"}):
+        assert apply_cue_prefs(dict(r), cfg) == r
