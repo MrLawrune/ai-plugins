@@ -1,6 +1,6 @@
 // One read model behind every surface: RPC (UI), `bb infra` (agents), @infra mentions, and pinned instructions.
 import type {
-  ActivityDto, AskIntent, ChangeDto, ConnectionDto, ConnectionSaveInput, EnvBadgeDto, EnvSaveInput, EnvSummary, EnvViewDto, ThreadTargetDto,
+  ActivityDto, AskIntent, ChangeDto, ConnectionDto, ConnectionSaveInput, EnvBadgeDto, EnvSaveInput, EnvSummary, EnvViewDto, ThreadStatusDto, ThreadTargetDto,
 } from "../schemas.ts";
 import type { Activity } from "./activity.ts";
 import { Conventions } from "./conventions.ts";
@@ -32,6 +32,7 @@ export type Resolved =
 
 const DETAIL_TTL = 30_000;
 const ACTIVE_WINDOW_MS = 5 * 60_000;
+const RECENT_ROW_MS = 30 * 60_000;
 const INTENT_LINES: Record<AskIntent, string> = {
   ask: "Answer my question about",
   investigate: "Investigate the current state of",
@@ -328,8 +329,33 @@ export class InfraService {
     return out;
   }
 
-  runningThreads(): { threadId: string; targets: string[] }[] {
-    return [...this.d.activity.running()].map(([threadId, targets]) => ({ threadId, targets }));
+  /**
+   * Sidebar row status per thread: running commands, then recent infra work. BB draws its own spinner
+   * over busy threads, so the recent-work status is what a person sees once the agent is done.
+   */
+  threadStatuses(windowMs = RECENT_ROW_MS): ThreadStatusDto[] {
+    const running = this.d.activity.running();
+    const rows = this.d.store.activityFor({ since: this.d.now() - windowMs, limit: 2000 });
+    const byThread = new Map<string, { targets: string[]; lastExit: number | null | undefined; lastAt: number }>();
+    for (const a of rows) {
+      const t = byThread.get(a.threadId) ?? { targets: [], lastExit: undefined, lastAt: a.at };
+      if (!t.targets.includes(a.target)) t.targets.push(a.target);
+      if (t.lastExit === undefined && a.phase === "completed") t.lastExit = a.exitCode;
+      byThread.set(a.threadId, t);
+    }
+    for (const [threadId, targets] of running) if (!byThread.has(threadId)) byThread.set(threadId, { targets, lastExit: undefined, lastAt: this.d.now() });
+    return [...byThread].map(([threadId, t]) => ({
+      threadId,
+      labels: t.targets.map((x) => this.shortLabel(x)).filter((x): x is string => !!x),
+      state: running.has(threadId) ? "running" : t.lastExit !== undefined && t.lastExit !== null && t.lastExit !== 0 ? "failed" : "ok",
+      lastAt: t.lastAt,
+    }));
+  }
+
+  private shortLabel(target: string): string | null {
+    const r = this.resolve(target);
+    if (!r) return null;
+    return r.kind === "guest" ? r.guest.name : r.kind === "host" ? r.host.node : r.snap.env.name;
   }
 
   // ---- settings (UI) ----

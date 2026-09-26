@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { EnvBadge, StateDot } from "./badges.tsx";
 import { useInfraQuery } from "./hooks.ts";
 import { InfraIcon } from "./icons.tsx";
+import { requestPanelReset } from "./panel-reset.ts";
 import { PANEL_ACTION_ID } from "./thread-panel.tsx";
 
 export function HeaderChip({ threadId }: { threadId: string }) {
@@ -18,6 +19,7 @@ export function HeaderChip({ threadId }: { threadId: string }) {
   const show = (target: string | null, title: string) => {
     setOpen(false);
     nav.openThreadPanel({ actionId: PANEL_ACTION_ID, title, ...(target ? { params: { target } } : {}) });
+    requestPanelReset(target);
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>

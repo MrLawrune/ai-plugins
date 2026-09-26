@@ -6,7 +6,7 @@ import type { EventsSignal } from "../schemas.ts";
 import { CHANNELS } from "../shared/constants.ts";
 import { useInfraQuery } from "./hooks.ts";
 import { PANEL_PATH } from "./page.tsx";
-import { applyRunning, onSetterReady } from "./row-status.ts";
+import { applyStatuses, onSetterReady } from "./row-status.ts";
 
 const VERB = { "guest.added": "created", "guest.removed": "removed", "guest.state": "", "host.state": "" } as const;
 const TOAST_DEBOUNCE_MS = 2000;
@@ -24,11 +24,11 @@ export function InfraOverlay() {
     openInfraPanel = (subPath) => nav.toPluginPanel(PANEL_PATH, { subPath });
     return () => { openInfraPanel = null; };
   }, [nav]);
-  const q = useInfraQuery("runningThreads", {}, { refreshOn: [CHANNELS.activity] });
+  const q = useInfraQuery("threadStatuses", {}, { refreshOn: [CHANNELS.activity], intervalMs: 60_000 });
   const [ready, setReady] = useState(0);
   useEffect(() => onSetterReady(() => setReady((n) => n + 1)), []);
   useEffect(() => {
-    applyRunning(new Map((q.data?.threads ?? []).map((t) => [t.threadId, t.targets])));
+    applyStatuses(q.data?.threads ?? []);
   }, [q.data, ready]);
 
   const pending = useRef(new Map<string, { events: EventsSignal["events"]; timer: ReturnType<typeof setTimeout> }>());

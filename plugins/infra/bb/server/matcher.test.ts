@@ -47,6 +47,23 @@ const cases: [string, string[]][] = [
   ["cat > t.ts <<'EOF'\nconst c = \"ssh pve1 'pct exec 201 -- podman ps'\";\nEOF\nnode t.ts", []],
   ["cat <<EOF | ssh pve1 bash\npct exec 201 -- ls\nEOF", ["homelab/pve1"]],
   ["python3 - <<'PY'\nprint('ssh stage1')\nPY\nssh pve1 uptime", ["homelab/pve1"]],
+  // Names and IPs count only where they are a destination, never as search text or prose.
+  ["git grep -nIE \"pve1|192.0.2.10\" -- .", []],
+  ["grep -rlE 'PVE1|stage1' . | wc -l", []],
+  ["git commit -m \"ssh pve1 fix\"", []],
+  ["echo 192.0.2.10 >> hosts.txt", []],
+  ["cat notes/pve1.md", []],
+  ["ping -c1 192.0.2.10", ["homelab/pve1"]],
+  ["nc -zv pve1 8006", ["homelab/pve1"]],
+  ["ssh-keyscan 192.0.2.10 >> known_hosts", ["homelab/pve1"]],
+  ["curl -sk https://pve1:8006/api2/json/version | jq .", ["homelab/pve1"]],
+  ["curl -s --resolve x.example:443:192.0.2.201 https://x.example/", ["homelab/pve1/201"]],
+  ["grep -c pve1 log.txt; curl -s http://198.51.100.20/", ["staging/stage1/201"]],
+  ["bash -c \"ssh pve1 uptime\"", ["homelab/pve1"]],
+  ["for h in pve1 stage1; do ssh -o BatchMode=yes $h uptime; done", ["homelab/pve1", "staging/stage1"]],
+  ["for h in pve1; do echo \"== $h\"; ssh \"$h\" 'pct exec 201 -- ls'; done", ["homelab/pve1", "homelab/pve1/201"]],
+  ["H=stage1; ssh ${H} pct list", ["staging/stage1"]],
+  ["for f in pve1 stage1; do grep -c $f log; done", []],
 ];
 
 for (const [command, expected] of cases) {

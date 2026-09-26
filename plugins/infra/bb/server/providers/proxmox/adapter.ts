@@ -182,7 +182,8 @@ export class ProxmoxProvider implements InfraProvider {
       kernel: str(s.kversion).match(/Linux (\S+)/)?.[1] ?? null,
       cpuModel: str(cpuinfo.model) || null,
       loadavg: load && load.length === 3 ? [load[0]!, load[1]!, load[2]!] : null,
-      storage: storage.map((r) => mapStorage(r, node)),
+      // enabled=0: storage.cfg restricts this storage to other nodes, so it does not exist here.
+      storage: storage.filter((r) => num(r.enabled ?? 1) !== 0).map((r) => mapStorage(r, node)),
     };
   }
 

@@ -24,6 +24,9 @@ export interface ActivityDeps {
   envIdForSlug(slug: string): string | null;
   now(): number;
   onActivity(threadIds: string[]): void;
+  onError?(threadId: string, error: unknown): void;
+  /** Minimum gap between event pulls for one thread; streaming turns announce many events per second. */
+  minPullIntervalMs?: number;
 }
 
 const PAGE = 100; // BB rejects larger thread-event pages
@@ -38,9 +41,39 @@ export class Activity {
   private readonly deps: ActivityDeps;
   private readonly live = new Map<string, Map<string, string[]>>(); // threadId → itemId → targets
   private readonly chains = new Map<string, Promise<void>>();
+  private readonly scanned = new Map<string, number>(); // threadId → highest announced sequence a pull has covered
+  private readonly wanted = new Map<string, number>();  // threadId → highest announced sequence
+  private readonly lastPull = new Map<string, number>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(deps: ActivityDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * An event was appended to a thread. Skips sequences a pull already covered and pulls each thread
+   * at most once per interval, so a streaming turn costs one events query per interval, not one per event.
+   */
+  notify(threadId: string, sequence: number): void {
+    if (sequence <= (this.scanned.get(threadId) ?? -1)) return;
+    this.wanted.set(threadId, Math.max(sequence, this.wanted.get(threadId) ?? -1));
+    if (this.timers.has(threadId)) return;
+    const interval = this.deps.minPullIntervalMs ?? 1000;
+    const wait = Math.max(0, (this.lastPull.get(threadId) ?? -Infinity) + interval - this.deps.now());
+    this.timers.set(threadId, setTimeout(() => {
+      this.timers.delete(threadId);
+      const upTo = this.wanted.get(threadId) ?? -1;
+      this.lastPull.set(threadId, this.deps.now());
+      this.onThreadEvents(threadId).then(
+        () => { if (upTo > (this.scanned.get(threadId) ?? -1)) this.scanned.set(threadId, upTo); },
+        (e: unknown) => this.deps.onError?.(threadId, e),
+      );
+    }, wait));
+  }
+
+  dispose(): void {
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
   }
 
   /** Pull new events for one thread; calls for the same thread run one at a time. */

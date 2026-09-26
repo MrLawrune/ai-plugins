@@ -8,11 +8,13 @@ import { useInfraQuery } from "./hooks.ts";
 import { parseDirectiveAttrs } from "./directive-attrs.ts";
 import { PANEL_ACTION_ID } from "./thread-panel.tsx";
 import { PANEL_PATH } from "./page.tsx";
+import { requestPanelReset } from "./panel-reset.ts";
 
 function useOpenTarget() {
   const nav = useBbNavigate();
   return (target: string, title: string) => {
-    if (!nav.openThreadPanel({ actionId: PANEL_ACTION_ID, title, params: { target } })) nav.toPluginPanel(PANEL_PATH, { subPath: target });
+    if (nav.openThreadPanel({ actionId: PANEL_ACTION_ID, title, params: { target } })) requestPanelReset(target);
+    else nav.toPluginPanel(PANEL_PATH, { subPath: target });
   };
 }
 

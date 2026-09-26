@@ -17,6 +17,18 @@ function parse(raw: string | undefined): CredentialMap {
   }
 }
 
+/** Accepts only what this module writes, so a hand edit in the settings UI cannot corrupt stored credentials. */
+export function isCredentialMap(raw: string): boolean {
+  if (raw === "") return true;
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+    return Object.values(v).every((e) => !!e && typeof e === "object" && typeof (e as { secret?: unknown }).secret === "string");
+  } catch {
+    return false;
+  }
+}
+
 export class Secrets {
   private readonly handle: SecretSettingsHandle;
   private chain: Promise<unknown> = Promise.resolve();

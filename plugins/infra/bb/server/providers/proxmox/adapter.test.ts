@@ -92,6 +92,7 @@ test("host detail parses version, kernel, cpu model, load, storage", async () =>
   assert.match(h.cpuModel ?? "", /Xeon/);
   assert.deepEqual(h.loadavg, [0.84, 0.93, 1.02]);
   assert.ok(h.storage.some((s) => s.storage === "local" && s.total > 0));
+  assert.ok(!h.storage.some((s) => s.storage === "tank-elsewhere"), "storage restricted to other nodes is hidden");
 });
 
 test("rrd maps to points and requests the timeframe", async () => {

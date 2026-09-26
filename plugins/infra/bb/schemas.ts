@@ -33,6 +33,7 @@ export interface EnvViewDto {
   updatedAt: number | null;
   recentActivity: ActivityDto[];
 }
+export interface ThreadStatusDto { threadId: string; labels: string[]; state: "running" | "ok" | "failed"; lastAt: number }
 export interface ThreadTargetDto { target: string; env: EnvBadgeDto; label: string; kind: "env" | "host" | "guest"; state: string | null; running: boolean; lastAt: number }
 export type ConnectionDto = Omit<ConnectionRow, "caPem"> & { hasCaPem: boolean; hasSecret: boolean; health: ConnectionHealth | null };
 export type NotFound = { found: false };
@@ -109,7 +110,7 @@ export const rpcContract = defineRpcContract({
     output: out<{ items: ActivityDto[]; changes: ChangeDto[] }>(),
   },
   threadTargets: { input: z.object({ threadId: z.string().min(1).max(100) }).strict(), output: out<{ targets: ThreadTargetDto[] }>() },
-  runningThreads: { input: z.object({}).strict(), output: out<{ threads: { threadId: string; targets: string[] }[] }>() },
+  threadStatuses: { input: z.object({}).strict(), output: out<{ threads: ThreadStatusDto[] }>() },
   askPrompt: { input: z.object({ target, intent: z.enum(ASK_INTENTS) }).strict(), output: out<NotFound | { found: true; prompt: string }>() },
   settingsGet: { input: z.object({}).strict(), output: out<{ envs: InfraEnvRow[]; connections: ConnectionDto[] }>() },
   envSave: { input: envSave, output: out<{ env: InfraEnvRow }>() },

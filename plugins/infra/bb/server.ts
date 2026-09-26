@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import { CHANNELS, rpcContract, type EventsSignal } from "./schemas.ts";
 import { Activity, type RawEvent } from "./server/activity.ts";
 import { createCli } from "./server/cli.ts";
@@ -16,7 +17,7 @@ import { ProxmoxProvider } from "./server/providers/proxmox/adapter.ts";
 import { PveClient, PveError, type Auth } from "./server/providers/proxmox/client.ts";
 import { probeCertificate, type TlsMode } from "./server/providers/proxmox/tls.ts";
 import { createRpcHandlers } from "./server/rpc.ts";
-import { Secrets } from "./server/secrets.ts";
+import { isCredentialMap, Secrets } from "./server/secrets.ts";
 import { badge, InfraService } from "./server/service.ts";
 import { configurationGap } from "./server/setup-status.ts";
 import { parseSshConfig } from "./server/ssh-config.ts";
@@ -43,8 +44,9 @@ export default async function plugin(bb: BbPluginApi) {
     credentials: {
       type: "string",
       label: "Connection credentials",
-      description: "Managed by the Environments section below. Stored as a BB secret; never shown.",
+      description: "Managed by the Environments section below; don't edit it here. Stored as a BB secret; never shown.",
       secret: true,
+      experimental_schema: z.string().refine(isCredentialMap, "Add or change credentials from the Environments section below."),
     },
   });
 
@@ -157,6 +159,7 @@ export default async function plugin(bb: BbPluginApi) {
     envIdForSlug: (slug) => store.getEnvBySlug(slug)?.id ?? null,
     events: { list: async (args) => (await bb.sdk.threads.events.list(args as never)) as unknown as RawEvent[] },
     onActivity: (threadIds) => bb.realtime.publish(CHANNELS.activity, { threadIds }),
+    onError: (threadId, e) => bb.log.warn(`activity for ${threadId} failed: ${message(e)}`),
   });
 
   // Setup status: BB shows "needs configuration" until an environment has a usable connection.
@@ -177,6 +180,9 @@ export default async function plugin(bb: BbPluginApi) {
     probe: (baseUrl) => probeCertificate(baseUrl),
     async onConfigChanged() {
       await hub.reload();
+      // Deleted or disabled connections never get a new provider, so their HTTP clients are dropped here.
+      const live = new Set(store.listConnections().filter((c) => c.enabled).map((c) => c.id));
+      for (const id of [...clients.keys()]) if (!live.has(id)) closeClient(id);
       indexDirty = true;
       for (const env of store.listEnvs()) { publishChanged(env.id); scheduleExport(env.id); }
       if (initialGap && !reloadScheduled && !(await setupGap())) {
@@ -207,9 +213,8 @@ export default async function plugin(bb: BbPluginApi) {
   const settle = (threadId: string) => { if (activity.clearRunning(threadId)) bb.realtime.publish(CHANNELS.activity, { threadIds: [threadId] }); };
   bb.events.on("thread.idle", ({ thread }) => settle(thread.id));
   bb.events.on("thread.failed", ({ thread }) => settle(thread.id));
-  bb.events.on("experimental_thread.events", ({ thread }) => {
-    if (!hub.snapshots().length) return;
-    activity.onThreadEvents(thread.id).catch((e: unknown) => bb.log.warn(`activity for ${thread.id} failed: ${message(e)}`));
+  bb.events.on("experimental_thread.events", ({ thread, sequence }) => {
+    if (hub.snapshots().length) activity.notify(thread.id, sequence);
   });
 
   bb.rpc.register(rpcContract, createRpcHandlers(service));
@@ -235,6 +240,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.onDispose(() => {
     for (const t of [...pendingChanged.values(), ...exportTimers.values()]) clearTimeout(t);
     for (const id of [...clients.keys()]) closeClient(id);
+    activity.dispose();
   });
 
   const envs = store.listEnvs().length;

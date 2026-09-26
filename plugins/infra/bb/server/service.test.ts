@@ -9,8 +9,8 @@ const homelab = () => fakeProvider([inv([host("pve1", { ip: "192.0.2.10" })], [g
 });
 const staging = () => fakeProvider([inv([host("stage1", { ip: "198.51.100.5" })], [guest("stage1", 201, { name: "web" })])]);
 
-function cmd(seq: number, type: "item/started" | "item/completed", command: string, at: number, threadId = "thr_a"): RawEvent {
-  return { seq, type, createdAt: at, threadId, scope: { kind: "turn", turnId: "t1" }, data: { item: { type: "commandExecution", id: `i${seq}`, command, exitCode: 0 } } };
+function cmd(seq: number, type: "item/started" | "item/completed", command: string, at: number, threadId = "thr_a", exitCode = 0): RawEvent {
+  return { seq, type, createdAt: at, threadId, scope: { kind: "turn", turnId: "t1" }, data: { item: { type: "commandExecution", id: `i${seq}`, command, exitCode } } };
 }
 
 test("resolve normalizes node case and rejects unknown or malformed targets", async () => {
@@ -71,7 +71,7 @@ test("thread targets and running state come from recorded agent commands", async
   await h.activity.onThreadEvents("thr_a");
   const targets = h.service.threadTargets("thr_a");
   assert.deepEqual(targets.map((t) => [t.target, t.kind, t.running]).sort(), [["homelab/pve1", "host", true], ["homelab/pve1/201", "guest", true]]);
-  assert.deepEqual(h.service.runningThreads(), [{ threadId: "thr_a", targets: ["homelab/pve1", "homelab/pve1/201"] }]);
+  assert.deepEqual(h.service.threadStatuses().map((t) => [t.threadId, t.state, t.labels.sort()]), [["thr_a", "running", ["proxy", "pve1"]]]);
   assert.deepEqual(h.service.overview().envs[0]!.activeThreads, ["thr_a"]);
   assert.equal(h.service.envView("homelab")!.guests.find((g) => g.vmid === 201)!.active, true);
 });
@@ -156,4 +156,18 @@ test("environment rules include the linked conventions file", async () => {
   assert.match(rules!, /Prefer LXCs\.[\s\S]*Conventions \(.*AGENTS\.md\):\nAlways use Podman quadlets\./);
   assert.match((await h.service.card("homelab/pve1", { budget: 60, rules: true }))!, /Always use Podman quadlets\./);
   assert.match(h.service.renderPin({ threadId: "t", targets: ["homelab/pve1"], rulesIncluded: true, pinnedAt: 0 }), /Always use Podman quadlets\./);
+});
+
+test("row status: recent infra work shows ok or failed after the thread finishes, then expires", async () => {
+  const h = await serviceHarness([{ slug: "homelab", conns: { pve1: homelab() } }]);
+  h.pageBox.pages.push([cmd(1, "item/completed", "ssh pve1 uptime", h.now(), "thr_ok")]);
+  await h.activity.onThreadEvents("thr_ok");
+  h.pageBox.pages.push([cmd(2, "item/completed", "ssh pve1 false", h.now(), "thr_bad", 1)]);
+  await h.activity.onThreadEvents("thr_bad");
+  const byId = Object.fromEntries(h.service.threadStatuses().map((t) => [t.threadId, t]));
+  assert.equal(byId.thr_ok!.state, "ok");
+  assert.equal(byId.thr_bad!.state, "failed");
+  assert.deepEqual(byId.thr_ok!.labels, ["pve1"]);
+  h.advance(31 * 60_000);
+  assert.deepEqual(h.service.threadStatuses(), [], "expired after 30 minutes");
 });

@@ -13,6 +13,7 @@ import { GuestView } from "./guest-view.tsx";
 import { HostView } from "./host-view.tsx";
 import { useInfraQuery, useNow } from "./hooks.ts";
 import { Overview } from "./overview.tsx";
+import { onPanelReset } from "./panel-reset.ts";
 import { withoutOwnTab } from "./panel-tab.ts";
 
 export const PANEL_ACTION_ID = "infra";
@@ -57,6 +58,7 @@ export function ThreadInfraPanel({ threadId, params }: { threadId: string; param
   const initial = targetFromParams(params);
   const [stack, setStack] = useState<string[]>(initial ? [initial] : []);
   useEffect(() => { const t = targetFromParams(params); if (t) setStack([t]); }, [params]);
+  useEffect(() => onPanelReset(({ target }) => { if (target === initial) setStack(initial ? [initial] : []); }), [initial]);
   const current = stack.at(-1) ?? null;
   const open = (t: string) => setStack((s) => [...s, t]);
   const back = () => setStack((s) => s.slice(0, -1));

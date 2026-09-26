@@ -48,8 +48,27 @@ function words(command: string): string[] {
 
 const stripUser = (s: string) => s.slice(s.lastIndexOf("@") + 1);
 
+/** Values a shell variable can take in this command: `for v in a b c; do` loops and `v=value` assignments. */
+function variables(command: string): Map<string, string[]> {
+  const vars = new Map<string, string[]>();
+  for (const m of command.matchAll(/\bfor\s+([A-Za-z_]\w*)\s+in\s+([^;\n]+?)\s*(?:;|\n)\s*do\b/g)) vars.set(m[1]!, words(m[2]!));
+  for (const m of command.matchAll(/(?:^|[\s;&|(])([A-Za-z_]\w*)=(?:"([^"$`]*)"|'([^']*)'|([^\s;&|'"$`]+))/g)) {
+    const v = m[2] ?? m[3] ?? m[4] ?? "";
+    if (v && !/\s/.test(v)) vars.set(m[1]!, [v]);
+  }
+  return vars;
+}
+
+/** `$h` / `${h}` expand to the variable's possible values; anything else is itself. */
+function expand(word: string, vars: Map<string, string[]>): string[] {
+  const m = word.match(/^([^$]*)\$\{?([A-Za-z_]\w*)\}?(.*)$/);
+  if (!m) return [word];
+  return (vars.get(m[2]!) ?? []).map((v) => `${m[1]}${v}${m[3]}`);
+}
+
 /** Hosts named as the destination of ssh/mosh, or as the remote side of scp/rsync (`host:path`). */
 function remoteDestinations(command: string): string[] {
+  const vars = variables(command);
   const w = words(command);
   const out: string[] = [];
   for (let i = 0; i < w.length; i++) {
@@ -58,11 +77,11 @@ function remoteDestinations(command: string): string[] {
       for (let j = i + 1; j < w.length; j++) {
         const t = w[j]!;
         if (t.startsWith("-")) { if (SSH_ARG_OPTS.has(t)) j++; continue; }
-        out.push(stripUser(t).toLowerCase());
+        for (const d of expand(t, vars)) out.push(stripUser(d).toLowerCase());
         break;
       }
     } else if (cmd === "scp" || cmd === "rsync" || cmd === "sftp") {
-      for (const t of w.slice(i + 1)) {
+      for (const t of w.slice(i + 1).flatMap((x) => expand(x, vars))) {
         const m = t.match(/^([^/\s:]+):/);
         if (m && !t.startsWith("-")) out.push(stripUser(m[1]!).toLowerCase());
       }
@@ -73,6 +92,41 @@ function remoteDestinations(command: string): string[] {
 
 function tokens(command: string): string[] {
   return command.split(/[\s'"`;|&()<>=,@:[\]{}]+/).map((t) => t.replace(/^\/+|\/+$/g, "")).filter(Boolean);
+}
+
+/** Programs whose arguments name a machine to talk to. Anything else (grep, git, echo) only mentions names. */
+const NET_TOOLS = new Set([
+  "curl", "wget", "http", "https", "xh", "ping", "ping6", "arping", "nc", "ncat", "netcat", "telnet", "nmap", "mtr", "traceroute", "tracepath",
+  "dig", "host", "nslookup", "ssh-keyscan", "ssh-copy-id", "openssl", "grpcurl", "websocat", "iperf3", "psql", "mysql", "mariadb", "redis-cli",
+  "mongosh", "ftp", "lftp", "smbclient", "showmount",
+]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+
+/** Words with quotes removed, plus shell operators as their own tokens so each simple command can be told apart. */
+function shellTokens(command: string): { word: string; op: boolean }[] {
+  const out: { word: string; op: boolean }[] = [];
+  const re = /'([^']*)'|"([^"]*)"|(&&|\|\||[|;&\n])|([^\s'"|;&]+)/g;
+  for (let m = re.exec(command); m; m = re.exec(command)) {
+    if (m[3] !== undefined) out.push({ word: m[3], op: true });
+    else out.push({ word: m[1] ?? m[2] ?? m[4]!, op: false });
+  }
+  return out;
+}
+
+/** Tokens that sit in argument position of a network tool, including `sh -c "..."` bodies. */
+function networkArgs(command: string, depth = 0): string[] {
+  const out: string[] = [];
+  let net = false;
+  const t = shellTokens(command);
+  for (let i = 0; i < t.length; i++) {
+    const { word, op } = t[i]!;
+    if (op) { net = false; continue; }
+    const cmd = word.split("/").pop()!;
+    if (NET_TOOLS.has(cmd)) { net = true; continue; }
+    if (SHELLS.has(cmd) && t[i + 1]?.word === "-c" && t[i + 2] && depth < 2) { out.push(...networkArgs(t[i + 2]!.word, depth + 1)); i += 2; continue; }
+    if (net) out.push(...tokens(word));
+  }
+  return out;
 }
 
 const fmtHost = (h: HostRef) => `${h.envSlug}/${h.node}`;
@@ -108,13 +162,13 @@ export function matchCommand(rawCommand: string, idx: MatchIndex): string[] {
     addGuests(idx.guestsByIp.get(target));
   };
 
-  for (const t of tokens(command)) {
-    const lower = t.toLowerCase();
-    addHosts(idx.hostsByName.get(lower));
+  for (const t of networkArgs(command)) {
+    addHosts(idx.hostsByName.get(t.toLowerCase()));
     addHosts(idx.hostsByIp.get(t));
     addGuests(idx.guestsByIp.get(t));
   }
-  for (const dest of remoteDestinations(command)) {
+  const shellBodies = shellTokens(command).flatMap((t, i, all) => (SHELLS.has(t.word.split("/").pop()!) && all[i + 1]?.word === "-c" && all[i + 2] ? [all[i + 2]!.word] : []));
+  for (const dest of [...remoteDestinations(command), ...shellBodies.flatMap(remoteDestinations)]) {
     resolveName(dest);
     addGuests(idx.guestsByName.get(dest));
   }

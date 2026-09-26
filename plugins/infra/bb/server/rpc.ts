@@ -18,7 +18,7 @@ export function createRpcHandlers(s: InfraService) {
     async metrics({ target, range }) { const series = await s.metrics(target, range); return series ? { found: true as const, series } : NOT_FOUND; },
     async activity(q) { return s.activity(q); },
     async threadTargets({ threadId }) { return { targets: s.threadTargets(threadId) }; },
-    async runningThreads() { return { threads: s.runningThreads() }; },
+    async threadStatuses() { return { threads: s.threadStatuses() }; },
     async askPrompt({ target, intent }) { const prompt = await s.askPrompt(target, intent); return prompt ? { found: true as const, prompt } : NOT_FOUND; },
     async settingsGet() { return s.settings(); },
     async envSave(input) { return { env: await s.saveEnv(input) }; },

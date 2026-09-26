@@ -5,7 +5,7 @@ import { Activity, type RawEvent } from "./activity.ts";
 import { buildIndex } from "./matcher.ts";
 import { Store } from "./store.ts";
 
-function setup(pages: RawEvent[][] | Error) {
+function setup(pages: RawEvent[][] | Error, minPullIntervalMs?: number) {
   let t = 10_000;
   const store = new Store(memDb(), () => t);
   const env = store.upsertEnv({ slug: "homelab", name: "Homelab", kind: "lab", color: "#0f0", pollSeconds: 10, rules: "", exportDir: "" });
@@ -26,6 +26,7 @@ function setup(pages: RawEvent[][] | Error) {
     envIdForSlug: (slug) => (slug === "homelab" ? env.id : null),
     now: () => t,
     onActivity: (ids) => touched.push(ids),
+    minPullIntervalMs,
   });
   return { activity, store, env, calls, touched, setNow: (v: number) => { t = v; } };
 }
@@ -110,4 +111,20 @@ test("a thread going idle clears commands that never reported completion", async
   assert.equal(activity.clearRunning("thr_a"), true);
   assert.equal(activity.running().size, 0);
   assert.equal(activity.clearRunning("thr_a"), false);
+});
+
+test("event notifications coalesce into one pull and skip sequences already scanned", async () => {
+  const { activity, calls } = setup([[ev("item/started", "ssh pve1 uptime")], []], 30);
+  for (let i = 1; i <= 50; i++) activity.notify("thr_a", i);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.length, 1, "fifty announcements, one pull");
+  activity.notify("thr_a", 40);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(calls.length, 1, "already covered");
+  activity.notify("thr_a", 51);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.length, 1, "throttled");
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(calls.length, 2, "trailing pull after the interval");
+  activity.dispose();
 });

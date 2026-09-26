@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Secrets, type SecretSettingsHandle } from "./secrets.ts";
+import { isCredentialMap, Secrets, type SecretSettingsHandle } from "./secrets.ts";
 
 function memHandle(initial?: string): SecretSettingsHandle & { value: string | undefined } {
   const h = {
@@ -34,4 +34,10 @@ test("a corrupt stored value reads as empty and is replaced on write", async () 
   assert.equal(await s.get("a"), null);
   await s.set("a", "x");
   assert.deepEqual(JSON.parse(h.value!), { a: { secret: "x" } });
+});
+
+test("the settings field only accepts a credential map", () => {
+  assert.ok(isCredentialMap(""));
+  assert.ok(isCredentialMap('{"c1":{"secret":"s"}}'));
+  for (const bad of ["hunter2", "[]", "null", '{"c1":"s"}', '{"c1":{"secret":1}}']) assert.equal(isCredentialMap(bad), false, bad);
 });
