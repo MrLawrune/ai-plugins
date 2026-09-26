@@ -1,0 +1,134 @@
+[
+ {
+  "time": 1790378220,
+  "cpu": 0.03,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10000,
+  "netout": 13000,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378280,
+  "cpu": 0.031,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10100,
+  "netout": 13050,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378340,
+  "cpu": 0.032,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10200,
+  "netout": 13100,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378400,
+  "cpu": 0.033,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10300,
+  "netout": 13150,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378460,
+  "cpu": 0.034,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10400,
+  "netout": 13200,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378520,
+  "cpu": 0.034999999999999996,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10500,
+  "netout": 13250,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378580,
+  "cpu": 0.036,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10600,
+  "netout": 13300,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378640,
+  "cpu": 0.037,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10700,
+  "netout": 13350,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378700,
+  "cpu": 0.038,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10800,
+  "netout": 13400,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378760,
+  "cpu": 0.039,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 10900,
+  "netout": 13450,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378820,
+  "cpu": 0.04,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 11000,
+  "netout": 13500,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ },
+ {
+  "time": 1790378880,
+  "cpu": 0.040999999999999995,
+  "memused": 61203283968,
+  "memtotal": 134217728000,
+  "netin": 11100,
+  "netout": 13550,
+  "iowait": 0.001,
+  "loadavg": 0.8,
+  "maxcpu": 24
+ }
+]

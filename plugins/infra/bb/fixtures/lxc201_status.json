@@ -1,0 +1,22 @@
+{
+ "vmid": 201,
+ "name": "proxy",
+ "type": "lxc",
+ "status": "running",
+ "cpu": 0,
+ "cpus": 2,
+ "mem": 94371840,
+ "maxmem": 1073741824,
+ "disk": 5967355904,
+ "maxdisk": 17179869184,
+ "swap": 0,
+ "maxswap": 536870912,
+ "uptime": 1121643,
+ "netin": 1000,
+ "netout": 1000,
+ "diskread": 0,
+ "diskwrite": 0,
+ "ha": {
+  "managed": 0
+ }
+}

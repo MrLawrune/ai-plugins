@@ -10,6 +10,10 @@
     {
       "name": "parakeet-stt",
       "source": "./plugins/parakeet-stt"
+    },
+    {
+      "name": "infra",
+      "source": "./plugins/infra"
     }
   ]
 }

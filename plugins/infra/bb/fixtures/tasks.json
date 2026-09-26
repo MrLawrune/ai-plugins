@@ -1,0 +1,38 @@
+[
+ {
+  "upid": "UPID:pve1:00000001:00000001:00000001:aptupdate::root@pam:",
+  "node": "pve1",
+  "pid": 1,
+  "pstart": 1,
+  "starttime": 1790327297,
+  "endtime": 1790327299,
+  "status": "OK",
+  "type": "aptupdate",
+  "id": "",
+  "user": "root@pam"
+ },
+ {
+  "upid": "UPID:pve1:00000002:00000002:00000002:vzstart:201:root@pam:",
+  "node": "pve1",
+  "pid": 2,
+  "pstart": 2,
+  "starttime": 1790283480,
+  "endtime": 1790283481,
+  "status": "OK",
+  "type": "vzstart",
+  "id": "201",
+  "user": "root@pam"
+ },
+ {
+  "upid": "UPID:pve1:00000003:00000003:00000003:vzdump:201:root@pam:",
+  "node": "pve1",
+  "pid": 3,
+  "pstart": 3,
+  "starttime": 1790200000,
+  "endtime": 1790200100,
+  "status": "OK",
+  "type": "vzdump",
+  "id": "201",
+  "user": "root@pam"
+ }
+]

@@ -1,0 +1,16 @@
+{
+ "agent": "1",
+ "bios": "ovmf",
+ "boot": "order=scsi0",
+ "cores": 4,
+ "cpu": "host",
+ "memory": "8192",
+ "name": "homeauto",
+ "net0": "virtio=02:00:00:00:01:01,bridge=vmbr0",
+ "onboot": 1,
+ "ostype": "l26",
+ "scsi0": "local-lvm:vm-101-disk-1,discard=on,size=32G",
+ "scsihw": "virtio-scsi-pci",
+ "sockets": 1,
+ "digest": "0000000000000000000000000000000000000000"
+}

@@ -1,0 +1,40 @@
+{
+ "cpu": 0.03,
+ "uptime": 1121793,
+ "loadavg": [
+  "0.84",
+  "0.93",
+  "1.02"
+ ],
+ "kversion": "Linux 6.8.12-4-pve #1 SMP PREEMPT_DYNAMIC PMX 6.8.12-4 (2025-01-01T00:00Z)",
+ "pveversion": "pve-manager/9.1.4/0000000000000000",
+ "cpuinfo": {
+  "cores": 12,
+  "cpus": 24,
+  "model": "Intel(R) Xeon(R) E-2276G CPU @ 3.80GHz",
+  "sockets": 1,
+  "mhz": "3800.000",
+  "hvm": "1"
+ },
+ "memory": {
+  "total": 134217728000,
+  "used": 61203283968,
+  "free": 73014444032,
+  "available": 75161927680
+ },
+ "rootfs": {
+  "total": 100931731456,
+  "used": 30064771072,
+  "free": 70866960384,
+  "avail": 66571993088
+ },
+ "swap": {
+  "total": 8589934592,
+  "used": 0,
+  "free": 8589934592
+ },
+ "boot-info": {
+  "mode": "efi",
+  "secureboot": 0
+ }
+}

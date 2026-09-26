@@ -21,3 +21,11 @@ Dictate to your agents: Handy-style speech-to-text for every bb composer, backed
     bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.1.0 --plugin parakeet-stt --tag-prefix parakeet-stt/
 
 Server setup and API: [plugins/parakeet-stt/README.md](plugins/parakeet-stt/README.md).
+
+## infra
+
+See your infrastructure and what your agents are doing to it: Proxmox environments, guests, metrics, and agent activity inside bb.
+
+    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.1.0 --plugin infra --tag-prefix infra/
+
+Setup and surfaces: [plugins/infra/README.md](plugins/infra/README.md).

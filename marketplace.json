@@ -55,6 +55,32 @@
           "tagPrefix": "parakeet-stt/"
         }
       }
+    },
+    {
+      "id": "infra",
+      "displayName": "Infra",
+      "description": "See your infrastructure and what your agents are doing to it: Proxmox environments, guests, metrics, and agent activity inside BB.",
+      "icon": {
+        "url": "./plugins/infra/assets/icon.svg"
+      },
+      "tags": [
+        "infrastructure",
+        "proxmox",
+        "homelab",
+        "observability"
+      ],
+      "author": {
+        "name": "MrLawrune",
+        "github": "MrLawrune"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/MrLawrune/ai-plugins.git",
+          "subdir": "plugins/infra",
+          "range": "^0.1.0",
+          "tagPrefix": "infra/"
+        }
+      }
     }
   ]
 }

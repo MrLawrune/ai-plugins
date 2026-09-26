@@ -1,0 +1,56 @@
+[
+ {
+  "name": "lo",
+  "hwaddr": "00:00:00:00:00:00",
+  "hardware-address": "00:00:00:00:00:00",
+  "inet": "127.0.0.1/24",
+  "ip-addresses": [
+   {
+    "ip-address": "127.0.0.1",
+    "ip-address-type": "inet",
+    "prefix": "24"
+   },
+   {
+    "ip-address": "::1",
+    "ip-address-type": "inet6",
+    "prefix": "64"
+   }
+  ]
+ },
+ {
+  "name": "eth0",
+  "hwaddr": "02:00:00:00:02:01",
+  "hardware-address": "02:00:00:00:02:01",
+  "inet": "192.0.2.201/24",
+  "ip-addresses": [
+   {
+    "ip-address": "192.0.2.201",
+    "ip-address-type": "inet",
+    "prefix": "24"
+   },
+   {
+    "ip-address": "fe80::ff:fe00:201",
+    "ip-address-type": "inet6",
+    "prefix": "64"
+   }
+  ]
+ },
+ {
+  "name": "wg0",
+  "hwaddr": null,
+  "hardware-address": null,
+  "inet": "198.51.100.7/24",
+  "ip-addresses": [
+   {
+    "ip-address": "198.51.100.7",
+    "ip-address-type": "inet",
+    "prefix": "24"
+   },
+   {
+    "ip-address": "2001:db8::7",
+    "ip-address-type": "inet6",
+    "prefix": "64"
+   }
+  ]
+ }
+]

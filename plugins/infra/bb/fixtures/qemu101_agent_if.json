@@ -1,0 +1,36 @@
+{
+ "result": [
+  {
+   "name": "lo",
+   "hardware-address": "00:00:00:00:00:00",
+   "ip-addresses": [
+    {
+     "ip-address": "127.0.0.1",
+     "ip-address-type": "ipv4",
+     "prefix": 8
+    },
+    {
+     "ip-address": "::1",
+     "ip-address-type": "ipv6",
+     "prefix": 128
+    }
+   ]
+  },
+  {
+   "name": "enp0s18",
+   "hardware-address": "02:00:00:00:01:01",
+   "ip-addresses": [
+    {
+     "ip-address": "192.0.2.34",
+     "ip-address-type": "ipv4",
+     "prefix": 24
+    },
+    {
+     "ip-address": "fe80::ff:fe00:101",
+     "ip-address-type": "ipv6",
+     "prefix": 64
+    }
+   ]
+  }
+ ]
+}

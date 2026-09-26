@@ -1,0 +1,12 @@
+[
+ {
+  "id": "node/pve1",
+  "type": "node",
+  "name": "pve1",
+  "ip": "192.0.2.10",
+  "local": 1,
+  "nodeid": 0,
+  "online": 1,
+  "level": ""
+ }
+]

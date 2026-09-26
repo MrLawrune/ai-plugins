@@ -1,0 +1,61 @@
+[
+ {
+  "storage": "local",
+  "type": "dir",
+  "content": "backup,vztmpl,iso,rootdir,images",
+  "active": 1,
+  "enabled": 1,
+  "shared": 0,
+  "total": 100931731456,
+  "used": 30064771072,
+  "avail": 66571993088,
+  "used_fraction": 0.3
+ },
+ {
+  "storage": "local-lvm",
+  "type": "lvmthin",
+  "content": "rootdir,images",
+  "active": 1,
+  "enabled": 1,
+  "shared": 0,
+  "total": 429496729600,
+  "used": 128849018880,
+  "avail": 300647710720,
+  "used_fraction": 0.3
+ },
+ {
+  "storage": "nfs-isos",
+  "type": "nfs",
+  "content": "iso,vztmpl",
+  "active": 1,
+  "enabled": 1,
+  "shared": 1,
+  "total": 343597383680,
+  "used": 42949672960,
+  "avail": 300647710720,
+  "used_fraction": 0.125
+ },
+ {
+  "storage": "pbs",
+  "type": "pbs",
+  "content": "backup",
+  "active": 1,
+  "enabled": 1,
+  "shared": 0,
+  "total": 2147483648000,
+  "used": 644245094400,
+  "avail": 1503238553600,
+  "used_fraction": 0.3
+ },
+ {
+  "storage": "offline-disk",
+  "type": "dir",
+  "content": "images",
+  "active": 0,
+  "enabled": 0,
+  "shared": 0,
+  "total": 0,
+  "used": 0,
+  "avail": 0
+ }
+]

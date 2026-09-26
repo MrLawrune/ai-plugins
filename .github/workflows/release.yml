@@ -1,7 +1,7 @@
 name: release
 on:
   push:
-    tags: ["kokoro-tts/v*"]
+    tags: ["kokoro-tts/v*", "infra/v*"]
 permissions: { contents: write }
 jobs:
   release:
