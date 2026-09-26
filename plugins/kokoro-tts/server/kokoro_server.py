@@ -655,12 +655,9 @@ class KokoroServer:
         return web.json_response(self._config_response())
 
     async def handle_patch_config(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "body must be an object"}, status=400)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
         # One change at a time: an engine swap awaits, and a second PATCH landing
         # meanwhile would otherwise leave the saved config and live engine apart.
         async with self._config_lock:

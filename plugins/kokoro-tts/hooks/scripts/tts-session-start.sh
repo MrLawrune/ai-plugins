@@ -14,7 +14,8 @@ source "$SCRIPT_DIR/tts-log.sh"
 bb_owns_voice() {
   [ -n "${BB_THREAD_ID:-}" ] || return 1
   local pid
-  pid=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/kokoro-tts/bb-plugin.pid" 2>/dev/null) || return 1
+  # file holds "<pid> <nonce>"; older writers left a bare pid
+  read -r pid _ < "${XDG_STATE_HOME:-$HOME/.local/state}/kokoro-tts/bb-plugin.pid" 2>/dev/null || [ -n "$pid" ] || return 1
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 if bb_owns_voice; then

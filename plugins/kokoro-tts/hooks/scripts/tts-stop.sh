@@ -33,7 +33,7 @@ if [ "$KOKORO_SERVER_UP" != "1" ]; then
   marker="${LOG%/*}/down-notified-$(printf '%s' "$session_id" | tr -c 'A-Za-z0-9_-' '_')"
   [ -e "$marker" ] && exit 0
   : > "$marker"
-  jq -n --arg msg "Kokoro TTS server not responding on port $PORT. In bb, open the Kokoro TTS page; otherwise it starts on your next Claude Code session (see the kokoro-tts skill, Troubleshooting)" \
+  jq -n --arg msg "Kokoro TTS server not responding on port $PORT. It starts on your next Claude Code session (see the kokoro-tts skill, Troubleshooting)" \
     '{systemMessage: $msg}'
   exit 0
 fi

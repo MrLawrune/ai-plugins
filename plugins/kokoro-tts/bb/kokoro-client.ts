@@ -80,7 +80,10 @@ export function createKokoroClient(
       body: JSON.stringify({ text, ...opts }),
       signal,
     });
-    if (!res.ok || !res.body) throw new ServerError(`synthesize failed (HTTP ${res.status})`);
+    if (!res.ok || !res.body) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new ServerError(`synthesize failed (HTTP ${res.status})`);
+    }
     let frames = 0;
     for await (const frame of readFrames(res.body, { markers: res.headers.get("X-Kokoro-Frames") === "2" })) {
       frames++;

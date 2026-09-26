@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -125,6 +126,8 @@ class LocalEngine:
         self._kokoro = None
         self._voices: NDArray | None = None
         self._lock = asyncio.Lock()
+        # A cancelled stream frees _lock while its executor thread is still loading.
+        self._load_lock = threading.Lock()
         self.last_used = time.time()
         self.load_ms: float | None = None
         self.loaded_provider: str | None = None
@@ -149,8 +152,9 @@ class LocalEngine:
                 log.exception("warmup failed")
 
     def ensure_loaded(self) -> None:
-        if self._kokoro is None:
-            self._load()
+        with self._load_lock:
+            if self._kokoro is None:
+                self._load()
         self.last_used = time.time()
 
     def unload(self) -> None:
