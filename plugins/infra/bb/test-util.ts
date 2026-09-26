@@ -15,7 +15,7 @@ export function memDb(): SqlDb {
   return db as unknown as SqlDb;
 }
 
-import type { GuestDetail, GuestState, HostState, InfraProvider, Inventory } from "./server/providers/types.ts";
+import type { GuestDetail, GuestState, HostState, InfraProvider, Inventory, ProviderActions } from "./server/providers/types.ts";
 
 export function host(node: string, over: Partial<HostState> = {}): HostState {
   return { node, online: true, cpu: 0.1, maxcpu: 8, mem: 1, maxmem: 2, disk: 1, maxdisk: 4, uptime: 100, ip: null, ...over };
@@ -30,8 +30,9 @@ export function inv(hosts: HostState[], guests: GuestState[] = []): Inventory {
 }
 
 /** Provider returning scripted inventories (or throwing scripted errors); the last entry repeats. */
-export function fakeProvider(script: (Inventory | Error)[], details: Record<string, Partial<GuestDetail>> = {}): InfraProvider & { calls: number } {
+export function fakeProvider(script: (Inventory | Error)[], details: Record<string, Partial<GuestDetail>> = {}, actions?: ProviderActions): InfraProvider & { calls: number } {
   const p = {
+    ...(actions ? { actions } : {}),
     kind: "proxmox" as const,
     calls: 0,
     async inventory() {
@@ -58,7 +59,7 @@ export function fakeProvider(script: (Inventory | Error)[], details: Record<stri
 }
 
 import type { ActionKind, ActionParams } from "./shared/actions.ts";
-import type { GuestFacts, GuestRef, ProviderActions } from "./server/providers/types.ts";
+import type { GuestFacts, GuestRef } from "./server/providers/types.ts";
 
 /** Scripted action capability: records runs, returns a fixed UPID unless overridden. */
 export function fakeActions(over: Partial<ProviderActions> & { facts?: ProviderActions["facts"] } = {}) {
@@ -100,6 +101,7 @@ export function snapshotOf(env: InfraEnvRow, hosts: HostState[], guests: GuestSt
 }
 
 import { Activity } from "./server/activity.ts";
+import { ActionService } from "./server/actions/service.ts";
 import { Hub } from "./server/hub.ts";
 import { Pins } from "./server/pins.ts";
 import { Secrets } from "./server/secrets.ts";
@@ -107,12 +109,12 @@ import { InfraService } from "./server/service.ts";
 import { Store as StoreClass } from "./server/store.ts";
 
 /** A fully wired service over scripted providers, keyed by connection label. */
-export async function serviceHarness(envs: { slug: string; kind?: EnvKind; rules?: string; conns: Record<string, InfraProvider> }[]) {
+export async function serviceHarness(envs: { slug: string; kind?: EnvKind; rules?: string; actionsEnabled?: boolean; conns: Record<string, InfraProvider> }[]) {
   let t = 1_000_000;
   const store = new StoreClass(memDb(), () => t);
   const providers = new Map<string, InfraProvider>();
   for (const e of envs) {
-    const env = store.upsertEnv({ slug: e.slug, name: e.slug[0]!.toUpperCase() + e.slug.slice(1), kind: e.kind ?? "lab", color: "#22c55e", pollSeconds: 10, rules: e.rules ?? "", exportDir: "" });
+    const env = store.upsertEnv({ slug: e.slug, name: e.slug[0]!.toUpperCase() + e.slug.slice(1), kind: e.kind ?? "lab", color: "#22c55e", pollSeconds: 10, rules: e.rules ?? "", exportDir: "", actionsEnabled: e.actionsEnabled });
     for (const [label, p] of Object.entries(e.conns)) {
       const c = store.upsertConnection({ envId: env.id, label, baseUrl: `https://${label}:8006`, authKind: "token", username: "u@pve!t", tlsMode: "insecure", tlsFingerprint: "", caPem: "", enabled: true });
       providers.set(c.id, p);
@@ -138,9 +140,19 @@ export async function serviceHarness(envs: { slug: string; kind?: EnvKind; rules
     probe: async (u) => { if (u.includes("bad")) throw new Error("ECONNREFUSED"); return { fingerprint256: "AA:BB", subject: "pve", issuer: "pve", validTo: "2030" }; },
     onConfigChanged: async () => { reloads++; await hub.reload(); },
   });
+  const audits: import("./server/store.ts").ActionRow[] = [];
+  const started: import("./server/store.ts").ActionRow[] = [];
+  const protections: [string, boolean][] = [];
+  let tokenSeq = 0;
+  const actions = new ActionService({
+    store, hub, now: () => t, resolve: (x) => service.resolve(x),
+    onStarted: (r) => started.push(r), onAudit: (r) => audits.push(r),
+    onProtection: (x, v) => protections.push([x, v]), onAbortRequested: () => undefined,
+    newToken: () => `tok${++tokenSeq}`,
+  });
   await hub.reload();
   for (const c of store.listConnections()) await hub.tick(c.id, new AbortController().signal);
   const { buildIndex } = await import("./server/matcher.ts");
   (globalThis as { __infraIndex?: unknown }).__infraIndex = buildIndex(hub.snapshots(), new Map([["pve1", "pve1"]]), hub.guestIps());
-  return { service, store, hub, activity, pins, secrets, secretValue, pageBox, reloads: () => reloads, advance: (ms: number) => { t += ms; }, now: () => t };
+  return { service, actions, audits, started, protections, store, hub, activity, pins, secrets, secretValue, pageBox, reloads: () => reloads, advance: (ms: number) => { t += ms; }, now: () => t };
 }
