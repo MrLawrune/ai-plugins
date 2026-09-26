@@ -3,27 +3,27 @@
 A BB plugin (`bb/`) and a companion Claude Code plugin (`skills/`, `hooks/`)
 built around a persistent local Kokoro TTS server (`server/`). The Python
 server owns the config file, validation, and playback; the BB plugin is a
-typed RPC proxy plus a "Kokoro TTS" settings page. See `PLUGIN_OVERVIEW.md`
+typed RPC proxy plus a "Kokoro TTS" sidebar page and plugin settings. See `PLUGIN_OVERVIEW.md`
 for the end-user pitch.
 
-## What the page controls
+## Settings
 
-- Status: health, model, provider, active playbacks, Stop all, Mute.
-- Server: setup state (model download, uv install) with an Install uv
-  button, a Manage server toggle, the Runtime pick (CPU or GPU), and where
-  audio plays -- Play audio on: this browser or the server host.
-- Playback devices (when audio plays in the browser): open bb windows
-  grouped by device. Play on: the last-used window, a pinned device, or
-  every window. Rename this device. Replies play one at a time, and wait
-  for a device that briefly drops off instead of playing somewhere else.
-- Pause other media while speech plays here (only on the computer running
-  bb, on Linux with playerctl).
-- Voice: single voice grouped by language, or a weighted blend; preview.
-- Speech: mode ceiling, speed, speech volume, language, strip markdown, trim.
+The Kokoro TTS sidebar page holds:
+
+- Listening: mode, speed, and volume.
+- Voice: a single voice or a weighted blend, with a sample button.
 - Sounds: cue volume, working tick, attention ping, test buttons.
-- Output: audio device.
-- Engine: read-only model, voices, provider, port, config path, and how to
-  restart the server.
+- Where it plays: this browser or the server host; open bb windows grouped
+  by device, with Play on set to the last-used window, a pinned device, or
+  every window; rename this device; pause other media while speech plays
+  here (on the computer running bb, on Linux with playerctl).
+
+Its header shows the server status with Stop and Mute buttons.
+
+Server, runtime, synthesis engine, tuning, and diagnostics live under
+Settings > Plugins > Kokoro TTS and work while the server is down: setup
+state (model download, uv install), the Manage server toggle, the Runtime
+pick (CPU or GPU), and the synthesis engine (local or a remote node).
 
 Changes PATCH `/config` immediately and apply on the next spoken turn.
 
@@ -48,7 +48,7 @@ by `GET /speech-log`. Chips match log entries by normalized spoken text.
 
 ## Layout
 
-- `bb/` -- BB plugin: backend (`server.ts` composes `supervisor.ts`, `voice.ts`, `hub.ts`, `rpc.ts`), settings page, player content script.
+- `bb/` -- BB plugin: backend (`server.ts` composes `supervisor.ts`, `voice.ts`, `hub.ts`, `rpc.ts`), sidebar page, plugin settings, player and chip content scripts (`player/`, `chips/`).
 - `server/` -- Python Kokoro server (`uv` project; `models.json` pins model files).
 - `hooks/` -- Claude Code hooks; `skills/` -- shared skill; `.claude-plugin/` -- Claude Code manifest.
 
