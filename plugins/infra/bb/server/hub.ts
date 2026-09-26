@@ -36,7 +36,7 @@ interface ConnState {
 
 const BACKOFF_BASE_MS = 10_000;
 const BACKOFF_CAP_MS = 300_000;
-const IP_CONCURRENCY = 4;
+const GUEST_CONCURRENCY = 4;
 const PROTECTION_SWEEP_MS = 5 * 60_000;
 
 const initialHealth = (): ConnectionHealth => ({ code: "ok", message: null, lastOkAt: null, staleSince: null });
@@ -230,17 +230,24 @@ export class Hub {
     c.ipsAt = this.deps.now();
     const queue = c.inventory.guests.filter((g) => g.state === "running" && !g.template);
     const provider = c.provider;
+    await this.eachGuest(queue, signal, async (g) => {
+      const d = await provider.guestDetail({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
+      this.recordIps(`${env.slug}/${g.node}/${g.vmid}`, d.interfaces.flatMap((i) => i.ipv4));
+    });
+  }
+
+  /** Runs `fn` over `queue` with GUEST_CONCURRENCY workers until drained or aborted; a failing guest keeps its previous entry. */
+  private async eachGuest(queue: GuestState[], signal: AbortSignal, fn: (g: GuestState) => Promise<void>): Promise<void> {
     const worker = async () => {
       for (let g = queue.shift(); g && !signal.aborted; g = queue.shift()) {
         try {
-          const d = await provider.guestDetail({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
-          this.recordIps(`${env.slug}/${g.node}/${g.vmid}`, d.interfaces.flatMap((i) => i.ipv4));
+          await fn(g);
         } catch {
           // keep the previous entry
         }
       }
     };
-    await Promise.all(Array.from({ length: IP_CONCURRENCY }, worker));
+    await Promise.all(Array.from({ length: GUEST_CONCURRENCY }, worker));
   }
 
   /** True when this connection's environment sweeps guest IPs and the last sweep is older than its interval. */
@@ -274,17 +281,10 @@ export class Hub {
     const key = (g: { node: string; vmid: number }) => `${env.slug}/${g.node}/${g.vmid}`;
     const queue = c.inventory.guests.filter((g) => !g.template && (all || !this.protection.has(key(g))));
     if (all) c.protAt = this.deps.now();
-    const worker = async () => {
-      for (let g = queue.shift(); g && !signal.aborted; g = queue.shift()) {
-        try {
-          const f = await actions.facts({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
-          this.recordProtected(key(g), f.protected);
-        } catch {
-          // keep the previous value
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: IP_CONCURRENCY }, worker));
+    await this.eachGuest(queue, signal, async (g) => {
+      const f = await actions.facts({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
+      this.recordProtected(key(g), f.protected);
+    });
   }
 
   /** Poll every enabled connection on its own schedule until `signal` aborts; restarts when reload() changes the set. */
