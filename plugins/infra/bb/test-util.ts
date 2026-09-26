@@ -85,7 +85,7 @@ import type { EnvSnapshot } from "./server/hub.ts";
 import type { EnvKind, InfraEnvRow } from "./server/store.ts";
 
 export function envRow(slug: string, kind: EnvKind = "lab", over: Partial<InfraEnvRow> = {}): InfraEnvRow {
-  return { id: `id-${slug}`, slug, name: slug[0]!.toUpperCase() + slug.slice(1), kind, color: "#22c55e", pollSeconds: 10, rules: "", exportDir: "", createdAt: 0, ipRefreshMinutes: 5, conventionsPath: "", ...over };
+  return { id: `id-${slug}`, slug, name: slug[0]!.toUpperCase() + slug.slice(1), kind, color: "#22c55e", pollSeconds: 10, rules: "", exportDir: "", createdAt: 0, ipRefreshMinutes: 5, conventionsPath: "", actionsEnabled: false, ...over };
 }
 
 export function snapshotOf(env: InfraEnvRow, hosts: HostState[], guests: GuestState[] = []): EnvSnapshot {

@@ -41,3 +41,19 @@ test("the settings field only accepts a credential map", () => {
   assert.ok(isCredentialMap('{"c1":{"secret":"s"}}'));
   for (const bad of ["hunter2", "[]", "null", '{"c1":"s"}', '{"c1":{"secret":1}}']) assert.equal(isCredentialMap(bad), false, bad);
 });
+
+test("action secrets live beside the main secret and survive main-secret changes", async () => {
+  const h = memHandle();
+  const s = new Secrets(h);
+  await s.set("c1", "main1");
+  await s.setAction("c1", "act1");
+  await s.set("c1", "main2");
+  assert.equal(await s.get("c1"), "main2");
+  assert.equal(await s.getAction("c1"), "act1");
+  assert.equal(await s.hasAction("c1"), true);
+  await s.removeAction("c1");
+  assert.equal(await s.getAction("c1"), null);
+  assert.equal(await s.get("c1"), "main2");
+  assert.equal(isCredentialMap(h.value!), true);
+  assert.equal(isCredentialMap(JSON.stringify({ c1: { secret: "a", actionSecret: 5 } })), false);
+});

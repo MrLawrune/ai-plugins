@@ -1,11 +1,11 @@
 // Connection credentials live in BB's native secret storage: one secret setting holding
-// { [connectionId]: { secret } } as JSON. Never returned to the frontend.
+// { [connectionId]: { secret, actionSecret? } } as JSON. Never returned to the frontend.
 export interface SecretSettingsHandle {
   get(): Promise<{ credentials?: string }>;
   experimental_set(v: { credentials: string | null }): Promise<unknown>;
 }
 
-type CredentialMap = Record<string, { secret: string }>;
+type CredentialMap = Record<string, { secret: string; actionSecret?: string }>;
 
 function parse(raw: string | undefined): CredentialMap {
   if (!raw) return {};
@@ -23,7 +23,11 @@ export function isCredentialMap(raw: string): boolean {
   try {
     const v = JSON.parse(raw) as unknown;
     if (!v || typeof v !== "object" || Array.isArray(v)) return false;
-    return Object.values(v).every((e) => !!e && typeof e === "object" && typeof (e as { secret?: unknown }).secret === "string");
+    return Object.values(v).every((e) => {
+      if (!e || typeof e !== "object") return false;
+      const x = e as { secret?: unknown; actionSecret?: unknown };
+      return typeof x.secret === "string" && (x.actionSecret === undefined || typeof x.actionSecret === "string");
+    });
   } catch {
     return false;
   }
@@ -63,7 +67,29 @@ export class Secrets {
   }
 
   set(connectionId: string, secret: string): Promise<void> {
-    return this.update((m) => { m[connectionId] = { secret }; });
+    return this.update((m) => { m[connectionId] = { ...m[connectionId], secret }; });
+  }
+
+  async getAction(connectionId: string): Promise<string | null> {
+    await this.chain;
+    const v = (await this.read())[connectionId]?.actionSecret;
+    return typeof v === "string" && v !== "" ? v : null;
+  }
+
+  async hasAction(connectionId: string): Promise<boolean> {
+    return (await this.getAction(connectionId)) !== null;
+  }
+
+  /** Requires a main secret to exist first (the map entry needs `secret`). */
+  setAction(connectionId: string, actionSecret: string): Promise<void> {
+    return this.update((m) => {
+      if (!m[connectionId]) throw new Error("save the connection's main credential first");
+      m[connectionId] = { ...m[connectionId], actionSecret };
+    });
+  }
+
+  removeAction(connectionId: string): Promise<void> {
+    return this.update((m) => { if (m[connectionId]) delete m[connectionId].actionSecret; });
   }
 
   remove(connectionId: string): Promise<void> {

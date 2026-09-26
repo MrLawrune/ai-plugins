@@ -131,3 +131,45 @@ test("environments carry an IP sweep interval and an optional conventions file",
   assert.throws(() => s.upsertEnv({ ...envInput, id: e.id, ipRefreshMinutes: 2000 }), /IP refresh/);
   assert.throws(() => s.upsertEnv({ ...envInput, id: e.id, conventionsPath: "relative/AGENTS.md" }), /absolute/);
 });
+
+test("environments default to actions off and persist the switch", () => {
+  const s = new Store(memDb());
+  const e = s.upsertEnv({ slug: "lab", name: "Lab", kind: "lab", color: "#22c55e", pollSeconds: 10, rules: "", exportDir: "" });
+  assert.equal(e.actionsEnabled, false);
+  s.upsertEnv({ ...e, actionsEnabled: true });
+  assert.equal(s.getEnv(e.id)!.actionsEnabled, true);
+  s.upsertEnv({ id: e.id, slug: "lab", name: "Lab", kind: "lab", color: "#22c55e", pollSeconds: 10, rules: "", exportDir: "" });
+  assert.equal(s.getEnv(e.id)!.actionsEnabled, true, "omitting the field keeps the stored value");
+});
+
+test("connections keep an optional action credential identity", () => {
+  const s = new Store(memDb());
+  const e = s.upsertEnv({ slug: "lab", name: "Lab", kind: "lab", color: "#22c55e", pollSeconds: 10, rules: "", exportDir: "" });
+  const base = { envId: e.id, label: "pve1", baseUrl: "https://192.0.2.10:8006", authKind: "token" as const, username: "bb-view@pve!infra", tlsMode: "insecure" as const, tlsFingerprint: "", caPem: "", enabled: true };
+  const c = s.upsertConnection(base);
+  assert.deepEqual([c.actionAuthKind, c.actionUsername], ["", ""]);
+  s.upsertConnection({ ...base, id: c.id, actionAuthKind: "token", actionUsername: "bb-ops@pve!actions" });
+  s.upsertConnection({ ...base, id: c.id, label: "renamed" });
+  const got = s.getConnection(c.id)!;
+  assert.deepEqual([got.label, got.actionAuthKind, got.actionUsername], ["renamed", "token", "bb-ops@pve!actions"]);
+});
+
+test("action rows round-trip, update, filter, and list open rows", () => {
+  let t = 1000;
+  const s = new Store(memDb(), () => t);
+  const row = s.addAction({
+    envId: "e1", connectionId: "c1", target: "lab/pve1/201", guestName: "proxy", action: "stop", params: {}, confirm: "dialog",
+    sourceSurface: "page", sourceThreadId: null, credential: "action", upid: "UPID:x", status: "running",
+    exitstatus: null, error: null, lastLine: null, requestedAt: t, endedAt: null,
+  });
+  s.addAction({ ...row, target: "lab/pve1/202", status: "rejected", upid: null, error: "Actions are off", requestedAt: t + 1 });
+  s.addAction({ ...row, target: "lab/pve1/203", status: "unknown", upid: null, requestedAt: t + 2 });
+  assert.deepEqual(s.openActions().map((r) => r.target).sort(), ["lab/pve1/201", "lab/pve1/203"]);
+  assert.deepEqual(s.listActions({ envId: "e1", limit: 10 }).map((r) => r.target), ["lab/pve1/203", "lab/pve1/201"]);
+  assert.equal(s.listActions({ envId: "e1", limit: 10, includeRejected: true }).length, 3);
+  assert.deepEqual(s.listActions({ targetPrefix: "lab/pve1/201", limit: 10 }).map((r) => r.id), [row.id]);
+  const done = s.updateAction(row.id, { status: "ok", exitstatus: "OK", endedAt: t + 5 })!;
+  assert.deepEqual([done.status, done.exitstatus, done.endedAt, done.params], ["ok", "OK", 1005, {}]);
+  s.pruneActions(1002);
+  assert.deepEqual(s.listActions({ limit: 10, includeRejected: true }).map((r) => r.target), ["lab/pve1/203"]);
+});
