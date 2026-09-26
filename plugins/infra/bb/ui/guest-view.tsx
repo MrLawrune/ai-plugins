@@ -3,12 +3,12 @@ import { useState } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { ActionDto, ActionSource, MetricRange } from "../schemas.ts";
+import type { ActionDto, ActionSource, GuestState, MetricRange } from "../schemas.ts";
 import { ActivityList } from "./activity-feed.tsx";
 import { AskAgentMenu } from "./ask-agent.tsx";
 import { Chip, EnvBadge, ProtectedBadge, StateDot, UsageBar } from "./badges.tsx";
 import { age, bytes } from "./format.ts";
-import { ActionPill, GuestActions, useActionRunner } from "./guest-actions.tsx";
+import { ActionPill, GuestActions, SnapshotDialog, useActionRunner } from "./guest-actions.tsx";
 import { useInfraQuery, useNow } from "./hooks.ts";
 import { MetricsPanel } from "./metrics-panel.tsx";
 import { configRows, DISK_KEY, networkRows, parseDisk, type NetworkRow } from "./pve-config.ts";
@@ -50,6 +50,18 @@ function SnapshotRowActions({ target, snapname, source }: { target: string; snap
       <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void run(target, "snapshot.delete", { snapname })}>Delete</Button>
       {dialog}
     </span>
+  );
+}
+
+function TakeSnapshotButton({ target, guest, existing, source }: { target: string; guest: Pick<GuestState, "type" | "state">; existing: string[]; source: ActionSource }) {
+  const { run, dialog } = useActionRunner(source);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button size="sm" variant="outline" className="h-6 text-xs" onClick={() => setOpen(true)}>Take snapshot</Button>
+      {open ? <SnapshotDialog guest={guest} existing={existing} onCancel={() => setOpen(false)} onSubmit={(p) => { setOpen(false); void run(target, "snapshot.create", p); }} /> : null}
+      {dialog}
+    </>
   );
 }
 
@@ -200,7 +212,10 @@ export function GuestView({ target, onOpen, source, compact }: { target: string;
         <TabsContent value="storage" className="pt-3"><DiskTable config={detail.config} compact={compact} /></TabsContent>
         <TabsContent value="backups" className="space-y-4 pt-3">
           <section className="space-y-1.5">
-            <SectionTitle>Snapshots</SectionTitle>
+            <div className="flex items-center justify-between gap-2">
+              <SectionTitle>Snapshots</SectionTitle>
+              {actionsEnabled && !g.template ? <TakeSnapshotButton target={target} guest={g} existing={detail.snapshots.map((sn) => sn.name)} source={source} /> : null}
+            </div>
             {detail.snapshots.length ? (
               <DataTable>
                 <Head><Th>Name</Th><Th>Taken</Th><Th>Description</Th>{actionsEnabled ? <Th /> : null}</Head>

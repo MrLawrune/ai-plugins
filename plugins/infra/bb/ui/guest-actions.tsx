@@ -1,5 +1,5 @@
 // Guest action control: primary state button + Actions menu, confirm and snapshot dialogs, running-task pill.
-import { Fragment, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,6 +14,7 @@ import { snapshotNameError } from "../shared/actions.ts";
 import type { ActionDto, ActionKind, ActionParams, ActionSource, GuestState, PrepareResult } from "../schemas.ts";
 import { watchAction } from "./action-toasts.ts";
 import { ACTION_LABEL, canSubmit, menuActions, primaryAction, progressText } from "./actions-model.ts";
+import { EnvBadge } from "./badges.tsx";
 import { useInfraQuery, useInfraRpc } from "./hooks.ts";
 import { InfraIcon } from "./icons.tsx";
 
@@ -24,6 +25,17 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function useActionRunner(source: ActionSource) {
   const call = useInfraRpc();
   const [pending, setPending] = useState<Prepared | null>(null);
+  // Synchronous in-flight guard: a double-click must not prepare or execute twice.
+  const busy = useRef(false);
+  const guarded = async (fn: () => Promise<void>) => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      await fn();
+    } finally {
+      busy.current = false;
+    }
+  };
 
   const execute = async (token: string, typed?: string) => {
     try {
@@ -35,7 +47,7 @@ export function useActionRunner(source: ActionSource) {
     }
   };
 
-  const run = async (target: string, action: ActionKind, params: ActionParams = {}) => {
+  const run = (target: string, action: ActionKind, params: ActionParams = {}) => guarded(async () => {
     try {
       const p = await call("actionPrepare", { target, action, params, source });
       if (!p.allowed) { toast.error(p.reason); return; }
@@ -44,9 +56,9 @@ export function useActionRunner(source: ActionSource) {
     } catch (e) {
       toast.error(errorText(e));
     }
-  };
+  });
 
-  const dialog = pending ? <ConfirmActionDialog prepared={pending} onCancel={() => setPending(null)} onConfirm={(typed) => { setPending(null); void execute(pending.token, typed); }} /> : null;
+  const dialog = pending ? <ConfirmActionDialog prepared={pending} onCancel={() => setPending(null)} onConfirm={(typed) => { setPending(null); void guarded(() => execute(pending.token, typed)); }} /> : null;
   return { run, dialog };
 }
 
@@ -57,6 +69,7 @@ function ConfirmActionDialog({ prepared: p, onCancel, onConfirm }: { prepared: P
     <AlertDialog open onOpenChange={(o) => { if (!o) onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
+          <EnvBadge env={p.env} className="self-start" />
           <AlertDialogTitle>{p.title}</AlertDialogTitle>
           <AlertDialogDescription>{p.summary}</AlertDialogDescription>
         </AlertDialogHeader>

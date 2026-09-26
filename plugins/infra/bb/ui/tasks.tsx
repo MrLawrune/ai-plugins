@@ -28,8 +28,10 @@ export function TaskList({ tasks, target, tracked = [] }: { tasks: TaskEntry[]; 
               <span className="w-10 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{age(now - t.start * 1000)}</span>
               <button type="button" className="font-mono text-xs hover:underline" disabled={!target} onClick={() => setLog(t)}>{t.type}{t.id ? ` ${t.id}` : ""}</button>
               <span className="truncate text-xs text-muted-foreground">{mine ? `you · ${mine.sourceSurface === "thread-panel" ? "thread panel" : "Infra page"}` : t.user}</span>
-              {mine && isOpen(mine) ? <Button size="sm" variant="ghost" className="ml-auto h-6 text-xs" onClick={() => setAbortFor(mine)}>Stop task</Button> : null}
-              <span className={t.status === "OK" ? "ml-auto text-xs text-muted-foreground" : t.status === null ? "ml-auto text-xs text-emerald-600 dark:text-emerald-400" : "ml-auto text-xs text-destructive"}>{t.status ?? "running"}</span>
+              <span className="ml-auto flex shrink-0 items-center gap-2">
+                {mine && isOpen(mine) ? <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setAbortFor(mine)}>Stop task</Button> : null}
+                <span className={t.status === "OK" ? "text-xs text-muted-foreground" : t.status === null ? "text-xs text-emerald-600 dark:text-emerald-400" : "text-xs text-destructive"}>{t.status ?? "running"}</span>
+              </span>
             </li>
           );
         })}
