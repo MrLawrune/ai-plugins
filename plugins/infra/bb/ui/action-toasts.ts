@@ -3,15 +3,24 @@ import { toast } from "sonner";
 import type { ActionDto } from "../schemas.ts";
 import { isOpen, progressText } from "./actions-model.ts";
 
+/** Loading toasts expire after this even if no final signal ever arrives. */
+export const LOADING_BACKSTOP_MS = 10 * 60_000;
+
 const watched = new Set<string>();
+const warned = new Set<string>();
 
 function show(a: ActionDto): void {
   const p = progressText(a);
   const opts = { id: a.id, description: isOpen(a) ? a.lastLine ?? undefined : a.status === "failed" ? a.error?.split("\n").slice(-3).join("\n") : undefined };
-  if (p.tone === "loading") toast.loading(p.text, opts);
+  if (p.tone === "loading") toast.loading(p.text, { ...opts, duration: LOADING_BACKSTOP_MS });
   else if (p.tone === "success") toast.success(p.text, opts);
   else if (p.tone === "warning") toast.warning(p.text, opts);
   else toast.error(p.text, { ...opts, duration: 15_000 });
+}
+
+function unwatch(id: string): void {
+  watched.delete(id);
+  warned.delete(id);
 }
 
 export function watchAction(a: ActionDto): void {
@@ -20,9 +29,23 @@ export function watchAction(a: ActionDto): void {
 }
 
 export const isWatched = (id: string) => watched.has(id);
+export const watchedIds = (): string[] => [...watched];
 
 export function updateWatched(a: ActionDto): void {
   if (!watched.has(a.id)) return;
-  if (!isOpen(a)) watched.delete(a.id);
+  if (!isOpen(a)) unwatch(a.id);
   show(a);
+}
+
+/** The action no longer exists server-side: stop watching and drop its toast. */
+export function forgetWatched(id: string): void {
+  unwatch(id);
+  toast.dismiss(id);
+}
+
+/** Fetching the action failed; keep watching (a later signal or reconnect may succeed) but warn once per id. */
+export function refreshFailed(id: string, error: unknown): void {
+  if (warned.has(id)) return;
+  warned.add(id);
+  console.warn(`infra: could not refresh action ${id}`, error);
 }

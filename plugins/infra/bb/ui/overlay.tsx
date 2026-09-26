@@ -1,10 +1,10 @@
 // App-wide overlay (no UI of its own): inventory-change toasts, live action toasts, and sidebar row status for running agents.
 import { useEffect, useRef, useState } from "react";
-import { useBbNavigate, useRealtime } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRealtime, useRealtimeConnectionState } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { EventsSignal } from "../schemas.ts";
 import { CHANNELS } from "../shared/constants.ts";
-import { isWatched, updateWatched } from "./action-toasts.ts";
+import { forgetWatched, isWatched, refreshFailed, updateWatched, watchedIds } from "./action-toasts.ts";
 import { useInfraQuery, useInfraRpc } from "./hooks.ts";
 import { PANEL_PATH } from "./page.tsx";
 import { applyStatuses, onSetterReady } from "./row-status.ts";
@@ -33,11 +33,21 @@ export function InfraOverlay() {
   }, [q.data, ready]);
 
   const call = useInfraRpc();
+  const refreshAction = (id: string) => {
+    void call("actionGet", { actionId: id }).then((r) => (r.found ? updateWatched(r.action) : forgetWatched(id)), (e: unknown) => refreshFailed(id, e));
+  };
   useRealtime(CHANNELS.task, (payload) => {
     const id = (payload as { actionId?: unknown } | null)?.actionId;
-    if (typeof id !== "string" || !isWatched(id)) return;
-    void call("actionGet", { actionId: id }).then((r) => { if (r.found) updateWatched(r.action); }, () => undefined);
+    if (typeof id === "string" && isWatched(id)) refreshAction(id);
   });
+  // Signals sent while disconnected are lost; catch up on every watched action after a reconnect.
+  const conn = useRealtimeConnectionState();
+  const prevConn = useRef(conn);
+  useEffect(() => {
+    if (prevConn.current !== "connected" && conn === "connected") watchedIds().forEach(refreshAction);
+    prevConn.current = conn;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn]);
 
   const pending = useRef(new Map<string, { events: EventsSignal["events"]; timer: ReturnType<typeof setTimeout> }>());
   useEffect(() => () => { for (const p of pending.current.values()) clearTimeout(p.timer); }, []);
