@@ -8,7 +8,7 @@ import { ClientRegistry } from "./clients.ts";
 import { PlayerHub } from "./hub.ts";
 import { createKokoroClient, portOf, type KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
-import { SOUNDS } from "./protocol.ts";
+import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
@@ -40,7 +40,7 @@ export default async function plugin(bb: BbPluginApi) {
   const hub = new PlayerHub({
     registry,
     routing: () => prefs.get(),
-    synthesize: (text, signal) => client.synthesize(text, signal),
+    synthesize: (text, signal, opts) => client.synthesize(text, signal, opts),
     log: (message) => bb.log.info(message),
     // Other media is only paused for a window on this computer.
     speaking: ({ key, on, local }) => {
@@ -48,6 +48,7 @@ export default async function plugin(bb: BbPluginApi) {
       void client.call("POST", "/other-audio", { action: on ? "start" : "end", key }).catch(() => undefined);
     },
     reportStatus: async (id, status, extra) => {
+      if (id >= PREVIEW_ID_BASE) return;
       await client.call("POST", "/speech-log/status", {
         id, status, first_audio_ms: extra?.firstAudioMs, error: extra?.error,
       });

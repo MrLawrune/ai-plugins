@@ -590,11 +590,11 @@ class KokoroServer:
         body, status = await self._start_speech(text, data, session_id)
         return web.json_response(body, status=status)
 
-    async def _start_speech(self, text: str, data: dict, session_id: str) -> tuple[dict, int]:
+    async def _start_speech(self, text: str, data: dict, session_id: str, allow_muted: bool = False) -> tuple[dict, int]:
         if HEADLESS:
             return {"error": "headless node: use /synthesize"}, 501
         entry = self.speech_log.add(text, session_id) if session_id != "preview" else None
-        if self.muted:
+        if self.muted and not allow_muted:
             if entry:
                 self.speech_log.update(entry, "muted")
             return {"status": "muted", "session_id": session_id}, 200
@@ -645,12 +645,9 @@ class KokoroServer:
         if not isinstance(text, str):
             return _bad("text must be a string")
         text = text.strip()
-        was_muted = self.muted
-        self.muted = False  # preview must be audible
-        try:
-            return await self._speak(text, data, "preview")
-        finally:
-            self.muted = was_muted
+        # Preview must be audible even while muted, without unmuting anything else.
+        body, status = await self._start_speech(text, data, "preview", allow_muted=True)
+        return web.json_response(body, status=status)
 
     # --- config endpoints ---
 

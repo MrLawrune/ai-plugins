@@ -48,8 +48,9 @@ def make_server(tmp_path):
     srv.port = 6789
     srv._config_lock = asyncio.Lock()
 
-    async def fake_speech(text, data, session_id):
+    async def fake_speech(text, data, session_id, allow_muted=False):
         srv.calls.append(("speech", text, session_id, data))
+        srv.allow_muted_seen = allow_muted
         return {"status": "playing", "session_id": session_id}, 200
 
     async def fake_sound(sound, session_id, volume=None):
@@ -502,3 +503,10 @@ def test_synthesize_marks_a_mid_stream_failure(tmp_path):
     header, raw = asyncio.run(go())
     assert header == "2"
     assert raw[-4:] == (0xFFFFFFFF).to_bytes(4, "little")
+
+
+def test_preview_plays_while_muted_without_unmuting(tmp_path):
+    srv = make_server(tmp_path)
+    srv.muted = True
+    status, _ = request(srv, "POST", "/preview", {"text": "Hi."})
+    assert status == 200 and srv.allow_muted_seen is True and srv.muted is True

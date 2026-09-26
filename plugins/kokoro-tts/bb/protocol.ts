@@ -55,3 +55,6 @@ export function decodeFrame(buf: Uint8Array): { entryId: number; pcm: Float32Arr
   const bytes = buf.slice(4);
   return { entryId, pcm: new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 2) };
 }
+
+/** Entry ids at or above this are page previews: played like replies, never logged. */
+export const PREVIEW_ID_BASE = 0xf000_0000;

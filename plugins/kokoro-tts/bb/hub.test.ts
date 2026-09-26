@@ -695,3 +695,23 @@ test("a window marked local is reported so, in clients() and speaking events", a
   hub.onMessage(s, JSON.stringify({ type: "status", entryId: 7, status: "playing" }));
   assert.deepEqual(speaking, [{ key: "7", on: true, local: true }]);
 });
+
+test("speak forwards synthesis options", async () => {
+  const seen: unknown[] = [];
+  const registry = new ClientRegistry();
+  const clock = fakeClock();
+  const hub = new PlayerHub({
+    registry,
+    routing: () => ({ playOn: "follow", pinnedDevice: null }),
+    async *synthesize(_text, _signal, opts) { seen.push(opts); yield new Uint8Array(4); },
+    reportStatus: async () => {},
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    now: clock.now,
+  });
+  const s = new FakeSocket();
+  hub.onMessage(s, JSON.stringify({ type: "hello", clientId: "a", deviceName: "a", focusedAt: 1, audioUnlocked: true }));
+  hub.speak(7, "Hi.", "preview", 1, { voice: "af_bella", speed: 1.3 });
+  await tick();
+  assert.deepEqual(seen, [{ voice: "af_bella", speed: 1.3 }]);
+});
