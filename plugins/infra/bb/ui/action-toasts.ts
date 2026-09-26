@@ -3,16 +3,17 @@ import { toast } from "sonner";
 import type { ActionDto } from "../schemas.ts";
 import { isOpen, progressText } from "./actions-model.ts";
 
-/** Loading toasts expire after this even if no final signal ever arrives. */
+/** An action still open after this is given up on (sonner never auto-dismisses loading toasts). */
 export const LOADING_BACKSTOP_MS = 10 * 60_000;
 
 const watched = new Set<string>();
 const warned = new Set<string>();
+const backstops = new Map<string, ReturnType<typeof setTimeout>>();
 
 function show(a: ActionDto): void {
   const p = progressText(a);
   const opts = { id: a.id, description: isOpen(a) ? a.lastLine ?? undefined : a.status === "failed" ? a.error?.split("\n").slice(-3).join("\n") : undefined };
-  if (p.tone === "loading") toast.loading(p.text, { ...opts, duration: LOADING_BACKSTOP_MS });
+  if (p.tone === "loading") toast.loading(p.text, opts);
   else if (p.tone === "success") toast.success(p.text, opts);
   else if (p.tone === "warning") toast.warning(p.text, opts);
   else toast.error(p.text, { ...opts, duration: 15_000 });
@@ -21,10 +22,19 @@ function show(a: ActionDto): void {
 function unwatch(id: string): void {
   watched.delete(id);
   warned.delete(id);
+  clearTimeout(backstops.get(id));
+  backstops.delete(id);
 }
 
 export function watchAction(a: ActionDto): void {
-  if (isOpen(a)) watched.add(a.id);
+  if (isOpen(a)) {
+    watched.add(a.id);
+    clearTimeout(backstops.get(a.id));
+    backstops.set(a.id, setTimeout(() => {
+      unwatch(a.id);
+      toast.warning(`Still running: ${progressText(a).text.replace(/….*$/, "")}`, { id: a.id, description: "Check the Tasks tab for its outcome." });
+    }, LOADING_BACKSTOP_MS));
+  }
   show(a);
 }
 
