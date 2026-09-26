@@ -69,6 +69,7 @@ export default async function plugin(bb: BbPluginApi) {
       hub.routingChanged();
     }
   });
+  prefs.onChange((next) => bb.realtime.publish("kokoro-prefs", next));
 
   let supervisor: Supervisor | null = null;
   let serverUrl = (await settings.get()).serverUrl;
@@ -78,7 +79,9 @@ export default async function plugin(bb: BbPluginApi) {
     supervisor?.restart();
   });
   bb.log.info(`proxying to ${client.baseUrl}`);
-  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, hub, log: bb.log });
+  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, hub, log: bb.log,
+    publish: (channel, payload) => bb.realtime.publish(channel, payload),
+  });
 
   const root = locatePluginRoot(path.dirname(fileURLToPath(import.meta.url)));
   if (!root) {

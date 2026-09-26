@@ -14,6 +14,7 @@ export interface RpcDeps {
   prefs: PrefsStore;
   hub: Pick<PlayerHub, "clients" | "stop" | "speak" | "sound" | "hasReadyClient">;
   log: BbPluginApi["log"];
+  publish: (channel: string, payload: unknown) => void;
 }
 
 /** Same sample sentence as the Python server's PREVIEW_TEXT. */
@@ -40,16 +41,26 @@ export function installerFailure(code: number, output: string): string {
 export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const call = <T>(...a: Parameters<KokoroClient["call"]>) => deps.client().call<T>(...a);
   let installing = false;
+  const health = async () => {
+    try {
+      return { up: true as const, health: await call<Health>("GET", "/health") };
+    } catch (cause) {
+      return { up: false as const, error: cause instanceof Error ? cause.message : String(cause) };
+    }
+  };
   bb.rpc.register(rpcContract, {
-    async health() {
-      try {
-        return { up: true as const, health: await call<Health>("GET", "/health") };
-      } catch (cause) {
-        return { up: false as const, error: cause instanceof Error ? cause.message : String(cause) };
-      }
-    },
+    health,
+    status: async () => ({
+      health: await health(),
+      setup: deps.supervisor()?.status() ?? brokenInstallStatus,
+      clients: deps.hub.clients(),
+    }),
     getConfig: () => call<ConfigResponse>("GET", "/config"),
-    patchConfig: (patch) => call<ConfigResponse>("PATCH", "/config", patch),
+    patchConfig: async (patch) => {
+      const next = await call<ConfigResponse>("PATCH", "/config", patch);
+      deps.publish("kokoro-config", next);
+      return next;
+    },
     listVoices: () => call("GET", "/voices"),
     listDevices: () => call("GET", "/devices"),
     // Previews and sound tests play where replies play: in a browser window

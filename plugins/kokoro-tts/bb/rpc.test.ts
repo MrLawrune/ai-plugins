@@ -4,17 +4,22 @@ import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import type { KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
 import { installerFailure, registerRpc } from "./rpc.ts";
+import type { KokoroStatus } from "./schemas.ts";
+import { CONFIG_RESPONSE, HEALTH } from "./page/fixtures.ts";
 
 function harness(playback: "client" | "server" = "server", ready = true) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   const stops: (string | null)[] = [];
   const spoken: unknown[][] = [];
   const sounds: unknown[][] = [];
+  const published: [string, unknown][] = [];
   const client: KokoroClient = {
     baseUrl: "http://127.0.0.1:6789",
     async call<T>(method: string, path: string, body?: unknown) {
       calls.push({ method, path, body });
       if (path === "/mute") return { muted: (body as { muted: boolean }).muted } as T;
+      if (path === "/health") return HEALTH as T;
+      if (method === "PATCH" && path === "/config") return { ...CONFIG_RESPONSE, config: { ...CONFIG_RESPONSE.config, ...(body as object) } } as T;
       if (path === "/config") return { config: { speech_gain: 0.8, sound_volume: 0.6 } } as T;
       return { sessions_cancelled: 0, status: "playing" } as T;
     },
@@ -34,8 +39,9 @@ function harness(playback: "client" | "server" = "server", ready = true) {
       hasReadyClient: () => ready,
     },
     log: host.bb.log,
+    publish: (c, p) => { published.push([c, p]); },
   });
-  return { host, calls, stops, spoken, sounds, ready: prefs.update({ playback }) };
+  return { host, calls, stops, spoken, sounds, published, ready: prefs.update({ playback }) };
 }
 
 test("Stop all also stops browser playback", async () => {
@@ -95,4 +101,20 @@ test("sound tests follow browser playback at the configured cue volume", async (
   await h.ready;
   await h.host.harness.callRpc("playSound", { sound: "done" });
   assert.deepEqual(h.sounds, [["done", 0.6, "bb-preview"]]);
+});
+
+test("status bundles health, setup and clients", async () => {
+  const h = harness();
+  const s = (await h.host.harness.callRpc("status", null)) as KokoroStatus;
+  assert.equal(s.health.up, true);
+  assert.equal(s.setup.state, "error"); // no supervisor in this harness
+  assert.deepEqual(s.clients, []);
+});
+
+test("a config change is published to every window", async () => {
+  const h = harness();
+  await h.host.harness.callRpc("patchConfig", { speed: 1.2 });
+  const [channel, payload] = h.published.at(-1)!;
+  assert.equal(channel, "kokoro-config");
+  assert.equal((payload as typeof CONFIG_RESPONSE).config.speed, 1.2);
 });
