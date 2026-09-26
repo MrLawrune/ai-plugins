@@ -4,7 +4,7 @@ export type EnvKind = (typeof ENV_KINDS)[number];
 export const RULES_MAX = 4096;
 
 /** Realtime channels published by the backend. Payloads carry ids only; the UI refetches over RPC. */
-export const CHANNELS = { changed: "infra:changed", activity: "infra:activity", events: "infra:events" } as const;
+export const CHANNELS = { changed: "infra:changed", activity: "infra:activity", events: "infra:events", task: "infra:task" } as const;
 
 /** Poll interval defaults by environment kind: lab work is live, production and customer systems are polled politely. */
 export const DEFAULT_POLL_SECONDS: Record<EnvKind, number> = { lab: 10, dev: 10, staging: 30, prod: 60, customer: 60, other: 30 };

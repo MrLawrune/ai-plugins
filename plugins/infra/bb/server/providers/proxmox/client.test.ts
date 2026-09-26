@@ -10,17 +10,21 @@ import { portOf, probeCertificate } from "./tls.ts";
 const key = readFileSync(new URL("../../../fixtures/tls/key.pem", import.meta.url));
 const cert = readFileSync(new URL("../../../fixtures/tls/cert.pem", import.meta.url));
 
-type Reply = { status: number; json?: unknown };
+type Reply = { status: number; json?: unknown; reason?: string };
 
 async function server(handler: (req: IncomingMessage, body: string) => Reply, opts: { close?: boolean } = {}) {
-  const seen: { path: string; auth?: string; cookie?: string }[] = [];
+  const seen: { method: string; path: string; body: string; auth?: string; cookie?: string; csrf?: string; ctype?: string }[] = [];
   const s = createServer({ key, cert }, (req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      seen.push({ path: req.url!, auth: req.headers.authorization, cookie: req.headers.cookie });
+      seen.push({
+        method: req.method!, path: req.url!, body, auth: req.headers.authorization, cookie: req.headers.cookie,
+        csrf: req.headers.csrfpreventiontoken as string | undefined, ctype: req.headers["content-type"],
+      });
       const r = handler(req, body);
-      res.writeHead(r.status, { "content-type": "application/json", ...(opts.close ? { connection: "close" } : {}) });
+      const headers = { "content-type": "application/json", ...(opts.close ? { connection: "close" } : {}) };
+      if (r.reason) res.writeHead(r.status, r.reason, headers); else res.writeHead(r.status, headers);
       res.end(JSON.stringify(r.json ?? {}));
     });
   });
@@ -121,4 +125,51 @@ test("pinned connections keep verifying when the TLS session is resumed on new s
 test("the certificate probe uses the same port as requests", () => {
   assert.equal(portOf("https://pve.example.com/"), 443);
   assert.equal(portOf("https://192.0.2.1:8006"), 8006);
+});
+
+test("token writes are form-encoded and carry no CSRF header", async () => {
+  const srv = await server(() => ({ status: 200, json: { data: "UPID:pve1:1:2:3:vzstart:201:u@pve!t:" } }));
+  const c = new PveClient({ baseUrl: srv.url, auth: { kind: "token", tokenId: "u@pve!t", secret: "x" }, tls: { mode: "insecure" } });
+  assert.equal(await c.post("/nodes/pve1/lxc/201/snapshot", { snapname: "a b", vmstate: true }), "UPID:pve1:1:2:3:vzstart:201:u@pve!t:");
+  const s = srv.seen[0]!;
+  assert.equal(s.method, "POST");
+  assert.equal(s.ctype, "application/x-www-form-urlencoded");
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(s.body)), { snapname: "a b", vmstate: "1" });
+  assert.equal(s.csrf, undefined);
+  await c.close(); await srv.close();
+});
+
+test("DELETE sends parameters in the query string and no body", async () => {
+  const srv = await server(() => ({ status: 200, json: { data: null } }));
+  const c = new PveClient({ baseUrl: srv.url, auth: { kind: "token", tokenId: "u@pve!t", secret: "x" }, tls: { mode: "insecure" } });
+  await c.delete("/nodes/pve1/lxc/201/snapshot/pre", { force: false });
+  assert.equal(srv.seen[0]!.method, "DELETE");
+  assert.equal(srv.seen[0]!.path, "/api2/json/nodes/pve1/lxc/201/snapshot/pre?force=0");
+  assert.equal(srv.seen[0]!.body, "");
+  await c.close(); await srv.close();
+});
+
+test("password writes send the CSRF token from login; reads do not", async () => {
+  const srv = await server((req) => req.url === "/api2/json/access/ticket"
+    ? { status: 200, json: { data: { ticket: "T1", CSRFPreventionToken: "CSRF1" } } }
+    : { status: 200, json: { data: null } });
+  const c = new PveClient({ baseUrl: srv.url, auth: { kind: "password", username: "u@pam", password: "p" }, tls: { mode: "insecure" } });
+  await c.get("/version");
+  await c.put("/nodes/pve1/qemu/101/config", { protection: 1 });
+  const [, read, write] = srv.seen;
+  assert.equal(read!.csrf, undefined);
+  assert.equal(write!.method, "PUT");
+  assert.equal(write!.cookie, "PVEAuthCookie=T1");
+  assert.equal(write!.csrf, "CSRF1");
+  await c.close(); await srv.close();
+});
+
+test("write errors carry Proxmox's reason and HTTP status", async () => {
+  let reply: Reply = { status: 500, reason: "CT 201 not running" };
+  const srv = await server(() => reply);
+  const c = new PveClient({ baseUrl: srv.url, auth: { kind: "token", tokenId: "u@pve!t", secret: "x" }, tls: { mode: "insecure" } });
+  await assert.rejects(c.post("/nodes/pve1/lxc/201/status/stop"), (e: unknown) => e instanceof PveError && e.code === "degraded" && e.status === 500 && /CT 201 not running/.test(e.message));
+  reply = { status: 403, reason: "Permission check failed (/vms/201, VM.PowerMgmt)" };
+  await assert.rejects(c.post("/nodes/pve1/lxc/201/status/stop"), (e: unknown) => e instanceof PveError && e.status === 403 && /VM\.PowerMgmt/.test(e.message));
+  await c.close(); await srv.close();
 });

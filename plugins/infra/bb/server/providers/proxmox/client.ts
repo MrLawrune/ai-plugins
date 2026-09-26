@@ -1,4 +1,4 @@
-// Minimal Proxmox VE API client: GET only (plus the login ticket), token or password auth.
+// Minimal Proxmox VE API client: token or password auth; GET plus form-encoded POST/PUT/DELETE.
 import { fetch as undiciFetch, type Dispatcher } from "undici";
 import type { HealthCode } from "../types.ts";
 import { createDispatcher, TlsPinError, type TlsMode } from "./tls.ts";
@@ -28,6 +28,10 @@ export class PveError extends Error {
 const TICKET_TTL_MS = 90 * 60_000;
 const TLS_CODE = /^(ERR_TLS_|CERT_|UNABLE_TO_|DEPTH_ZERO_SELF_SIGNED|SELF_SIGNED_CERT)/;
 
+type Params = Record<string, string | number | boolean>;
+export type PveParams = Params;
+const encode = (p: Params) => new URLSearchParams(Object.entries(p).map(([k, v]) => [k, typeof v === "boolean" ? (v ? "1" : "0") : String(v)])).toString();
+
 function classify(e: unknown): PveError {
   if (e instanceof PveError) return e;
   let cur: unknown = e;
@@ -45,7 +49,7 @@ export class PveClient {
   private readonly dispatcher: Dispatcher;
   private readonly base: string;
   private readonly opts: ClientOptions;
-  private ticket: { value: string; at: number } | null = null;
+  private ticket: { value: string; csrf: string; at: number } | null = null;
 
   constructor(opts: ClientOptions) {
     this.opts = opts;
@@ -57,7 +61,7 @@ export class PveClient {
     return (this.opts.now ?? Date.now)();
   }
 
-  private async request(method: "GET" | "POST", path: string, init: { headers: Record<string, string>; body?: string }, signal?: AbortSignal) {
+  private async request(method: "GET" | "POST" | "PUT" | "DELETE", path: string, init: { headers: Record<string, string>; body?: string }, signal?: AbortSignal) {
     const timeout = AbortSignal.timeout(this.opts.timeoutMs ?? 5000);
     try {
       return await undiciFetch(this.base + path, {
@@ -78,30 +82,55 @@ export class PveClient {
     const res = await this.request("POST", "/access/ticket", { headers: { "content-type": "application/x-www-form-urlencoded" }, body }, signal);
     if (res.status === 401 || res.status === 403) throw new PveError("auth-failed", "login rejected", res.status);
     if (!res.ok) throw new PveError("degraded", `login failed: HTTP ${res.status}`, res.status);
-    const json = (await res.json()) as { data?: { ticket?: string } };
+    const json = (await res.json()) as { data?: { ticket?: string; CSRFPreventionToken?: string } };
     if (!json.data?.ticket) throw new PveError("auth-failed", "login returned no ticket", res.status);
-    this.ticket = { value: json.data.ticket, at: this.now() };
+    this.ticket = { value: json.data.ticket, csrf: json.data.CSRFPreventionToken ?? "", at: this.now() };
     return json.data.ticket;
   }
 
-  private async authHeaders(signal?: AbortSignal): Promise<Record<string, string>> {
+  private async authHeaders(write: boolean, signal?: AbortSignal): Promise<Record<string, string>> {
     const a = this.opts.auth;
     if (a.kind === "token") return { authorization: `PVEAPIToken=${a.tokenId}=${a.secret}` };
     const fresh = this.ticket && this.now() - this.ticket.at < TICKET_TTL_MS;
-    return { cookie: `PVEAuthCookie=${fresh ? this.ticket!.value : await this.login(signal)}` };
+    const value = fresh ? this.ticket!.value : await this.login(signal);
+    return { cookie: `PVEAuthCookie=${value}`, ...(write ? { csrfpreventiontoken: this.ticket!.csrf } : {}) };
   }
 
-  async get<T>(path: string, query?: Record<string, string | number>, signal?: AbortSignal): Promise<T> {
-    const qs = query ? "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString() : "";
-    let res = await this.request("GET", path + qs, { headers: await this.authHeaders(signal) }, signal);
+  private async send<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, params: Params | undefined, signal?: AbortSignal): Promise<T> {
+    const inBody = method === "POST" || method === "PUT";
+    const qs = !inBody && params && Object.keys(params).length ? "?" + encode(params) : "";
+    const body = inBody ? encode(params ?? {}) : undefined;
+    const write = method !== "GET";
+    const init = async () => ({
+      headers: { ...(await this.authHeaders(write, signal)), ...(body !== undefined ? { "content-type": "application/x-www-form-urlencoded" } : {}) },
+      body,
+    });
+    let res = await this.request(method, path + qs, await init(), signal);
     if (res.status === 401 && this.opts.auth.kind === "password") {
       await res.body?.cancel();
       this.ticket = null;
-      res = await this.request("GET", path + qs, { headers: await this.authHeaders(signal) }, signal);
+      res = await this.request(method, path + qs, await init(), signal);
     }
-    if (res.status === 401 || res.status === 403) throw new PveError("auth-failed", `HTTP ${res.status} for ${path}`, res.status);
-    if (!res.ok) throw new PveError("degraded", `HTTP ${res.status} for ${path}`, res.status);
+    const reason = write && res.statusText ? `${res.statusText} (${method} ${path})` : `HTTP ${res.status} for ${path}`;
+    if (res.status === 401 || res.status === 403) { await res.body?.cancel(); throw new PveError("auth-failed", reason, res.status); }
+    if (!res.ok) { await res.body?.cancel(); throw new PveError("degraded", reason, res.status); }
     return ((await res.json()) as { data: T }).data;
+  }
+
+  get<T>(path: string, query?: Record<string, string | number>, signal?: AbortSignal): Promise<T> {
+    return this.send<T>("GET", path, query, signal);
+  }
+
+  post<T>(path: string, params?: Params, signal?: AbortSignal): Promise<T> {
+    return this.send<T>("POST", path, params, signal);
+  }
+
+  put<T>(path: string, params?: Params, signal?: AbortSignal): Promise<T> {
+    return this.send<T>("PUT", path, params, signal);
+  }
+
+  delete<T>(path: string, params?: Params, signal?: AbortSignal): Promise<T> {
+    return this.send<T>("DELETE", path, params, signal);
   }
 
   async close(): Promise<void> {
