@@ -10,7 +10,7 @@ import type { Pins } from "./pins.ts";
 import type { CertInfo } from "./providers/proxmox/tls.ts";
 import type { GuestDetail, GuestRef, GuestState, HostState, InfraProvider, MetricRange } from "./providers/types.ts";
 import type { Secrets } from "./secrets.ts";
-import type { ActivityRow, ChangeRow, InfraEnvRow, PinRow, Store } from "./store.ts";
+import type { ActionRow, ActivityRow, ChangeRow, InfraEnvRow, PinRow, Store } from "./store.ts";
 import { parseTarget } from "./targets.ts";
 
 export interface ServiceDeps {
@@ -43,6 +43,8 @@ export const badge = (e: InfraEnvRow): EnvBadgeDto => ({ slug: e.slug, name: e.n
 const actDto = (a: ActivityRow): ActivityDto => ({ threadId: a.threadId, itemId: a.itemId, target: a.target, command: a.command, phase: a.phase, exitCode: a.exitCode, at: a.at });
 const changeDto = (c: ChangeRow): ChangeDto => ({ target: c.target, kind: c.kind, detail: c.detail, threadId: c.threadId, at: c.at });
 const underTarget = (t: string, prefix: string) => t === prefix || t.startsWith(prefix + "/");
+const OPEN: ReadonlySet<string> = new Set(["running", "unknown"]);
+const openAction = (rows: ActionRow[]): ActionRow | null => rows.find((a) => OPEN.has(a.status) && a.endedAt === null) ?? null;
 
 /** One row per command run and target: the completed row when present, else the started one. Order is kept. */
 export function collapseRuns(rows: ActivityDto[]): ActivityDto[] {
@@ -117,7 +119,12 @@ export class InfraService {
     const provider = r.provider;
     const detail = await this.d.hub.cached(`guest:${r.target}`, DETAIL_TTL, () => provider.guestDetail(r.ref, AbortSignal.timeout(10_000)));
     this.d.hub.recordIps(r.target, detail.interfaces.flatMap((i) => i.ipv4));
+    this.d.hub.recordProtected(r.target, detail.protected);
     return detail;
+  }
+
+  private runningAction(target: string): ActionRow | null {
+    return openAction(this.d.store.listActions({ targetPrefix: target, limit: 5 }).filter((a) => a.target === target));
   }
 
   // ---- context (agents) ----
@@ -232,15 +239,20 @@ export class InfraService {
     const recent = this.d.store.activityFor({ envId: s.env.id, limit: 200 });
     const activeTargets = new Set(recent.filter((a) => a.at >= since).map((a) => a.target));
     for (const ts of this.d.activity.running().values()) ts.forEach((t) => activeTargets.add(t));
+    const open = this.d.store.openActions().filter((a) => a.envId === s.env.id);
     return {
       env: badge(s.env),
       health: envHealth(s),
       connections: s.connections,
       hosts: s.hosts,
-      guests: s.guests.map((g) => ({ ...g, ips: ips.get(`${slug}/${g.node}/${g.vmid}`) ?? [], active: activeTargets.has(`${slug}/${g.node}/${g.vmid}`) })),
+      guests: s.guests.map((g) => {
+        const t = `${slug}/${g.node}/${g.vmid}`;
+        return { ...g, ips: ips.get(t) ?? [], active: activeTargets.has(t), protected: this.d.hub.protectedOf(t), action: open.find((a) => a.target === t) ?? null };
+      }),
       storage: s.storage,
       updatedAt: s.updatedAt,
       recentActivity: recent.slice(0, 20).map(actDto),
+      actionsEnabled: s.env.actionsEnabled,
     };
   }
 
@@ -269,6 +281,9 @@ export class InfraService {
       env: badge(r.snap.env), detail, activity: this.recent(r.target, 50).map(actDto),
       changes: this.d.store.changes({ envId: r.snap.env.id, limit: 500 }).filter((c) => c.target === r.target).slice(0, 20).map(changeDto),
       webUrl: r.provider.webUrl(r.ref),
+      actionsEnabled: r.snap.env.actionsEnabled,
+      action: this.runningAction(r.target),
+      tracked: this.d.store.listActions({ targetPrefix: r.target, limit: 20 }).filter((a) => a.target === r.target),
     };
   }
 
@@ -276,7 +291,10 @@ export class InfraService {
     const r = this.resolve(target);
     if (!r || r.kind !== "guest") return null;
     const running = [...this.d.activity.running().values()].some((ts) => ts.includes(r.target));
-    return { env: badge(r.snap.env), guest: r.guest, ips: this.d.hub.guestIps().get(r.target) ?? [], running };
+    return {
+      env: badge(r.snap.env), guest: r.guest, ips: this.d.hub.guestIps().get(r.target) ?? [], running,
+      protected: this.d.hub.protectedOf(r.target), action: this.runningAction(r.target),
+    };
   }
 
   hostSummary(target: string) {
@@ -303,14 +321,34 @@ export class InfraService {
     return this.d.hub.cached(`rrd:${r.target}:${range}`, DETAIL_TTL, () => provider.metrics(ref, range, AbortSignal.timeout(10_000)));
   }
 
-  activity(q: { envSlug?: string; target?: string; threadId?: string; limit: number }): { items: ActivityDto[]; changes: ChangeDto[] } {
+  activity(q: { envSlug?: string; target?: string; threadId?: string; limit: number }): { items: ActivityDto[]; changes: ChangeDto[]; actions: ActionRow[] } {
     const envId = q.envSlug ? this.d.hub.snapshot(q.envSlug)?.env.id : undefined;
-    if (q.envSlug && !envId) return { items: [], changes: [] };
+    if (q.envSlug && !envId) return { items: [], changes: [], actions: [] };
     const items = this.d.store.activityFor({ envId, targetPrefix: q.target, threadId: q.threadId, limit: q.limit }).map(actDto);
     const changes = q.threadId
       ? []
       : this.d.store.changes({ envId, limit: q.limit * 4 }).filter((c) => !q.target || underTarget(c.target, q.target)).slice(0, q.limit).map(changeDto);
-    return { items, changes };
+    const actions = this.d.store.listActions({ envId, targetPrefix: q.target, threadId: q.threadId, limit: q.limit });
+    return { items, changes, actions };
+  }
+
+  action(id: string): ActionRow | null {
+    return this.d.store.getAction(id);
+  }
+
+  actionList(q: { envSlug?: string; target?: string; limit: number }): ActionRow[] {
+    const envId = q.envSlug ? this.d.hub.snapshot(q.envSlug)?.env.id : undefined;
+    if (q.envSlug && !envId) return [];
+    return this.d.store.listActions({ envId, targetPrefix: q.target, limit: q.limit });
+  }
+
+  /** Any task on the target's node (UI log viewer); the UPID's node must match the target's. */
+  async taskLog(target: string, upid: string, start: number, limit: number): Promise<string[] | null> {
+    const r = this.resolve(target);
+    if (!r || r.kind === "env" || !r.provider?.actions) return null;
+    const node = r.kind === "host" ? r.host.node : r.guest.node;
+    if (upid.split(":")[1]?.toLowerCase() !== node.toLowerCase()) return null;
+    return r.provider.actions.taskLog(node, upid, start, limit, AbortSignal.timeout(10_000));
   }
 
   threadTargets(threadId: string): ThreadTargetDto[] {
@@ -369,7 +407,7 @@ export class InfraService {
     const c = this.d.store.getConnection(id);
     if (!c) return null;
     const { caPem, ...rest } = c;
-    return { ...rest, hasCaPem: caPem.trim() !== "", hasSecret: await this.d.secrets.has(c.id), health: this.d.hub.health(c.id) };
+    return { ...rest, hasCaPem: caPem.trim() !== "", hasSecret: await this.d.secrets.has(c.id), hasActionSecret: await this.d.secrets.hasAction(c.id), health: this.d.hub.health(c.id) };
   }
 
   async saveEnv(input: EnvSaveInput): Promise<InfraEnvRow> {
@@ -386,13 +424,22 @@ export class InfraService {
   }
 
   async saveConnection(input: ConnectionSaveInput): Promise<ConnectionDto> {
-    const { secret, caPem, ...fields } = input;
+    const { secret, caPem, actionSecret, ...fields } = input;
     const existing = input.id ? this.d.store.getConnection(input.id) : null;
     if (input.id && !existing) throw new NotFoundError("connection not found");
     if (fields.tlsMode === "pinned" && !fields.tlsFingerprint.trim()) throw new Error("fetch and trust the certificate fingerprint first");
-    const row = this.d.store.upsertConnection({ ...fields, caPem: caPem ?? existing?.caPem ?? "" });
+    const actionKind = fields.actionAuthKind ?? existing?.actionAuthKind ?? "";
+    const actionUser = actionKind ? (fields.actionUsername ?? existing?.actionUsername ?? "").trim() : "";
+    if (actionKind) {
+      const hasStored = existing ? await this.d.secrets.hasAction(existing.id) : false;
+      if (!actionUser) throw new Error("the action credential needs a token ID or username");
+      if (!actionSecret && !hasStored) throw new Error("the action credential needs its secret");
+    }
+    const row = this.d.store.upsertConnection({ ...fields, actionAuthKind: actionKind, actionUsername: actionUser, caPem: caPem ?? existing?.caPem ?? "" });
     if (fields.tlsMode === "ca" && !row.caPem.trim()) throw new Error("paste the CA certificate (PEM)");
     if (secret) await this.d.secrets.set(row.id, secret);
+    if (!actionKind) await this.d.secrets.removeAction(row.id);
+    else if (actionSecret) await this.d.secrets.setAction(row.id, actionSecret);
     await this.d.onConfigChanged();
     return (await this.connectionDto(row.id))!;
   }

@@ -143,16 +143,17 @@ export async function serviceHarness(envs: { slug: string; kind?: EnvKind; rules
   const audits: import("./server/store.ts").ActionRow[] = [];
   const started: import("./server/store.ts").ActionRow[] = [];
   const protections: [string, boolean][] = [];
+  const abortsRequested: string[] = [];
   let tokenSeq = 0;
   const actions = new ActionService({
     store, hub, now: () => t, resolve: (x) => service.resolve(x),
     onStarted: (r) => started.push(r), onAudit: (r) => audits.push(r),
-    onProtection: (x, v) => protections.push([x, v]), onAbortRequested: () => undefined,
+    onProtection: (x, v) => protections.push([x, v]), onAbortRequested: (id) => abortsRequested.push(id),
     newToken: () => `tok${++tokenSeq}`,
   });
   await hub.reload();
   for (const c of store.listConnections()) await hub.tick(c.id, new AbortController().signal);
   const { buildIndex } = await import("./server/matcher.ts");
   (globalThis as { __infraIndex?: unknown }).__infraIndex = buildIndex(hub.snapshots(), new Map([["pve1", "pve1"]]), hub.guestIps());
-  return { service, actions, audits, started, protections, store, hub, activity, pins, secrets, secretValue, pageBox, reloads: () => reloads, advance: (ms: number) => { t += ms; }, now: () => t };
+  return { service, actions, audits, started, protections, abortsRequested, store, hub, activity, pins, secrets, secretValue, pageBox, reloads: () => reloads, advance: (ms: number) => { t += ms; }, now: () => t };
 }

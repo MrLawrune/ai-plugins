@@ -1,12 +1,13 @@
 // RPC handlers: thin adapters from the contract to the service. Unknown targets are data, not errors.
 import type { PluginRpcHandlers } from "@get-bb/plugin-sdk";
 import type { RpcContract } from "../schemas.ts";
+import type { ActionService } from "./actions/service.ts";
 import type { InfraService } from "./service.ts";
 
 const NOT_FOUND = { found: false } as const;
 const found = <T extends object>(v: T | null) => (v ? { found: true as const, ...v } : NOT_FOUND);
 
-export function createRpcHandlers(s: InfraService) {
+export function createRpcHandlers(s: InfraService, a: ActionService) {
   return {
     async overview() { return s.overview(); },
     async env({ slug }) { return found(s.envView(slug)); },
@@ -26,6 +27,17 @@ export function createRpcHandlers(s: InfraService) {
     async connectionSave(input) { return { connection: await s.saveConnection(input) }; },
     async connectionDelete({ id }) { await s.deleteConnection(id); return { deleted: true as const }; },
     async connectionProbe({ baseUrl }) { return s.probe(baseUrl); },
-    async connectionTest({ id }) { return s.testConnection(id); },
+    async connectionTest({ id }) { a.clearPrivileges(id); return s.testConnection(id); },
+    async connectionCapabilities({ id }) {
+      try { return { capabilities: await a.capabilities(id), error: null }; }
+      catch (e) { return { capabilities: null, error: e instanceof Error ? e.message : String(e) }; }
+    },
+    async actionOptions({ target }) { const o = await a.options(target); return o ? { found: true as const, ...o } : NOT_FOUND; },
+    async actionPrepare(input) { return a.prepare(input); },
+    async actionExecute(input) { return a.execute(input); },
+    async actionAbort({ actionId }) { return a.abort(actionId); },
+    async actionGet({ actionId }) { const row = s.action(actionId); return row ? { found: true as const, action: row } : NOT_FOUND; },
+    async actionList(q) { return { actions: s.actionList(q) }; },
+    async taskLog({ target, upid, start, limit }) { const lines = await s.taskLog(target, upid, start, limit); return lines ? { found: true as const, lines } : NOT_FOUND; },
   } satisfies PluginRpcHandlers<RpcContract>;
 }

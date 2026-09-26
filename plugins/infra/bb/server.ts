@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { CHANNELS, rpcContract, type EventsSignal } from "./schemas.ts";
+import { ActionService } from "./server/actions/service.ts";
 import { Activity, type RawEvent } from "./server/activity.ts";
 import { createCli } from "./server/cli.ts";
 import { writeExport } from "./server/export.ts";
@@ -21,11 +22,13 @@ import { isCredentialMap, Secrets } from "./server/secrets.ts";
 import { badge, InfraService } from "./server/service.ts";
 import { configurationGap } from "./server/setup-status.ts";
 import { parseSshConfig } from "./server/ssh-config.ts";
-import { MIGRATIONS, Store, webBaseFor, type ConnectionRow, type SqlDb } from "./server/store.ts";
+import { MIGRATIONS, Store, webBaseFor, type ActionRow, type ConnectionRow, type SqlDb } from "./server/store.ts";
+import { Tracker } from "./server/tasks.ts";
 
 export { rpcContract } from "./schemas.ts";
 
 const RETENTION_MS = 14 * 86_400_000;
+const ACTION_RETENTION_MS = 90 * 86_400_000;
 const SSH_CONFIG_REFRESH_MS = 5 * 60_000;
 const INDEX_TTL_MS = 5_000;
 const EXPORT_DEBOUNCE_MS = 5_000;
@@ -108,14 +111,20 @@ export default async function plugin(bb: BbPluginApi) {
     log: (m) => bb.log.warn(m),
     async providerFor(conn) {
       closeClient(conn.id);
+      closeClient(`${conn.id}:action`);
       const secret = await secrets.get(conn.id);
       if (!secret) throw new PveError("auth-failed", "no credential saved", null);
-      const auth: Auth = conn.authKind === "token"
-        ? { kind: "token", tokenId: conn.username, secret }
-        : { kind: "password", username: conn.username, password: secret };
-      const client = new PveClient({ baseUrl: conn.baseUrl, auth, tls: tlsFor(conn) });
+      const authFor = (kind: "token" | "password", user: string, s: string): Auth =>
+        kind === "token" ? { kind: "token", tokenId: user, secret: s } : { kind: "password", username: user, password: s };
+      const client = new PveClient({ baseUrl: conn.baseUrl, auth: authFor(conn.authKind, conn.username, secret), tls: tlsFor(conn) });
       clients.set(conn.id, client);
-      return new ProxmoxProvider(client, webBaseFor(conn));
+      let actionClient: PveClient | undefined;
+      const actionSecret = conn.actionAuthKind ? await secrets.getAction(conn.id) : null;
+      if (conn.actionAuthKind && actionSecret) {
+        actionClient = new PveClient({ baseUrl: conn.baseUrl, auth: authFor(conn.actionAuthKind, conn.actionUsername, actionSecret), tls: tlsFor(conn) });
+        clients.set(`${conn.id}:action`, actionClient);
+      }
+      return new ProxmoxProvider(client, webBaseFor(conn), actionClient);
     },
     onSnapshot(envId) {
       indexDirty = true;
@@ -182,7 +191,7 @@ export default async function plugin(bb: BbPluginApi) {
       await hub.reload();
       // Deleted or disabled connections never get a new provider, so their HTTP clients are dropped here.
       const live = new Set(store.listConnections().filter((c) => c.enabled).map((c) => c.id));
-      for (const id of [...clients.keys()]) if (!live.has(id)) closeClient(id);
+      for (const id of [...clients.keys()]) if (!live.has(id.split(":")[0]!)) closeClient(id);
       indexDirty = true;
       for (const env of store.listEnvs()) { publishChanged(env.id); scheduleExport(env.id); }
       if (initialGap && !reloadScheduled && !(await setupGap())) {
@@ -191,6 +200,27 @@ export default async function plugin(bb: BbPluginApi) {
         setTimeout(() => { void bb.sdk.plugins.reload({ pluginId: bb.pluginId }).catch((e: unknown) => bb.log.warn(`reload failed: ${message(e)}`)); }, 1500);
       }
     },
+  });
+
+  // Realtime for task progress and audit rows: ids only.
+  const publishTask = (row: ActionRow) => bb.realtime.publish(CHANNELS.task, { actionId: row.id, envId: row.envId });
+  const tracker = new Tracker({
+    store, now: Date.now, log: (m) => bb.log.warn(m),
+    providerFor: (id) => hub.provider(id),
+    onUpdate: publishTask,
+    onFinished: (row) => { void hub.tick(row.connectionId, AbortSignal.timeout(10_000)).catch(() => undefined); },
+  });
+  const actions = new ActionService({
+    store, hub, now: Date.now,
+    resolve: (t) => service.resolve(t),
+    onStarted: () => undefined, // the tracker reads open rows from the store every 2 s
+    onAudit: publishTask,
+    onProtection: (t, v) => {
+      hub.recordProtected(t, v);
+      const env = store.getEnvBySlug(t.split("/")[0]!);
+      if (env) publishChanged(env.id);
+    },
+    onAbortRequested: (id) => tracker.markAborting(id),
   });
 
   await hub.reload();
@@ -208,7 +238,11 @@ export default async function plugin(bb: BbPluginApi) {
       }
     },
   });
-  bb.background.schedule("prune", "17 3 * * *", async () => { store.prune(Date.now() - RETENTION_MS); });
+  bb.background.service("tasks", { start: (signal) => tracker.run(signal) });
+  bb.background.schedule("prune", "17 3 * * *", async () => {
+    store.prune(Date.now() - RETENTION_MS);
+    store.pruneActions(Date.now() - ACTION_RETENTION_MS);
+  });
 
   const settle = (threadId: string) => { if (activity.clearRunning(threadId)) bb.realtime.publish(CHANNELS.activity, { threadIds: [threadId] }); };
   bb.events.on("thread.idle", ({ thread }) => settle(thread.id));
@@ -217,7 +251,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (hub.snapshots().length) activity.notify(thread.id, sequence);
   });
 
-  bb.rpc.register(rpcContract, createRpcHandlers(service));
+  bb.rpc.register(rpcContract, createRpcHandlers(service, actions));
   bb.cli.register(createCli({
     service,
     pins,

@@ -6,11 +6,17 @@ import type { CertInfo } from "./server/providers/proxmox/tls.ts";
 import type {
   BackupEntry, ConnectionHealth, GuestDetail, GuestState, HealthCode, HostDetail, HostState, MetricPoint, MetricRange, MetricSeries, RunState, StoragePool, TaskEntry,
 } from "./server/providers/types.ts";
-import type { ChangeKind, ConnectionRow, EnvKind, InfraEnvRow } from "./server/store.ts";
+import type { ActionOption, CapabilitySummary, ExecuteResult, OptionsResult, PrepareResult } from "./server/actions/service.ts";
+import type { ActionRow, ChangeKind, ConnectionRow, EnvKind, InfraEnvRow } from "./server/store.ts";
+import { GUEST_ACTIONS } from "./shared/actions.ts";
 import { CHANNELS, ENV_KINDS, RULES_MAX } from "./shared/constants.ts";
 import { parseTarget, SLUG_RE } from "./server/targets.ts";
 
 export type { BackupEntry, CertInfo, ConnectionHealth, EnvKind, GuestDetail, GuestState, HealthCode, HostDetail, HostState, InfraEnvRow, MetricPoint, MetricRange, MetricSeries, RunState, StoragePool, TaskEntry };
+export type { ActionKind, ActionParams, ActionSource, ActionStatus, Confirm } from "./shared/actions.ts";
+export type { ActionOption, CapabilitySummary, ExecuteResult, OptionsResult, PrepareResult };
+/** An audit row as stored; it holds no secrets. */
+export type ActionDto = ActionRow;
 
 export interface EnvBadgeDto { slug: string; name: string; kind: EnvKind; color: string }
 export interface ActivityDto { threadId: string; itemId: string; target: string; command: string; phase: "started" | "completed"; exitCode: number | null; at: number }
@@ -28,14 +34,15 @@ export interface EnvViewDto {
   health: HealthCode;
   connections: { id: string; label: string; health: ConnectionHealth }[];
   hosts: HostState[];
-  guests: (GuestState & { ips: string[]; active: boolean })[];
+  guests: (GuestState & { ips: string[]; active: boolean; protected: boolean | null; action: ActionDto | null })[];
   storage: StoragePool[];
   updatedAt: number | null;
   recentActivity: ActivityDto[];
+  actionsEnabled: boolean;
 }
 export interface ThreadStatusDto { threadId: string; labels: string[]; state: "running" | "ok" | "failed"; lastAt: number }
 export interface ThreadTargetDto { target: string; env: EnvBadgeDto; label: string; kind: "env" | "host" | "guest"; state: string | null; running: boolean; lastAt: number }
-export type ConnectionDto = Omit<ConnectionRow, "caPem"> & { hasCaPem: boolean; hasSecret: boolean; health: ConnectionHealth | null };
+export type ConnectionDto = Omit<ConnectionRow, "caPem"> & { hasCaPem: boolean; hasSecret: boolean; hasActionSecret: boolean; health: ConnectionHealth | null };
 export type NotFound = { found: false };
 
 const target = z.string().max(200).refine((s) => parseTarget(s) !== null, "invalid target");
@@ -54,6 +61,7 @@ const envSave = z.object({
   ipRefreshMinutes: z.number().int().min(0).max(1440).optional(),
   /** Absolute path on the BB server to an existing conventions file (AGENTS.md, runbook). */
   conventionsPath: z.string().max(500).refine((p) => p === "" || p.startsWith("/"), "use an absolute path on the BB server").optional(),
+  actionsEnabled: z.boolean().optional(),
 }).strict();
 
 const connectionSave = z.object({
@@ -71,7 +79,21 @@ const connectionSave = z.object({
   webUrl: z.union([z.literal(""), z.string().url().refine((u) => u.startsWith("https://"), "use an https:// URL")]).optional(),
   /** Write-only. Omit or empty to keep the stored secret. */
   secret: z.string().max(2000).optional(),
+  /** "" removes the action credential; omit to keep it. */
+  actionAuthKind: z.enum(["", "token", "password"]).optional(),
+  actionUsername: z.string().trim().max(200).optional(),
+  /** Write-only. Omit or empty to keep the stored action secret. */
+  actionSecret: z.string().max(2000).optional(),
 }).strict();
+
+const actionSource = z.object({ surface: z.enum(["page", "thread-panel"]), threadId: z.string().min(1).max(100).nullable() }).strict();
+const actionParams = z.object({
+  snapname: z.string().min(1).max(40).optional(),
+  description: z.string().max(1000).optional(),
+  vmstate: z.boolean().optional(),
+}).strict();
+const upid = z.string().max(200).regex(/^UPID:[A-Za-z0-9._-]+:[A-Za-z0-9:@!._-]*$/, "invalid task id");
+const actionId = z.string().min(1).max(64);
 
 export type EnvSaveInput = z.infer<typeof envSave>;
 export type ConnectionSaveInput = z.infer<typeof connectionSave>;
@@ -87,11 +109,11 @@ export const rpcContract = defineRpcContract({
   },
   guest: {
     input: z.object({ target }).strict(),
-    output: out<NotFound | { found: true; env: EnvBadgeDto; detail: GuestDetail; activity: ActivityDto[]; changes: ChangeDto[]; webUrl: string }>(),
+    output: out<NotFound | { found: true; env: EnvBadgeDto; detail: GuestDetail; activity: ActivityDto[]; changes: ChangeDto[]; webUrl: string; actionsEnabled: boolean; action: ActionDto | null; tracked: ActionDto[] }>(),
   },
   guestSummary: {
     input: z.object({ target }).strict(),
-    output: out<NotFound | { found: true; env: EnvBadgeDto; guest: GuestState; ips: string[]; running: boolean }>(),
+    output: out<NotFound | { found: true; env: EnvBadgeDto; guest: GuestState; ips: string[]; running: boolean; protected: boolean | null; action: ActionDto | null }>(),
   },
   hostSummary: {
     input: z.object({ target }).strict(),
@@ -107,7 +129,7 @@ export const rpcContract = defineRpcContract({
   },
   activity: {
     input: z.object({ envSlug: z.string().regex(SLUG_RE).optional(), target: target.optional(), threadId: z.string().max(100).optional(), limit: z.number().int().min(1).max(500) }).strict(),
-    output: out<{ items: ActivityDto[]; changes: ChangeDto[] }>(),
+    output: out<{ items: ActivityDto[]; changes: ChangeDto[]; actions: ActionDto[] }>(),
   },
   threadTargets: { input: z.object({ threadId: z.string().min(1).max(100) }).strict(), output: out<{ targets: ThreadTargetDto[] }>() },
   threadStatuses: { input: z.object({}).strict(), output: out<{ threads: ThreadStatusDto[] }>() },
@@ -122,6 +144,14 @@ export const rpcContract = defineRpcContract({
     output: out<{ ok: true; cert: CertInfo } | { ok: false; error: string }>(),
   },
   connectionTest: { input: z.object({ id: z.string().min(1).max(64) }).strict(), output: out<{ health: ConnectionHealth | null; version: string | null }>() },
+  connectionCapabilities: { input: z.object({ id: z.string().min(1).max(64) }).strict(), output: out<{ capabilities: CapabilitySummary[] | null; error: string | null }>() },
+  actionOptions: { input: z.object({ target }).strict(), output: out<NotFound | ({ found: true } & OptionsResult)>() },
+  actionPrepare: { input: z.object({ target, action: z.enum(GUEST_ACTIONS), params: actionParams, source: actionSource }).strict(), output: out<PrepareResult>() },
+  actionExecute: { input: z.object({ token: z.string().min(1).max(100), typed: z.string().max(200).optional() }).strict(), output: out<ExecuteResult>() },
+  actionAbort: { input: z.object({ actionId }).strict(), output: out<{ ok: true } | { ok: false; reason: string }>() },
+  actionGet: { input: z.object({ actionId }).strict(), output: out<NotFound | { found: true; action: ActionDto }>() },
+  actionList: { input: z.object({ envSlug: z.string().regex(SLUG_RE).optional(), target: target.optional(), limit: z.number().int().min(1).max(200) }).strict(), output: out<{ actions: ActionDto[] }>() },
+  taskLog: { input: z.object({ target, upid, start: z.number().int().min(0), limit: z.number().int().min(1).max(500) }).strict(), output: out<NotFound | { found: true; lines: string[] }>() },
 });
 
 export type RpcContract = typeof rpcContract;

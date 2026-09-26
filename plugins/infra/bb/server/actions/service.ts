@@ -204,8 +204,8 @@ export class ActionService {
     const actions = this.d.hub.provider(row.connectionId)?.actions;
     if (!actions) return { ok: false, reason: "This connection can't run actions." };
     try {
-      this.d.onAbortRequested(actionId);
       await actions.abortTask(row.target.split("/")[1]!, row.upid, AbortSignal.timeout(CALL_TIMEOUT_MS));
+      this.d.onAbortRequested(actionId);
       return { ok: true };
     } catch (e) {
       if (e instanceof PveError && e.status === 403) this.clearPrivileges(row.connectionId);

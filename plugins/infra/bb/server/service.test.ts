@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fakeProvider, guest, host, inv, serviceHarness } from "../test-util.ts";
+import { fakeActions, fakeProvider, guest, host, inv, serviceHarness } from "../test-util.ts";
 import type { RawEvent } from "./activity.ts";
 import { webBaseFor } from "./store.ts";
 
@@ -170,4 +170,45 @@ test("row status: recent infra work shows ok or failed after the thread finishes
   assert.deepEqual(byId.thr_ok!.labels, ["pve1"]);
   h.advance(31 * 60_000);
   assert.deepEqual(h.service.threadStatuses(), [], "expired after 30 minutes");
+});
+
+test("views carry actionsEnabled, protection, and the running tracked action", async () => {
+  // Detail reports protected too: guestView records the detail's value into the hub map.
+  const p = fakeProvider([inv([host("pve1")], [guest("pve1", 201, { name: "proxy" })])], { "pve1/201": { protected: true } }, fakeActions());
+  const h = await serviceHarness([{ slug: "lab", actionsEnabled: true, conns: { pve1: p } }]);
+  h.hub.recordProtected("lab/pve1/201", true);
+  const prep = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: { surface: "page", threadId: null } });
+  assert.ok(prep.allowed);
+  const run = await h.actions.execute({ token: prep.token });
+  assert.ok(run.ok);
+  const env = h.service.envView("lab")!;
+  assert.equal(env.actionsEnabled, true);
+  assert.deepEqual([env.guests[0]!.protected, env.guests[0]!.action?.id], [true, run.action.id]);
+  const g = (await h.service.guestView("lab/pve1/201"))!;
+  assert.deepEqual([g.actionsEnabled, g.action?.status, g.tracked.length], [true, "running", 1]);
+  assert.equal(h.service.guestSummary("lab/pve1/201")!.protected, true);
+  assert.equal(h.service.activity({ envSlug: "lab", limit: 10 }).actions.length, 1);
+});
+
+test("saving a connection handles the action credential without touching the main secret", async () => {
+  const h = await serviceHarness([{ slug: "lab", conns: { pve1: fakeProvider([inv([host("pve1")])]) } }]);
+  const c = h.store.listConnections()[0]!;
+  const base = { id: c.id, envId: c.envId, label: c.label, baseUrl: c.baseUrl, authKind: c.authKind, username: c.username, tlsMode: c.tlsMode, tlsFingerprint: "", enabled: true };
+  await h.service.saveConnection({ ...base, secret: "main" });
+  const saved = await h.service.saveConnection({ ...base, actionAuthKind: "token", actionUsername: "bb-ops@pve!actions", actionSecret: "act" });
+  assert.deepEqual([saved.hasSecret, saved.hasActionSecret, saved.actionUsername], [true, true, "bb-ops@pve!actions"]);
+  assert.equal(await h.secrets.get(c.id), "main");
+  const kept = await h.service.saveConnection(base);
+  assert.deepEqual([kept.hasActionSecret, kept.actionAuthKind], [true, "token"], "omitting action fields keeps them");
+  const cleared = await h.service.saveConnection({ ...base, actionAuthKind: "" });
+  assert.deepEqual([cleared.hasActionSecret, cleared.actionUsername], [false, ""]);
+  assert.equal(await h.secrets.get(c.id), "main");
+});
+
+test("an action credential needs a username and a secret", async () => {
+  const h = await serviceHarness([{ slug: "lab", conns: { pve1: fakeProvider([inv([host("pve1")])]) } }]);
+  const c = h.store.listConnections()[0]!;
+  const base = { id: c.id, envId: c.envId, label: c.label, baseUrl: c.baseUrl, authKind: c.authKind, username: c.username, tlsMode: c.tlsMode, tlsFingerprint: "", enabled: true, secret: "main" };
+  await assert.rejects(h.service.saveConnection({ ...base, actionAuthKind: "token", actionUsername: "" }), /action credential/);
+  await assert.rejects(h.service.saveConnection({ ...base, actionAuthKind: "token", actionUsername: "bb-ops@pve!actions" }), /action credential/);
 });

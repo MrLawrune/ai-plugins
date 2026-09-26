@@ -141,8 +141,19 @@ test("abort only applies to running tracked tasks", async () => {
   assert.ok(r.ok);
   assert.deepEqual(await h.actions.abort(r.action.id), { ok: true });
   assert.equal(aborted, 1);
+  assert.deepEqual(h.abortsRequested, [r.action.id]);
   h.store.updateAction(r.action.id, { status: "ok", endedAt: h.now() });
   assert.equal((await h.actions.abort(r.action.id)).ok, false);
+});
+
+test("a failed abort does not mark the task as aborting", async () => {
+  const h = await lab(fakeActions({ abortTask: async () => { throw new PveError("degraded", "task not found", 500); } }));
+  const p = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: src });
+  assert.ok(p.allowed);
+  const r = await h.actions.execute({ token: p.token });
+  assert.ok(r.ok);
+  assert.equal((await h.actions.abort(r.action.id)).ok, false);
+  assert.deepEqual(h.abortsRequested, []);
 });
 
 test("capabilities summarize each credential", async () => {

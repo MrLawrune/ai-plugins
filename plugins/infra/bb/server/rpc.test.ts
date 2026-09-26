@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rpcContract } from "../schemas.ts";
-import { fakeProvider, guest, host, inv, serviceHarness } from "../test-util.ts";
+import { fakeActions, fakeProvider, guest, host, inv, serviceHarness } from "../test-util.ts";
 import { createRpcHandlers } from "./rpc.ts";
 
 const provider = () => fakeProvider([inv([host("pve1", { ip: "192.0.2.10" })], [guest("pve1", 201, { name: "proxy" })])], {
@@ -17,7 +17,7 @@ test("contract rejects malformed targets and unknown fields at the boundary", ()
 
 test("unknown targets return found:false instead of throwing", async () => {
   const h = await serviceHarness([{ slug: "homelab", conns: { pve1: provider() } }]);
-  const rpc = createRpcHandlers(h.service);
+  const rpc = createRpcHandlers(h.service, h.actions);
   for (const r of [await rpc.guest({ target: "homelab/pve1/999" }), await rpc.host({ target: "homelab/PV09" }), await rpc.env({ slug: "nope" }), await rpc.metrics({ target: "homelab", range: "hour" }), await rpc.askPrompt({ target: "x/y/1", intent: "ask" }), await rpc.guestSummary({ target: "homelab/pve1" })]) {
     assert.deepEqual(r, { found: false });
   }
@@ -25,7 +25,7 @@ test("unknown targets return found:false instead of throwing", async () => {
 
 test("found results carry data", async () => {
   const h = await serviceHarness([{ slug: "homelab", conns: { pve1: provider() } }]);
-  const rpc = createRpcHandlers(h.service);
+  const rpc = createRpcHandlers(h.service, h.actions);
   const g = await rpc.guest({ target: "homelab/pve1/201" });
   assert.equal(g.found && g.detail.guest.name, "proxy");
   const e = await rpc.env({ slug: "homelab" });
@@ -38,4 +38,22 @@ test("connection web UI link must be https when given", () => {
   assert.equal(rpcContract.connectionSave.input.safeParse({ ...base, webUrl: "" }).success, true);
   assert.equal(rpcContract.connectionSave.input.safeParse({ ...base, webUrl: "https://pve1.example.dev" }).success, true);
   assert.equal(rpcContract.connectionSave.input.safeParse({ ...base, webUrl: "javascript:alert(1)" }).success, false);
+});
+
+test("action inputs are validated at the boundary", () => {
+  const ok = { target: "lab/pve1/201", action: "stop", params: {}, source: { surface: "page", threadId: null } };
+  assert.equal(rpcContract.actionPrepare.input.safeParse(ok).success, true);
+  assert.equal(rpcContract.actionPrepare.input.safeParse({ ...ok, action: "destroy" }).success, false);
+  assert.equal(rpcContract.actionPrepare.input.safeParse({ ...ok, params: { snapname: "x".repeat(41) } }).success, false);
+  assert.equal(rpcContract.actionPrepare.input.safeParse({ ...ok, params: { extra: 1 } }).success, false);
+  assert.equal(rpcContract.taskLog.input.safeParse({ target: "lab/pve1/201", upid: "UPID:pve1:0001:0002:66F0:vzstop:201:u@pve!t:", start: 0, limit: 500 }).success, true);
+  assert.equal(rpcContract.taskLog.input.safeParse({ target: "lab/pve1/201", upid: "../../etc", start: 0, limit: 500 }).success, false);
+  assert.equal(rpcContract.taskLog.input.safeParse({ target: "lab/pve1/201", upid: "UPID:x", start: 0, limit: 501 }).success, false);
+});
+
+test("task logs are only served for UPIDs on the target's node", async () => {
+  const h = await serviceHarness([{ slug: "homelab", conns: { pve1: fakeProvider([inv([host("pve1")], [guest("pve1", 201)])], {}, fakeActions({ taskLog: async () => ["hi"] })) } }]);
+  const rpc = createRpcHandlers(h.service, h.actions);
+  assert.deepEqual(await rpc.taskLog({ target: "homelab/pve1/201", upid: "UPID:pve1:1:2:3:vzstop:201:u@pve!t:", start: 0, limit: 10 }), { found: true, lines: ["hi"] });
+  assert.deepEqual(await rpc.taskLog({ target: "homelab/pve1/201", upid: "UPID:pve9:1:2:3:vzstop:201:u@pve!t:", start: 0, limit: 10 }), { found: false });
 });
