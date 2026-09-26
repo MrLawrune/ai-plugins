@@ -2,7 +2,7 @@
 
 A BB plugin for watching Proxmox infrastructure and the agents working on it. It changes nothing on your hosts until you allow guest actions for an environment, and then only when you click.
 
-    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.1.0 --plugin infra --tag-prefix infra/
+    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.2.0 --plugin infra --tag-prefix infra/
 
 ## Setup
 
