@@ -84,3 +84,25 @@ test("flush sends a pending debounced edit immediately", async () => {
   assert.deepEqual(sent, [{ speed: 0.9 }]);
   assert.equal(h.timers.count(), 0);
 });
+
+test("a failed batch followed by a successful one in the same drain still ends in error", async () => {
+  const sent: Partial<P>[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const h = harness(async (p) => {
+    sent.push(p);
+    if (sent.length === 1) { await gate; throw new Error("server busy"); }
+    return p;
+  });
+  h.q.set({ speed: 1.4 });
+  h.q.set({ mode: "full" });
+  release();
+  await h.q.flush();
+  const s = h.last();
+  assert.equal(s.kind, "error");
+  assert.ok(!h.states.includes("saved"));
+  if (s.kind === "error") s.retry();
+  await h.q.flush();
+  assert.deepEqual(sent, [{ speed: 1.4 }, { mode: "full" }, { speed: 1.4 }]);
+  assert.equal(h.last().kind, "saved");
+});

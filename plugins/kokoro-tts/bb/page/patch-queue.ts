@@ -30,6 +30,7 @@ export function createPatchQueue<P extends object, R>(deps: {
   const stillOwned = (batch: Partial<P>) => (Object.keys(batch) as (keyof P)[]).filter((k) => !(k in pending));
 
   async function drain(): Promise<void> {
+    let failure: SaveState | null = null;
     while (Object.keys(pending).length > 0) {
       const batch = pending;
       pending = {};
@@ -37,13 +38,15 @@ export function createPatchQueue<P extends object, R>(deps: {
       try {
         const result = await deps.send(batch);
         deps.onCommitted(result, stillOwned(batch));
-        if (Object.keys(pending).length === 0) deps.onState({ kind: "saved" });
+        if (!failure && Object.keys(pending).length === 0) deps.onState({ kind: "saved" });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         deps.onFailed(stillOwned(batch), message);
-        deps.onState({ kind: "error", message, retry: () => set(batch) });
+        failure = { kind: "error", message, retry: () => set(batch) };
+        deps.onState(failure);
       }
     }
+    if (failure) deps.onState(failure);
   }
 
   function flush(): Promise<void> {

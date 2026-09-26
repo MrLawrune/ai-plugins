@@ -1,5 +1,5 @@
 import type { KokoroConfig } from "../schemas.ts";
-import { ChoiceGroup, Row, Section, SliderRow } from "./ui.tsx";
+import { ChoiceGroup, Row, Section, SliderRow, SwitchRow } from "./ui.tsx";
 
 type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;
 
@@ -22,6 +22,10 @@ export function ListeningSection({ config, patch }: { config: KokoroConfig; patc
         format={(v) => `${v.toFixed(2)}×`} onChange={(v) => patch({ speed: v }, 350)} />
       <SliderRow id="speech_gain" label="Speech volume" value={config.speech_gain} min={0} max={2} step={0.05}
         format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => patch({ speech_gain: v }, 350)} />
+      <SwitchRow id="strip_markdown" label="Skip code, links and paths" hint="Leave them out of what is spoken."
+        checked={config.strip_markdown} onChange={(v) => patch({ strip_markdown: v })} />
+      <SwitchRow id="trim" label="Trim silence" hint="Tighter phrasing between sentences."
+        checked={config.trim} onChange={(v) => patch({ trim: v })} />
     </Section>
   );
 }

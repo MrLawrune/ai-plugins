@@ -34,10 +34,6 @@ export function SoundsSection({ config, patch }: { config: KokoroConfig; patch: 
         checked={config.working_sound} onChange={(v) => patch({ working_sound: v })} />
       <SwitchRow id="attention_sound" label="Attention ping" hint="When an agent needs your input."
         checked={config.attention_sound} onChange={(v) => patch({ attention_sound: v })} />
-      <SwitchRow id="strip_markdown" label="Skip code, links and paths" hint="Leave them out of what is spoken."
-        checked={config.strip_markdown} onChange={(v) => patch({ strip_markdown: v })} />
-      <SwitchRow id="trim" label="Trim silence" hint="Tighter phrasing between sentences."
-        checked={config.trim} onChange={(v) => patch({ trim: v })} />
     </Section>
   );
 }

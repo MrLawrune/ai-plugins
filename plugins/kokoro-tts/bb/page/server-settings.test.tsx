@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { CONFIG_RESPONSE, READY, rpcStubs } from "./fixtures.ts";
+import { CONFIG_RESPONSE, HEALTH, READY, rpcStubs } from "./fixtures.ts";
 
 async function settings(overrides = {}) {
   const app = await loadPluginApp(() => import("../app.tsx"));
@@ -61,4 +61,15 @@ test("paths are shown relative to home", async () => {
   await settings();
   fireEvent.click(await screen.findByText("Diagnostics"));
   expect(screen.getByText("~/.config/kokoro-tts/config.json")).toBeTruthy();
+});
+
+test("a remote engine's last error and latency are shown under the remote form", async () => {
+  const remote = { kind: "remote", provider: "remote", url: "http://192.0.2.10:6789", last_error: "connection refused",
+    last_latency_ms: 120, fallback: null };
+  await settings({
+    status: () => ({ ...READY, health: { up: true, health: { ...HEALTH, engine: remote } } }),
+    getConfig: () => ({ ...CONFIG_RESPONSE, config: { ...CONFIG_RESPONSE.config, provider: "remote", remote_url: "http://192.0.2.10:6789" } }),
+  });
+  expect(await screen.findByText(/connection refused/)).toBeTruthy();
+  expect(screen.getByText(/120 ms/)).toBeTruthy();
 });

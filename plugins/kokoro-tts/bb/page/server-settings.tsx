@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatHomePathForDisplay } from "@/lib/utils";
-import type { KokoroConfig, Prefs, rpcContract } from "../schemas.ts";
+import { remoteEngineSchema, type KokoroConfig, type Prefs, type rpcContract } from "../schemas.ts";
 import { useConfig, usePrefs, useStatus } from "./state.ts";
 import { ownerText, statusLine } from "./status.ts";
 import { ChoiceGroup, Disclosure, errorText, Row, SaveIndicator, SliderRow, StatusDot, SwitchRow } from "./ui.tsx";
@@ -53,6 +53,8 @@ export function ServerSettings() {
   const current = engineChoice(cfg?.provider, prefs.runtime);
   const selected = draft ?? current;
   const h = up && status.health.up ? status.health.health : null;
+  const remoteNode = cfg?.provider === "remote" ? remoteEngineSchema.safeParse(h?.engine) : null;
+  const remoteInfo = remoteNode?.success ? remoteNode.data : null;
   const showSetup = !["running", "external"].includes(status.setup.state);
 
   const chooseEngine = async (next: Engine) => {
@@ -170,6 +172,14 @@ export function ServerSettings() {
             <Button size="sm" disabled={!urlValid || applying || !data} onClick={() => void applyRemote()}>Apply</Button>
             {draft === "remote" ? <Button size="sm" variant="ghost" onClick={() => setDraft(null)}>Cancel</Button> : null}
           </div>
+          {remoteInfo?.last_error ? (
+            <p className="text-xs text-destructive">
+              Remote node: {remoteInfo.last_error}
+              {remoteInfo.last_latency_ms != null ? ` (last response ${Math.round(remoteInfo.last_latency_ms)} ms)` : ""}
+            </p>
+          ) : remoteInfo?.last_latency_ms != null ? (
+            <p className="text-xs text-muted-foreground">Remote node last responded in {Math.round(remoteInfo.last_latency_ms)} ms.</p>
+          ) : null}
         </div>
       ) : null}
       {engineError ? <p role="alert" className="text-xs text-destructive">{engineError}</p> : null}

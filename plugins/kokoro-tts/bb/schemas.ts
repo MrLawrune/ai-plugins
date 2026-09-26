@@ -53,7 +53,7 @@ const localEngineSchema = z.object({
   load_ms: z.number().nullable(),
   available: availableSchema,
 });
-const remoteEngineSchema = z.object({
+export const remoteEngineSchema = z.object({
   kind: z.literal("remote"),
   provider: z.string(),
   url: z.string(),
