@@ -1,7 +1,7 @@
 // All environments at a glance.
 import { cn } from "@/lib/utils";
 import type { EnvSummary } from "../schemas.ts";
-import { EnvBadge, HealthBadge } from "./badges.tsx";
+import { EnvBadge, HealthBadge, StaleNotice } from "./badges.tsx";
 import { kindColor } from "./format.ts";
 import { useInfraQuery, useNow } from "./hooks.ts";
 
@@ -42,5 +42,10 @@ export function Overview({ onOpen, compact }: { onOpen(target: string): void; co
       </div>
     );
   }
-  return <div className={cn("grid gap-3", !compact && "md:grid-cols-2")}>{(q.data?.envs ?? []).map((s) => <EnvSummaryCard key={s.env.slug} s={s} onOpen={onOpen} compact={compact} />)}</div>;
+  return (
+    <div className="space-y-3">
+      <StaleNotice error={q.data ? q.error : null} />
+      <div className={cn("grid gap-3", !compact && "md:grid-cols-2")}>{(q.data?.envs ?? []).map((s) => <EnvSummaryCard key={s.env.slug} s={s} onOpen={onOpen} compact={compact} />)}</div>
+    </div>
+  );
 }

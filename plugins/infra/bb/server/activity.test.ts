@@ -128,3 +128,19 @@ test("event notifications coalesce into one pull and skip sequences already scan
   assert.equal(calls.length, 2, "trailing pull after the interval");
   activity.dispose();
 });
+
+test("a backlog deeper than one batch keeps being pulled until drained", async () => {
+  const full = (n: number) => Array.from({ length: 100 }, () => ev("item/completed", `ssh pve1 uptime ${n}`, { itemId: `i${seq + 1}`, exitCode: 0 }));
+  const pages = [...Array.from({ length: 11 }, (_, i) => full(i)), []];
+  const { activity, calls, store } = setup(pages, 5);
+  const until = async (ok: () => boolean) => { for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 10)); };
+  activity.notify("thr_a", 999_999);
+  await until(() => calls.length >= 12);
+  assert.equal(calls.length, 12, `pulled ${calls.length} pages`);
+  assert.equal(store.activityFor({ limit: 5000 }).length, 1100);
+  await new Promise((r) => setTimeout(r, 30));
+  activity.notify("thr_a", 999_999);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(calls.length, 12, "the announced sequence is scanned only once drained");
+  activity.dispose();
+});

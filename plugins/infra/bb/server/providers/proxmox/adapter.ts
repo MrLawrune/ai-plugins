@@ -224,6 +224,12 @@ export class ProxmoxProvider implements InfraProvider {
     };
   }
 
+  async guestAddresses(ref: GuestRef, signal: AbortSignal): Promise<NetIf[]> {
+    const base = guestPath(ref);
+    if (ref.type === "lxc") return mapLxcInterfaces(await this.client.get<unknown>(`${base}/interfaces`, undefined, signal));
+    return mapAgentInterfaces(await this.client.get<unknown>(`${base}/agent/network-get-interfaces`, undefined, signal));
+  }
+
   async metrics(target: TargetRef, range: MetricRange, signal: AbortSignal): Promise<MetricSeries> {
     const path = target.kind === "host" ? `${hostPath(target.node)}/rrddata` : `${guestPath(target)}/rrddata`;
     return mapRrd(await this.client.get<unknown>(path, { timeframe: range, cf: "AVERAGE" }, signal), range);

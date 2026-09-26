@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { MetricRange } from "../schemas.ts";
 import { ActivityList } from "./activity-feed.tsx";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { Chip, EnvBadge, StateDot, UsageBar } from "./badges.tsx";
+import { Chip, EnvBadge, StateDot, UsageBar, StaleNotice } from "./badges.tsx";
 import { age, bytes } from "./format.ts";
 import { useInfraQuery, useNow } from "./hooks.ts";
 import { MetricsPanel } from "./metrics-panel.tsx";
@@ -125,6 +125,7 @@ export function GuestView({ target, onOpen, compact }: { target: string; onOpen(
   const host = target.split("/").slice(0, 2).join("/");
   return (
     <div className="space-y-4">
+      <StaleNotice error={q.error} />
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-2 text-lg font-semibold"><StateDot state={g.state} />{g.name}<span className="text-sm font-normal text-muted-foreground">{g.type === "qemu" ? "VM" : "CT"} {g.vmid}</span></div>
@@ -148,7 +149,7 @@ export function GuestView({ target, onOpen, compact }: { target: string; onOpen(
           <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="backups">Snapshots &amp; backups</TabsTrigger>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
+          {compact ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
         </TabsList>
         <TabsContent value="overview" className="space-y-4 pt-3">
           <div className="grid gap-3 sm:grid-cols-3">

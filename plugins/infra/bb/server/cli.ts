@@ -71,15 +71,16 @@ export function createCli(d: CliDeps) {
           json,
         },
         run: ({ positionals, options }) => {
-          if (!s.resolve(positionals.target)) throw notFound(positionals.target);
-          const rows = s.activityText(positionals.target, options.since, options.limit);
+          const resolved = s.resolve(positionals.target);
+          if (!resolved) throw notFound(positionals.target);
+          const rows = s.activityText(resolved.target, options.since, options.limit);
           if (options.json) return asJson({ items: rows });
           const now = Date.now();
           return ok(rows.length ? rows.map((a) => `${age(now - a.at)} ago ${a.threadId} ${a.target} $ ${a.command}`).join("\n") : "(no agent activity)");
         },
       }),
       attach: cliCommand({
-        summary: "Pin infra context to a thread: each of its turns receives these cards",
+        summary: "Pin infra context to a thread: its instructions carry these cards from the next agent session start (a running session keeps its original instructions)",
         positionals: [
           { name: "threadId", description: "Thread to pin (e.g. a subagent you dispatched)", required: true },
           { name: "targets", description: "One or more targets", required: true, variadic: true },
@@ -93,7 +94,8 @@ export function createCli(d: CliDeps) {
           const targets = [...new Set(resolved.map((r) => r!.target))];
           d.pins.set(positionals.threadId, targets, options.rules);
           await d.setThreadMetadata(positionals.threadId, { targets, rules: options.rules });
-          return options.json ? asJson({ threadId: positionals.threadId, targets, rules: options.rules }) : ok(`pinned ${targets.join(", ")} to ${positionals.threadId}`);
+          const note = "applies when the thread's agent session next starts; a running session keeps its original instructions";
+          return options.json ? asJson({ threadId: positionals.threadId, targets, rules: options.rules, note }) : ok(`pinned ${targets.join(", ")} to ${positionals.threadId} (${note})`);
         },
       }),
       detach: cliCommand({

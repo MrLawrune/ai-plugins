@@ -200,3 +200,70 @@ test("IP sweeps follow the environment's interval and can be turned off", async 
   await hub.reload();
   assert.equal(hub.ipRefreshDue(conns[0]!.id), false, "0 turns sweeps off");
 });
+
+test("a connection whose endpoint or environment changed starts without the old inventory", async () => {
+  const { hub, conns, store } = setup({ a: fakeProvider([inv([host("pve1")], [guest("pve1", 201)])]) }, ["a"]);
+  await hub.reload();
+  await hub.tick(conns[0]!.id, sig);
+  assert.equal(hub.snapshot("homelab")!.guests.length, 1);
+  const row = store.getConnection(conns[0]!.id)!;
+  store.upsertConnection({ ...row, baseUrl: "https://elsewhere:8006" });
+  await hub.reload();
+  assert.equal(hub.snapshot("homelab")!.guests.length, 0, "the old endpoint's guests are gone");
+  assert.equal(hub.snapshot("homelab")!.connections[0]!.health.lastOkAt, null);
+});
+
+test("guest IPs are cleared on an empty read and dropped when the guest disappears", async () => {
+  const p = fakeProvider(
+    [inv([host("pve1")], [guest("pve1", 201), guest("pve1", 202)]), inv([host("pve1")], [guest("pve1", 201)])],
+    { "pve1/201": { interfaces: [{ name: "eth0", mac: null, ipv4: ["10.0.0.1"], ipv6: [] }] }, "pve1/202": { interfaces: [{ name: "eth0", mac: null, ipv4: ["10.0.0.2"], ipv6: [] }] } },
+  );
+  const { hub, conns } = setup({ a: p }, ["a"]);
+  await hub.reload();
+  await hub.tick(conns[0]!.id, sig);
+  await hub.refreshIps(conns[0]!.id, sig);
+  assert.deepEqual([...hub.guestIps().keys()].sort(), ["homelab/pve1/201", "homelab/pve1/202"]);
+  hub.recordIps("homelab/pve1/201", []);
+  assert.equal(hub.guestIps().has("homelab/pve1/201"), false, "a successful empty read clears the entry");
+  await hub.tick(conns[0]!.id, sig); // 202 is gone from the inventory
+  assert.equal(hub.guestIps().has("homelab/pve1/202"), false, "removed guests keep no addresses");
+});
+
+test("a failed address read keeps the last known addresses", async () => {
+  const p = fakeProvider([inv([host("pve1")], [guest("pve1", 201)])], { "pve1/201": { interfaces: [{ name: "eth0", mac: null, ipv4: ["10.0.0.1"], ipv6: [] }] } });
+  const { hub, conns } = setup({ a: p }, ["a"]);
+  await hub.reload();
+  await hub.tick(conns[0]!.id, sig);
+  await hub.refreshIps(conns[0]!.id, sig);
+  p.guestAddresses = async () => { throw new Error("agent not running"); };
+  await hub.refreshIps(conns[0]!.id, sig);
+  assert.deepEqual(hub.guestIps().get("homelab/pve1/201"), ["10.0.0.1"]);
+});
+
+test("moving a connection to another environment re-keys its addresses and sweeps again at once", async () => {
+  const p = fakeProvider([inv([host("pve3")], [guest("pve3", 301)])], { "pve3/301": { interfaces: [{ name: "eth0", mac: null, ipv4: ["192.0.2.31"], ipv6: [] }] } });
+  const { hub, conns, store } = setup({ a: fakeProvider([inv([host("pve1")], [guest("pve1", 101)])]), b: p });
+  await hub.reload();
+  for (const c of conns) await hub.tick(c.id, sig);
+  await hub.refreshIps(conns[1]!.id, sig);
+  assert.deepEqual(hub.guestIps().get("homelab/pve3/301"), ["192.0.2.31"]);
+  const other = store.upsertEnv({ slug: "pve3", name: "pve3", kind: "lab", color: "#0f0", pollSeconds: 10, rules: "", exportDir: "" });
+  store.upsertConnection({ ...store.getConnection(conns[1]!.id)!, envId: other.id });
+  await hub.reload();
+  await hub.tick(conns[1]!.id, sig);
+  assert.equal(hub.guestIps().has("homelab/pve3/301"), false, "no address is left under the old environment");
+  assert.equal(hub.ipRefreshDue(conns[1]!.id), true, "the moved connection sweeps immediately");
+  assert.equal(hub.snapshot("homelab")!.hosts.length, 1);
+  assert.equal(hub.snapshot("pve3")!.hosts.length, 1);
+});
+
+test("a sweep still running is not started again", async () => {
+  let inflight = 0, peak = 0;
+  const p = fakeProvider([inv([host("pve1")], [guest("pve1", 1), guest("pve1", 2)])], { "pve1/1": { interfaces: [] }, "pve1/2": { interfaces: [] } });
+  p.guestAddresses = async () => { inflight++; peak = Math.max(peak, inflight); await new Promise((r) => setTimeout(r, 20)); inflight--; return []; };
+  const { hub, conns } = setup({ a: p }, ["a"]);
+  await hub.reload();
+  await hub.tick(conns[0]!.id, sig);
+  await Promise.all([hub.refreshIps(conns[0]!.id, sig), hub.refreshIps(conns[0]!.id, sig)]);
+  assert.equal(peak, 2, "one sweep, two guests in flight at most");
+});

@@ -18,6 +18,12 @@ export function EnvBadge({ env, className }: { env: EnvBadgeDto; className?: str
   );
 }
 
+/** Shown above data that is still the last successful result after a refresh failed. */
+export function StaleNotice({ error, className }: { error: string | null; className?: string }) {
+  if (!error) return null;
+  return <p className={cn("rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs", className)}>Showing the last data received; the latest refresh failed: {error}</p>;
+}
+
 const TONE_CLASS = { ok: "bg-emerald-500", off: "bg-muted-foreground/50", warn: "bg-amber-500" } as const;
 
 export function StateDot({ state, active, className }: { state: RunState | "online" | "offline"; active?: boolean; className?: string }) {

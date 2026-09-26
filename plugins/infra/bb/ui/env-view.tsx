@@ -4,10 +4,9 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { EnvViewDto, HostState } from "../schemas.ts";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { EnvBadge, HealthBadge, StateDot, UsageBar } from "./badges.tsx";
+import { EnvBadge, HealthBadge, StaleNotice, StateDot, UsageBar } from "./badges.tsx";
 import { age, bytes, pct } from "./format.ts";
 import { useInfraQuery, useNow } from "./hooks.ts";
-import { ActivityList } from "./activity-feed.tsx";
 
 type Guest = EnvViewDto["guests"][number];
 type SortKey = "vmid" | "name" | "state" | "cpu" | "mem";
@@ -96,6 +95,7 @@ export function EnvView({ slug, onOpen, compact }: { slug: string; onOpen(target
         <div className="flex items-center gap-3"><EnvBadge env={v.env} /><HealthBadge code={v.health} staleSince={v.connections.map((c) => c.health.staleSince).filter((x): x is number => x !== null)[0] ?? null} now={now} /></div>
         <AskAgentMenu target={slug} kind="env" />
       </div>
+      <StaleNotice error={q.error} />
       {v.connections.filter((c) => c.health.code !== "ok").map((c) => (
         <p key={c.id} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">{c.label}: {c.health.code}{c.health.message ? ` — ${c.health.message}` : ""}</p>
       ))}
@@ -107,12 +107,6 @@ export function EnvView({ slug, onOpen, compact }: { slug: string; onOpen(target
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Guests</h3>
         <GuestTable guests={v.guests} onOpen={(t) => onOpen(`${slug}/${t}`)} compact={compact} />
       </section>
-      {!compact ? (
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Recent agent activity</h3>
-          <ActivityList items={v.recentActivity} changes={[]} onOpenTarget={onOpen} />
-        </section>
-      ) : null}
     </div>
   );
 }

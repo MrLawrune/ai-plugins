@@ -48,6 +48,11 @@ export function fakeProvider(script: (Inventory | Error)[], details: Record<stri
       const g = last?.guests.find((x) => x.node === ref.node && x.vmid === ref.vmid) ?? guest(ref.node, ref.vmid);
       return { guest: structuredClone(g), hostname: null, os: null, interfaces: [], config: {}, notes: "", snapshots: [], agent: "n/a" as const, ...d };
     },
+    async guestAddresses(ref: { node: string; vmid: number }) {
+      const d = details[`${ref.node}/${ref.vmid}`];
+      if (!d) throw new Error("no detail");
+      return structuredClone(d.interfaces ?? []);
+    },
     async metrics(): Promise<never> { throw new Error("not scripted"); },
     async tasks() { return []; },
     async backups() { return []; },

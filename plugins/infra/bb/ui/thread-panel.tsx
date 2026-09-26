@@ -69,9 +69,9 @@ export function ThreadInfraPanel({ threadId, params }: { threadId: string; param
   const shownTitle = useRef<string | null>(null);
   const ownParams = initial ? { target: initial } : undefined;
   useEffect(() => {
-    if (shownTitle.current === title) return;
+    if (!ownParams || shownTitle.current === title) return; // the home tab keeps its name while you browse inside it
     shownTitle.current = title;
-    nav.openThreadPanel({ actionId: PANEL_ACTION_ID, title, ...(ownParams ? { params: ownParams } : {}) });
+    nav.openThreadPanel({ actionId: PANEL_ACTION_ID, title, params: ownParams });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title, nav]);
 

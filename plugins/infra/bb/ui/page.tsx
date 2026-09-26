@@ -6,7 +6,7 @@ import { ActivityFeed } from "./activity-feed.tsx";
 import { EnvView } from "./env-view.tsx";
 import { GuestView } from "./guest-view.tsx";
 import { HostView } from "./host-view.tsx";
-import { useInfraQuery } from "./hooks.ts";
+import { refreshAllQueries, useInfraQuery } from "./hooks.ts";
 import { Overview } from "./overview.tsx";
 import { parseSubPath, type Route } from "./route.ts";
 
@@ -37,15 +37,8 @@ export function InfraPage({ subPath }: { subPath: string }) {
     <div className="h-full overflow-y-auto p-4 md:p-5">
       <div className="mx-auto w-full max-w-6xl space-y-4">
         <Crumbs route={route} go={go} />
-        {route.view === "overview" ? (
-          <div className="space-y-6">
-            <Overview onOpen={go} />
-            <section className="space-y-2">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Agent activity across environments</h3>
-              <ActivityFeed onOpenTarget={go} />
-            </section>
-          </div>
-        ) : route.view === "env" ? <EnvView slug={route.slug} onOpen={go} />
+        {route.view === "overview" ? <Overview onOpen={go} />
+          : route.view === "env" ? <EnvView slug={route.slug} onOpen={go} />
           : route.view === "host" ? <HostView target={route.target} onOpen={go} />
           : <GuestView target={route.target} onOpen={go} />}
       </div>
@@ -53,11 +46,16 @@ export function InfraPage({ subPath }: { subPath: string }) {
   );
 }
 
-export function ActivityTab() {
+/** The right-panel feed follows the page: every environment on the overview, one environment or target when drilled in. */
+export function ActivityTab({ subPath }: { subPath: string }) {
   const nav = useBbNavigate();
+  const route = parseSubPath(subPath);
+  const scope = route.view === "overview" ? {} : route.view === "env" ? { envSlug: route.slug } : { target: route.target };
+  const label = route.view === "overview" ? "All environments" : route.view === "env" ? route.slug : route.target;
   return (
     <div className="h-full overflow-y-auto p-3">
-      <ActivityFeed compact onOpenTarget={(t) => nav.toPluginPanel(PANEL_PATH, { subPath: t })} />
+      <p className="mb-2 text-xs text-muted-foreground">Agent activity · <span className="font-mono">{label}</span></p>
+      <ActivityFeed {...scope} compact onOpenTarget={(t) => nav.toPluginPanel(PANEL_PATH, { subPath: t })} />
     </div>
   );
 }
@@ -68,7 +66,7 @@ export function InfraHeader() {
   return (
     <div className="flex items-center gap-2 text-xs">
       {bad ? <span className="text-amber-600 dark:text-amber-400">{bad} environment{bad > 1 ? "s" : ""} degraded</span> : null}
-      <Button variant="ghost" size="sm" onClick={q.refresh} aria-label="Refresh"><Icon name="ArrowReloadHorizontal" className="size-4" /></Button>
+      <Button variant="ghost" size="sm" onClick={refreshAllQueries} aria-label="Refresh everything on this page"><Icon name="ArrowReloadHorizontal" className="size-4" /></Button>
     </div>
   );
 }

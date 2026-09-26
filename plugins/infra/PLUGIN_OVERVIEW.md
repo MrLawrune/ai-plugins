@@ -6,7 +6,7 @@ See your infrastructure and what your agents are doing to it, without leaving BB
 - **Agent activity**: every command an agent runs against a host or guest (ssh, pct, qm, pvesh), linked to its thread, plus which thread most likely created, removed, or stopped a guest.
 - **In threads**: an Infra side panel that lists what the thread touched, a header chip, a running marker on sidebar rows, and live `::infra-guest` cards agents can drop into chat.
 - **Ask agent**: start a thread about any environment, host, or guest with its live summary and your rules already in the prompt.
-- **Context for agents, on request**: `bb infra` prints compact cards, registries, and your per-environment rules; orchestrators can pin a card to a subagent's thread. Nothing is injected by default.
+- **Context for agents, on request**: `bb infra` prints compact cards, registries, and your per-environment rules; orchestrators can pin a card to a subagent's thread before it starts. Nothing is injected by default.
 
 ## How it works
 

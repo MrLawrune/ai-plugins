@@ -63,6 +63,13 @@ test("env card lists hosts, guests, and rules on request", () => {
   assert.doesNotMatch(envCard(snap, { rules: false, budget: 60, ips }), /Rules:/);
 });
 
+test("env card keeps its rules when the budget cuts the inventory", () => {
+  const card = envCard(snap, { rules: true, budget: 6, ips });
+  assert.ok(card.split("\n").length <= 6, card);
+  assert.match(card, /… \d+ more lines \(bb infra registry homelab\)/);
+  assert.match(card, /Rules:\nUse Podman, not Docker\.\nPrefer LXCs\.$/);
+});
+
 test("applyBudget keeps at most budget lines and points to the registry", () => {
   const lines = Array.from({ length: 100 }, (_, i) => `l${i}`);
   const out = applyBudget(lines, 10, "homelab").split("\n");

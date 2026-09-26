@@ -4,9 +4,9 @@ import type {
 } from "../schemas.ts";
 import type { Activity } from "./activity.ts";
 import { Conventions } from "./conventions.ts";
-import { envCard, envHealth, envIndexLine, guestCard, hostCard, registryMarkdown } from "./context.ts";
+import { CARD_MIN_LINES, envCard, envHealth, envIndexLine, guestCard, hostCard, registryMarkdown, rulesBlock, withRules } from "./context.ts";
 import type { EnvSnapshot, Hub } from "./hub.ts";
-import type { Pins } from "./pins.ts";
+import { HEADER as PIN_HEADER, INSTRUCTIONS_MAX, type Pins } from "./pins.ts";
 import type { CertInfo } from "./providers/proxmox/tls.ts";
 import type { GuestDetail, GuestRef, GuestState, HostState, InfraProvider, MetricRange } from "./providers/types.ts";
 import type { Secrets } from "./secrets.ts";
@@ -116,7 +116,8 @@ export class InfraService {
     if (!r.provider) throw new Error("connection unavailable");
     const provider = r.provider;
     const detail = await this.d.hub.cached(`guest:${r.target}`, DETAIL_TTL, () => provider.guestDetail(r.ref, AbortSignal.timeout(10_000)));
-    this.d.hub.recordIps(r.target, detail.interfaces.flatMap((i) => i.ipv4));
+    const ipv4 = detail.interfaces.flatMap((i) => i.ipv4);
+    if (ipv4.length) this.d.hub.recordIps(r.target, ipv4); // guestDetail swallows interface-read failures, so an empty list proves nothing
     return detail;
   }
 
@@ -133,13 +134,18 @@ export class InfraService {
     if (!r) return null;
     const ips = this.d.hub.guestIps();
     const now = this.d.now();
-    let card: string | null;
-    if (r.kind === "env") card = envCard({ ...r.snap, env: { ...r.snap.env, rules: this.rulesSync(r.snap.env) } }, { rules: o.rules, budget: o.budget, ips });
-    else if (r.kind === "host") card = hostCard(r.snap, r.host.node, this.recent(r.target, 3), { budget: o.budget, now });
-    else card = guestCard(r.snap, r.guest.node, r.guest.vmid, null, this.recent(r.target, 3), { budget: o.budget, ips, now });
+    if (r.kind === "env") return envCard({ ...r.snap, env: { ...r.snap.env, rules: this.rulesSync(r.snap.env) } }, { rules: o.rules, budget: o.budget, ips });
     const rules = o.rules ? this.rulesSync(r.snap.env) : "";
-    if (card && r.kind !== "env" && rules) card += `\nRules (${r.snap.env.slug}):\n${rules}`;
-    return card;
+    const budget = this.cardBudget(o.budget, rules);
+    const card = r.kind === "host"
+      ? hostCard(r.snap, r.host.node, this.recent(r.target, 3), { budget, now })
+      : guestCard(r.snap, r.guest.node, r.guest.vmid, null, this.recent(r.target, 3), { budget, ips, now });
+    return card && rules ? withRules(card, rules, r.snap.env.slug, o.budget) : card;
+  }
+
+  /** Lines left for the card itself once the rules block that follows it is counted. */
+  private cardBudget(budget: number, rules: string): number {
+    return rules ? Math.max(1, budget - rulesBlock(rules, "", Math.max(2, budget - CARD_MIN_LINES)).length) : budget;
   }
 
   /** Card including live guest detail when reachable. */
@@ -148,24 +154,37 @@ export class InfraService {
     const r = this.resolve(target);
     if (!r || r.kind !== "guest") return this.cardSync(target, o);
     const detail = await this.guestDetail(r).catch(() => null);
-    let card = guestCard(r.snap, r.guest.node, r.guest.vmid, detail, this.recent(r.target, 3), { budget: o.budget, ips: this.d.hub.guestIps(), now: this.d.now() });
     const rules = o.rules ? this.rulesSync(r.snap.env) : "";
-    if (card && rules) card += `\nRules (${r.snap.env.slug}):\n${rules}`;
-    return card;
+    const card = guestCard(r.snap, r.guest.node, r.guest.vmid, detail, this.recent(r.target, 3), { budget: this.cardBudget(o.budget, rules), ips: this.d.hub.guestIps(), now: this.d.now() });
+    return card && rules ? withRules(card, rules, r.snap.env.slug, o.budget) : card;
   }
 
+  /**
+   * Pinned text within the SDK's instruction cap: rules (when requested) get up to half of it and are cut with a
+   * pointer to `bb infra rules`, cards share the rest. Nothing here depends on Pins' final safety slice.
+   */
   renderPin(pin: PinRow): string {
-    return pin.targets.map((t) => this.cardSync(t, { budget: 40, rules: false }) ?? `${t}: not found`).join("\n\n")
-      + (pin.rulesIncluded ? this.pinRules(pin) : "");
+    const total = INSTRUCTIONS_MAX - PIN_HEADER.length - 1;
+    const rules = pin.rulesIncluded ? this.pinRules(pin, Math.floor(total / 2)) : "";
+    const room = total - rules.length;
+    let cards = pin.targets.map((t) => this.cardSync(t, { budget: 40, rules: false }) ?? `${t}: not found`).join("\n\n");
+    if (cards.length > room) cards = cards.slice(0, Math.max(0, room - 1)) + "…";
+    return cards + rules;
   }
 
-  private pinRules(pin: PinRow): string {
-    const slugs = [...new Set(pin.targets.map((t) => t.split("/")[0]!))];
-    return slugs
+  private pinRules(pin: PinRow, maxChars: number): string {
+    const envs = [...new Set(pin.targets.map((t) => t.split("/")[0]!))]
       .map((slug) => this.d.hub.snapshot(slug)?.env)
-      .filter((e): e is InfraEnvRow => !!e && !!this.rulesSync(e))
-      .map((e) => `\n\nRules (${e.slug}):\n${this.rulesSync(e)}`)
-      .join("");
+      .filter((e): e is InfraEnvRow => !!e && !!this.rulesSync(e));
+    if (!envs.length) return "";
+    const each = Math.floor(maxChars / envs.length);
+    return envs.map((e) => {
+      const head = `\n\nRules (${e.slug}):\n`;
+      const text = this.rulesSync(e);
+      const pointer = `\n… (full text: bb infra rules ${e.slug})`;
+      const room = each - head.length - pointer.length;
+      return text.length + head.length <= each ? head + text : head + text.slice(0, Math.max(0, room)) + pointer;
+    }).join("");
   }
 
   registry(slug: string): string | null {
@@ -306,6 +325,7 @@ export class InfraService {
   activity(q: { envSlug?: string; target?: string; threadId?: string; limit: number }): { items: ActivityDto[]; changes: ChangeDto[] } {
     const envId = q.envSlug ? this.d.hub.snapshot(q.envSlug)?.env.id : undefined;
     if (q.envSlug && !envId) return { items: [], changes: [] };
+    if (q.target) q = { ...q, target: this.resolve(q.target)?.target ?? q.target };
     const items = this.d.store.activityFor({ envId, targetPrefix: q.target, threadId: q.threadId, limit: q.limit }).map(actDto);
     const changes = q.threadId
       ? []
@@ -380,7 +400,9 @@ export class InfraService {
   }
 
   async deleteEnv(id: string): Promise<void> {
+    const env = this.d.store.getEnv(id);
     for (const c of this.d.store.listConnections(id)) await this.d.secrets.remove(c.id);
+    if (env) this.d.pins.dropEnv(env.slug);
     this.d.store.deleteEnv(id);
     await this.d.onConfigChanged();
   }
@@ -390,8 +412,15 @@ export class InfraService {
     const existing = input.id ? this.d.store.getConnection(input.id) : null;
     if (input.id && !existing) throw new NotFoundError("connection not found");
     if (fields.tlsMode === "pinned" && !fields.tlsFingerprint.trim()) throw new Error("fetch and trust the certificate fingerprint first");
-    const row = this.d.store.upsertConnection({ ...fields, caPem: caPem ?? existing?.caPem ?? "" });
-    if (fields.tlsMode === "ca" && !row.caPem.trim()) throw new Error("paste the CA certificate (PEM)");
+    const endpoint = (u: string) => u.trim().toLowerCase().replace(/\/+$/, "");
+    const twin = this.d.store.listConnections().find((c) => c.id !== input.id && endpoint(c.baseUrl) === endpoint(fields.baseUrl));
+    if (twin) {
+      const env = this.d.store.getEnv(twin.envId);
+      throw new Error(`${fields.baseUrl} is already added as "${twin.label}"${env ? ` in ${env.name}` : ""}; move or remove that connection instead of adding the host twice`);
+    }
+    const mergedCaPem = caPem ?? existing?.caPem ?? "";
+    if (fields.tlsMode === "ca" && !mergedCaPem.trim()) throw new Error("paste the CA certificate (PEM)");
+    const row = this.d.store.upsertConnection({ ...fields, caPem: mergedCaPem });
     if (secret) await this.d.secrets.set(row.id, secret);
     await this.d.onConfigChanged();
     return (await this.connectionDto(row.id))!;

@@ -1,5 +1,6 @@
 // bb-plugin-infra — frontend entry: every slot registration lives here.
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import { GuestDirective, HostDirective } from "./ui/directive.tsx";
 import { HeaderChip } from "./ui/header-chip.tsx";
 import { HomepageStrip } from "./ui/homepage.tsx";
@@ -49,7 +50,9 @@ export default definePluginApp((app) => {
     id: "thread-panel",
     title: "Infra: show this thread's infrastructure",
     isAvailable: ({ threadId }) => threadId !== null,
-    run: ({ openPanel }) => { openPanel({ actionId: PANEL_ACTION_ID, title: "Infra" }); },
+    run: ({ openPanel }) => {
+      if (!openPanel({ actionId: PANEL_ACTION_ID, title: "Infra" })) toast("Open the thread itself to show its Infra panel.");
+    },
   });
 
   app.slots.settingsSection({

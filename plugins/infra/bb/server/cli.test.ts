@@ -70,4 +70,12 @@ test("activity lists recent commands for a target", async () => {
   await h.activity.onThreadEvents("thr_a");
   const r = await run("activity", "homelab/pve1/150");
   assert.match(r.stdout!, /thr_a .*ssh pve1 'pct exec 150 -- ls'/);
+  const mixed = await run("activity", "homelab/PVE1/150");
+  assert.match(mixed.stdout!, /thr_a .*ssh pve1 'pct exec 150 -- ls'/, "node names are case-insensitive for history too");
+});
+
+test("attach says when the pin takes effect", async () => {
+  const { run } = await setup();
+  const r = await run("attach", "thr_x", "homelab/pve1");
+  assert.match(r.stdout!, /pinned homelab\/pve1 to thr_x \(applies when the thread's agent session next starts/);
 });

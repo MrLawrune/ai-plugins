@@ -55,6 +55,7 @@ export class Hub {
   private snaps = new Map<string, EnvSnapshot>(); // by env id
   private cache = new Map<string, { at: number; value?: unknown; pending?: Promise<unknown> }>();
   private ips = new Map<string, string[]>();
+  private sweeping = new Set<string>();
   private generation = new AbortController();
 
   constructor(deps: HubDeps) {
@@ -68,7 +69,9 @@ export class Hub {
     const next = new Map<string, ConnState>();
     for (const row of rows) {
       const prev = this.conns.get(row.id);
-      const state: ConnState = { row, provider: null, inventory: prev?.inventory ?? null, health: prev?.health ?? initialHealth(), failures: 0, ipsAt: prev?.ipsAt ?? 0 };
+      // Kept state describes the same endpoint in the same environment; anything else is a new connection under an old id.
+      const same = prev && prev.row.baseUrl === row.baseUrl && prev.row.envId === row.envId && prev.row.username === row.username;
+      const state: ConnState = { row, provider: null, inventory: same ? prev.inventory : null, health: same ? prev.health : initialHealth(), failures: 0, ipsAt: same ? prev.ipsAt : 0 };
       if (!row.enabled) {
         state.health = { ...state.health, code: "disabled", message: null };
       } else {
@@ -82,8 +85,11 @@ export class Hub {
       next.set(row.id, state);
     }
     this.conns = next;
+    this.cache.clear();
     const envIds = new Set(this.envs.map((e) => e.id));
     for (const id of [...this.snaps.keys()]) if (!envIds.has(id)) this.snaps.delete(id);
+    const slugs = new Set(this.envs.map((e) => e.slug));
+    for (const key of [...this.ips.keys()]) if (!slugs.has(key.split("/")[0]!)) this.ips.delete(key);
     for (const env of this.envs) this.rebuild(env, false);
     this.generation.abort();
     this.generation = new AbortController();
@@ -138,6 +144,8 @@ export class Hub {
       snap.connections.push({ id: c.row.id, label: c.row.label, health });
     }
     snap.guests.sort((a, b) => a.node.localeCompare(b.node) || a.vmid - b.vmid);
+    const present = new Set(snap.guests.map((g) => `${env.slug}/${g.node}/${g.vmid}`));
+    for (const key of [...this.ips.keys()]) if (key.startsWith(`${env.slug}/`) && !present.has(key)) this.ips.delete(key);
     const prev = this.snaps.get(env.id);
     this.snaps.set(env.id, snap);
     if (!emit) return;
@@ -216,28 +224,35 @@ export class Hub {
     return this.ips;
   }
 
+  /** A successful read with no addresses clears the entry; failed reads never reach here and keep the last known addresses. */
   recordIps(target: string, ipv4: string[]): void {
     if (ipv4.length) this.ips.set(target, ipv4);
+    else this.ips.delete(target);
   }
 
   async refreshIps(connectionId: string, signal: AbortSignal): Promise<void> {
     const c = this.conns.get(connectionId);
     const env = c && this.envs.find((x) => x.id === c.row.envId);
-    if (!c?.provider || !c.inventory || !env) return;
+    if (!c?.provider || !c.inventory || !env || this.sweeping.has(connectionId)) return;
+    this.sweeping.add(connectionId);
     c.ipsAt = this.deps.now();
     const queue = c.inventory.guests.filter((g) => g.state === "running" && !g.template);
     const provider = c.provider;
     const worker = async () => {
       for (let g = queue.shift(); g && !signal.aborted; g = queue.shift()) {
         try {
-          const d = await provider.guestDetail({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
-          this.recordIps(`${env.slug}/${g.node}/${g.vmid}`, d.interfaces.flatMap((i) => i.ipv4));
+          const interfaces = await provider.guestAddresses({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
+          this.recordIps(`${env.slug}/${g.node}/${g.vmid}`, interfaces.flatMap((i) => i.ipv4));
         } catch {
           // keep the previous entry
         }
       }
     };
-    await Promise.all(Array.from({ length: IP_CONCURRENCY }, worker));
+    try {
+      await Promise.all(Array.from({ length: IP_CONCURRENCY }, worker));
+    } finally {
+      this.sweeping.delete(connectionId);
+    }
   }
 
   /** True when this connection's environment sweeps guest IPs and the last sweep is older than its interval. */
@@ -259,7 +274,8 @@ export class Hub {
           await this.tick(id, gen);
           const c = this.conns.get(id);
           if (c && c.failures === 0 && this.ipRefreshDue(id)) {
-            await this.refreshIps(id, gen).catch((e: unknown) => this.deps.log(`ip refresh failed: ${String(e)}`));
+            // Detached: a slow sweep must not delay the next inventory poll. refreshIps stamps ipsAt first, so it never overlaps itself.
+            void this.refreshIps(id, gen).catch((e: unknown) => this.deps.log(`ip refresh failed: ${String(e)}`));
           }
           await sleep(this.nextDelayMs(id), gen);
         }

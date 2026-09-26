@@ -2,6 +2,7 @@
 // running, and links inventory changes to the thread that most likely caused them.
 import type { ChangeEvent } from "./hub.ts";
 import { matchCommand, type MatchIndex } from "./matcher.ts";
+import { redactSecrets } from "./redact.ts";
 import type { Store } from "./store.ts";
 
 export interface RawEvent {
@@ -40,7 +41,7 @@ const hostOf = (target: string) => target.split("/").slice(0, 2).join("/");
 export class Activity {
   private readonly deps: ActivityDeps;
   private readonly live = new Map<string, Map<string, string[]>>(); // threadId → itemId → targets
-  private readonly chains = new Map<string, Promise<void>>();
+  private readonly chains = new Map<string, Promise<boolean>>();
   private readonly scanned = new Map<string, number>(); // threadId → highest announced sequence a pull has covered
   private readonly wanted = new Map<string, number>();  // threadId → highest announced sequence
   private readonly lastPull = new Map<string, number>();
@@ -65,7 +66,10 @@ export class Activity {
       const upTo = this.wanted.get(threadId) ?? -1;
       this.lastPull.set(threadId, this.deps.now());
       this.onThreadEvents(threadId).then(
-        () => { if (upTo > (this.scanned.get(threadId) ?? -1)) this.scanned.set(threadId, upTo); },
+        (drained) => {
+          if (drained) { if (upTo > (this.scanned.get(threadId) ?? -1)) this.scanned.set(threadId, upTo); }
+          else this.notify(threadId, upTo); // more than one batch was waiting; keep going
+        },
         (e: unknown) => this.deps.onError?.(threadId, e),
       );
     }, wait));
@@ -76,26 +80,28 @@ export class Activity {
     this.timers.clear();
   }
 
-  /** Pull new events for one thread; calls for the same thread run one at a time. */
-  onThreadEvents(threadId: string): Promise<void> {
-    const prev = this.chains.get(threadId) ?? Promise.resolve();
+  /** Pull new events for one thread; calls for the same thread run one at a time. Resolves false when a backlog remains. */
+  onThreadEvents(threadId: string): Promise<boolean> {
+    const prev = this.chains.get(threadId) ?? Promise.resolve(true);
     const next = prev.catch(() => undefined).then(() => this.pull(threadId));
     this.chains.set(threadId, next);
     void next.finally(() => { if (this.chains.get(threadId) === next) this.chains.delete(threadId); }).catch(() => undefined);
     return next;
   }
 
-  private async pull(threadId: string): Promise<void> {
+  private async pull(threadId: string): Promise<boolean> {
     let changed = false;
-    for (let page = 0; page < MAX_PAGES; page++) {
+    let drained = false;
+    for (let page = 0; page < MAX_PAGES && !drained; page++) {
       const cursor = this.deps.store.getCursor(threadId);
       const events = await this.deps.events.list({ threadId, afterSeq: String(cursor), limit: String(PAGE), types: TYPES });
-      if (!events.length) break;
+      if (!events.length) { drained = true; break; }
       for (const e of events) changed = this.process(threadId, e) || changed;
       this.deps.store.setCursor(threadId, Math.max(cursor, ...events.map((e) => e.seq)));
-      if (events.length < PAGE) break;
+      drained = events.length < PAGE;
     }
     if (changed) this.deps.onActivity([threadId]);
+    return drained;
   }
 
   private process(threadId: string, e: RawEvent): boolean {
@@ -112,7 +118,7 @@ export class Activity {
       const envId = this.deps.envIdForSlug(target.split("/")[0]!);
       if (!envId) continue;
       this.deps.store.addActivity({
-        envId, target, threadId, turnId: e.scope?.turnId ?? "", itemId: item.id, command: item.command.slice(0, COMMAND_MAX),
+        envId, target, threadId, turnId: e.scope?.turnId ?? "", itemId: item.id, command: redactSecrets(item.command).slice(0, COMMAND_MAX),
         phase, exitCode: typeof item.exitCode === "number" ? item.exitCode : null, at: e.createdAt,
       });
       recorded = true;
