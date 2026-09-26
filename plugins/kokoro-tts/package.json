@@ -16,7 +16,9 @@
     "app": "./bb/app.tsx"
   },
   "scripts": {
-    "test": "node --test \"bb/**/*.test.ts\"",
+    "test": "npm run test:node && npm run test:ui",
+    "test:node": "node --test \"bb/**/*.test.ts\"",
+    "test:ui": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -42,6 +44,7 @@
     "@radix-ui/react-popover": "^1.1.19",
     "@radix-ui/react-select": "^2.3.3",
     "@radix-ui/react-tooltip": "^1.2.12",
+    "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
@@ -51,10 +54,14 @@
     "clsx": "^2.1.1",
     "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
+    "jsdom": "^30.1.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
     "typescript": "^5.7.0",
-    "vaul": "^1.1.2"
+    "vaul": "^1.1.2",
+    "vitest": "^5.0.2"
   },
   "description": "BB panel for the Kokoro TTS server"
 }
