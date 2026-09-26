@@ -3,6 +3,7 @@ import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { mountPlayer } from "./player/script.ts";
 import { KokoroPanel } from "./page/panel.tsx";
 import { KokoroHeader } from "./page/header.tsx";
+import { ServerSettings } from "./page/server-settings.tsx";
 import type { IconSvgElement } from "@hugeicons/react";
 import {
   CancelCircleIcon,
@@ -302,5 +303,12 @@ export default definePluginApp((app) => {
     path: "kokoro",
     component: KokoroPanel,
     headerContent: KokoroHeader,
+  });
+
+  app.slots.settingsSection({
+    id: "server",
+    title: "Server and engine",
+    description: "How the Kokoro server runs and where synthesis happens.",
+    component: ServerSettings,
   });
 });

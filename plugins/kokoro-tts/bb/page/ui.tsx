@@ -1,5 +1,5 @@
 // Layout and control primitives for the Kokoro settings surfaces.
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -201,18 +201,4 @@ export function SaveIndicator({ state }: { state: SaveState }) {
     default:
       return null;
   }
-}
-
-/** Transitional: deleted in Task 8 together with the old cards. */
-export function useDebouncedPatch<P>(patch: (p: P) => Promise<void>, ms = 350) {
-  const t = useRef<ReturnType<typeof setTimeout> | null>(null);
-  return useCallback((p: P) => {
-    if (t.current) clearTimeout(t.current);
-    t.current = setTimeout(() => void patch(p), ms);
-  }, [patch, ms]);
-}
-
-/** Transitional: deleted in Task 8 together with the old cards. */
-export function Advanced({ label = "Advanced", children }: { label?: string; children: ReactNode }) {
-  return <Disclosure label={label}>{children}</Disclosure>;
 }
