@@ -46,7 +46,7 @@ from kokoro_config import (
     voice_metadata,
 )
 from kokoro_pause import MediaPauser, pause_supported
-from kokoro_engine import SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
+from kokoro_engine import FRAME_END, FRAME_ERROR, SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
 from kokoro_turn import MODE_CEILING, apply_cue_prefs, route_cue, route_turn
 
 SERVER_VERSION = "0.1.3"
@@ -450,14 +450,15 @@ class KokoroServer:
         return blend_voice(voice, self._local_engine().get_voice_style)
 
     async def _synth_stream(self, text: str, voice, speed: float, lang: str, trim: bool):
-        """Yield (samples, sr) per sentence group from whichever engine is active."""
+        """Yield (samples, sr) per sentence group from the engine active at the start."""
+        engine = self.engine
+        style = None if isinstance(engine, RemoteEngine) else self._resolve_voice(voice)
         for chunk in sentence_chunks(text):
-            if isinstance(self.engine, RemoteEngine):
-                async for samples, sr in self.engine.stream(chunk, voice, speed, lang, trim):
+            if isinstance(engine, RemoteEngine):
+                async for samples, sr in engine.stream(chunk, voice, speed, lang, trim):
                     yield samples, sr
             else:
-                style = self._resolve_voice(voice)
-                async for samples, sr in self.engine.stream(chunk, style, speed, lang, trim):
+                async for samples, sr in engine.stream(chunk, style, speed, lang, trim):
                     yield samples, sr
 
     def _restart_block(self) -> dict:
@@ -703,20 +704,27 @@ class KokoroServer:
         cfg.update(overrides)
         if isinstance(self.engine, RemoteEngine) and request.headers.get("X-Kokoro-Hop"):
             return web.json_response({"error": "remote-backed node reached via another node"}, status=409)
-        resp = web.StreamResponse(headers={"Content-Type": "application/octet-stream", "X-Sample-Rate": "24000"})
+        v2 = request.headers.get("X-Kokoro-Frames") == "2"
+        headers = {"Content-Type": "application/octet-stream", "X-Sample-Rate": "24000"}
+        if v2:
+            headers["X-Kokoro-Frames"] = "2"
+        resp = web.StreamResponse(headers=headers)
         await resp.prepare(request)
         t0 = time.perf_counter()
         n = 0
+        failed = False
         try:
             async for samples, sr in self._synth_stream(text, cfg["voice"], cfg["speed"], cfg["lang"], cfg["trim"]):
                 frame = np.ascontiguousarray(samples, dtype=np.float32).tobytes()
+                if not frame:
+                    continue
                 await resp.write(len(frame).to_bytes(4, "little") + frame)
                 n += 1
-        except Exception as e:
+        except Exception:
             log.exception("synthesize failed")
-            if n == 0:
-                # nothing sent yet: the client will see an empty body; log is the record
-                pass
+            failed = True
+        if v2:
+            await resp.write((FRAME_ERROR if failed else FRAME_END).to_bytes(4, "little"))
         await resp.write_eof()
         log.info("/synthesize %d chars -> %d frames in %.0fms", len(text), n, (time.perf_counter() - t0) * 1000)
         return resp

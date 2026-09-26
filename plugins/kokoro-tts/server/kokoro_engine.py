@@ -25,6 +25,12 @@ PROVIDERS = ("cpu", "cuda", "openvino", "remote")
 LOCAL_PROVIDERS = ("cpu", "cuda", "openvino")
 SAMPLE_RATE = 24000
 
+# /synthesize framing: 4-byte little-endian length, then float32 PCM. A client
+# sending "X-Kokoro-Frames: 2" also gets a closing length word: FRAME_END for a
+# complete reply, FRAME_ERROR when synthesis failed after audio was sent.
+FRAME_END = 0
+FRAME_ERROR = 0xFFFFFFFF
+
 
 class EngineError(RuntimeError):
     pass
@@ -85,6 +91,24 @@ def build_session(
     if active[0] != wanted:
         raise EngineError(f"{provider} requested but session fell back to {active[0]}")
     return sess
+
+
+def split_frames(buf: bytes, markers: bool) -> tuple[list[bytes], bytes, str | None]:
+    """Split complete frames off buf; returns (frames, rest, "end" | "error" | None)."""
+    frames: list[bytes] = []
+    while len(buf) >= 4:
+        n = int.from_bytes(buf[:4], "little")
+        if markers and n == FRAME_END:
+            return frames, b"", "end"
+        if markers and n == FRAME_ERROR:
+            return frames, b"", "error"
+        if n % 4:
+            raise EngineError(f"frame of {n} bytes is not float32 audio")
+        if len(buf) < 4 + n:
+            break
+        frames.append(buf[4:4 + n])
+        buf = buf[4 + n:]
+    return frames, buf, None
 
 
 class LocalEngine:
@@ -179,7 +203,7 @@ class LocalEngine:
 
     async def stream(self, text: str, style: NDArray[np.float32], speed: float, lang: str, trim: bool) -> AsyncIterator[tuple[NDArray[np.float32], int]]:
         async with self._lock:
-            self.ensure_loaded()
+            await asyncio.get_running_loop().run_in_executor(None, self.ensure_loaded)
         assert self._kokoro is not None
         async for samples, sr in self._kokoro.create_stream(text, voice=style, speed=speed, lang=lang, trim=trim):
             self.last_used = time.time()
@@ -251,27 +275,32 @@ class RemoteEngine:
             t = time.perf_counter()
             async with http.post(f"{self.url}/synthesize", json={
                 "text": text, "voice": voice, "speed": speed, "lang": lang, "trim": trim,
-            }, headers={"X-Kokoro-Hop": "1"}, timeout=aiohttp.ClientTimeout(
+            }, headers={"X-Kokoro-Hop": "1", "X-Kokoro-Frames": "2"}, timeout=aiohttp.ClientTimeout(
                 total=None, sock_connect=self.timeout_s, sock_read=self.timeout_s,
             )) as r:
                 if r.status != 200:
                     raise EngineError(f"remote returned {r.status}: {(await r.text())[:200]}")
                 sr = int(r.headers.get("X-Sample-Rate", SAMPLE_RATE))
+                v2 = r.headers.get("X-Kokoro-Frames") == "2"
                 first = True
-                # Frames: 4-byte little-endian length prefix, then float32 samples.
                 buf = b""
+                mark = None
                 async for data in r.content.iter_any():
-                    buf += data
-                    while len(buf) >= 4:
-                        n = int.from_bytes(buf[:4], "little")
-                        if len(buf) < 4 + n:
-                            break
-                        frame, buf = buf[4:4 + n], buf[4 + n:]
+                    frames, buf, mark = split_frames(buf + data, v2)
+                    for frame in frames:
                         if first:
                             self.last_latency_ms = (time.perf_counter() - t) * 1000
                             first = False
                         yielded = True
                         yield np.frombuffer(frame, dtype=np.float32), sr
+                    if mark:
+                        break
+                if mark == "error":
+                    raise EngineError("remote synthesis failed mid-reply")
+                if buf or (v2 and mark != "end"):
+                    raise EngineError("remote reply ended early")
+                if not yielded:
+                    raise EngineError("remote returned no audio")
             self.last_error = None
         except Exception as e:
             self.last_error = str(e)

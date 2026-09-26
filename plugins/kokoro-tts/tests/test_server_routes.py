@@ -7,6 +7,7 @@ import types
 from collections import OrderedDict, deque
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 os.environ["KOKORO_HEADLESS"] = "1"  # no sounddevice import in tests
@@ -482,3 +483,22 @@ def test_unknown_mode_falls_back_to_the_configured_mode(tmp_path):
     srv.config.patch({"mode": "quiet"})
     _, body = request(srv, "POST", "/turn", {"text": BLOCK, "mode": "loud"})
     assert body["action"] == "silent"
+
+
+def test_synthesize_marks_a_mid_stream_failure(tmp_path):
+    srv = make_server(tmp_path)
+
+    async def failing_stream(text, voice, speed, lang, trim):
+        yield np.zeros(4, dtype=np.float32), 24000
+        raise RuntimeError("engine died")
+
+    srv._synth_stream = failing_stream
+
+    async def go():
+        async with TestClient(TestServer(ks.build_app(srv))) as c:
+            r = await c.post("/synthesize", json={"text": "Hi."}, headers={"X-Kokoro-Frames": "2"})
+            return r.headers.get("X-Kokoro-Frames"), await r.read()
+
+    header, raw = asyncio.run(go())
+    assert header == "2"
+    assert raw[-4:] == (0xFFFFFFFF).to_bytes(4, "little")
