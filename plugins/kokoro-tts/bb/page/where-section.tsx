@@ -1,17 +1,14 @@
-// bb-plugin-kokoro-tts — Playback card: where audio plays (merged "Play audio on",
-// Playback devices, and Output).
-import { useEffect, useMemo, useState } from "react";
-import { useRpc } from "@get-bb/plugin-sdk/app";
+// bb-plugin-kokoro-tts — "Where it plays" section: playback target, route, devices, output.
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { DEVICE_NAME_EVENT, readClientId, readDeviceName, writeDeviceName } from "../player/device.ts";
-import type { DeviceInfo, KokoroConfig, Prefs, PublicClientInfo, rpcContract, SetupState } from "../schemas.ts";
-import { Row, Section, SliderRow, SwitchRow, useDebouncedPatch } from "./ui.tsx";
-
-type Patch = Partial<KokoroConfig>;
+import type { DeviceInfo, KokoroConfig, Prefs, PublicClientInfo } from "../schemas.ts";
+import { Row, Section, SliderRow, SwitchRow } from "./ui.tsx";
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -41,32 +38,22 @@ function groupByDevice(clients: PublicClientInfo[]): DeviceGroup[] {
   return groups.sort((a, b) => b.mostRecentFocus - a.mostRecentFocus);
 }
 
-export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, setupState, pauseSupported }: {
+export function WhereSection({ prefs, setPrefs, config, patch, clients, devices, reloadDevices, pauseSupported, headless }: {
   prefs: Prefs;
-  setPrefs: (p: Partial<Prefs>) => Promise<void>;
+  setPrefs: (p: Partial<Prefs>) => Promise<boolean>;
   config: KokoroConfig;
-  outputDevices: DeviceInfo[];
-  patch: (p: Patch) => Promise<void>;
-  setupState: SetupState | null;
+  patch: (p: Partial<KokoroConfig>, debounceMs?: number) => void;
+  /** From the shared status poll; no separate client polling. */
+  clients: PublicClientInfo[];
+  devices: DeviceInfo[];
+  reloadDevices: () => Promise<void>;
   /** The server can pause other media (Linux with playerctl). */
   pauseSupported: boolean;
+  /** The server host has no audio output: server playback is unavailable. */
+  headless: boolean;
 }) {
-  const rpc = useRpc<typeof rpcContract>();
-  const debounced = useDebouncedPatch(patch);
-  const [clients, setClients] = useState<PublicClientInfo[]>([]);
   const myId = useMemo(() => readClientId(sessionStorage), []);
   const [name, setName] = useState(() => readDeviceName(localStorage, navigator.userAgent));
-
-  useEffect(() => {
-    let live = true;
-    const tick = () => rpc.call("listClients").then((r) => live && setClients(r.clients), () => undefined);
-    void tick();
-    const timer = setInterval(tick, 3_000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [rpc]);
 
   const deviceNames = useMemo(() => {
     const names = new Set(clients.map((c) => c.deviceName));
@@ -87,13 +74,17 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
   const outputValue = config.output_device === null ? "default" : String(config.output_device);
 
   return (
-    <Section title="Playback" description="Where speech and sound cues play.">
-      <Row label="Play audio on" htmlFor="playback">
+    <Section title="Where it plays">
+      <Row
+        label="Play audio"
+        hint={headless ? "The server has no audio output, so replies play in a bb window." : undefined}
+        htmlFor="playback"
+      >
         <Select value={prefs.playback} onValueChange={(v) => void setPrefs({ playback: v as Prefs["playback"] })}>
           <SelectTrigger id="playback" className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="client">This browser (follows you between devices)</SelectItem>
-            <SelectItem value="server">The server machine's speakers</SelectItem>
+            <SelectItem value="client">In a bb window</SelectItem>
+            <SelectItem value="server" disabled={headless}>On the server's speakers</SelectItem>
           </SelectContent>
         </Select>
       </Row>
@@ -104,24 +95,24 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
           label="Pause other media while speech plays here"
           hint="Music and videos on this computer pause while a reply plays here or on its speakers, then resume. Replies going to another device leave them alone."
           checked={config.other_audio === "pause"}
-          onChange={(v) => void patch({ other_audio: v ? "pause" : "keep" })}
+          onChange={(v) => patch({ other_audio: v ? "pause" : "keep" })}
         />
       ) : null}
 
       {prefs.playback === "client" ? (
         <>
-          <Row label="Play on" htmlFor="playOn">
+          <Row label="Route" htmlFor="playOn">
             <Select value={prefs.playOn} onValueChange={(v) => void setPrefs({ playOn: v as Prefs["playOn"] })}>
               <SelectTrigger id="playOn" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="follow">The window I used last</SelectItem>
-                <SelectItem value="pinned">A pinned device</SelectItem>
+                <SelectItem value="pinned">A chosen device</SelectItem>
                 <SelectItem value="all">Every open window</SelectItem>
               </SelectContent>
             </Select>
           </Row>
           {prefs.playOn === "pinned" ? (
-            <Row label="Pinned device" hint="Falls back to the last-used window when this device is offline." htmlFor="pinnedDevice">
+            <Row label="Pinned device" hint="If it just went offline, replies wait up to 15 minutes for it; otherwise they play in the window you used last." htmlFor="pinnedDevice">
               <Select value={prefs.pinnedDevice ?? ""} onValueChange={(v) => void setPrefs({ pinnedDevice: v })}>
                 <SelectTrigger id="pinnedDevice" className="w-full"><SelectValue placeholder="Choose a device" /></SelectTrigger>
                 <SelectContent>
@@ -189,7 +180,7 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
             max={1500}
             step={50}
             format={(v) => `${Math.round(v)} ms`}
-            onChange={(v) => debounced({ lead_in_ms: Math.round(v) })}
+            onChange={(v) => patch({ lead_in_ms: Math.round(v) }, 350)}
           />
           <SliderRow
             id="gap_ms"
@@ -200,19 +191,19 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
             max={500}
             step={10}
             format={(v) => `${Math.round(v)} ms`}
-            onChange={(v) => debounced({ gap_ms: Math.round(v) })}
+            onChange={(v) => patch({ gap_ms: Math.round(v) }, 350)}
           />
           <Row label="Device" htmlFor="output_device">
             <Select
               value={outputValue}
-              onValueChange={(v) => void patch({ output_device: v === "default" ? null : Number.parseInt(v, 10) })}
+              onValueChange={(v) => patch({ output_device: v === "default" ? null : Number.parseInt(v, 10) })}
             >
               <SelectTrigger id="output_device" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="default">System default</SelectItem>
-                {outputDevices.map((d) => (
+                {devices.map((d) => (
                   <SelectItem key={d.index} value={String(d.index)}>
                     {d.name}
                     {d.default ? <span className="ml-2 text-xs text-muted-foreground">current default</span> : null}
@@ -221,11 +212,9 @@ export function PlaybackCard({ prefs, setPrefs, config, outputDevices, patch, se
               </SelectContent>
             </Select>
           </Row>
-          {setupState?.headless ? (
-            <p role="alert" className="text-xs text-destructive">
-              The server host has no audio output. Play audio in the browser instead, or install PortAudio on that host.
-            </p>
-          ) : null}
+          <Button variant="ghost" size="sm" onClick={() => void reloadDevices()}>
+            Rescan devices
+          </Button>
         </>
       )}
     </Section>
