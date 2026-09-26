@@ -463,12 +463,8 @@ class KokoroServer:
         return self._audio_executor
 
     async def _play_stream(self, text: str, voice, speed: float, lang: str,
-                           trim: bool, gain: float, session_id: str, entry: dict | None = None):
-        cancel = self.cancel_events.get(session_id)
-        if not cancel:
-            if entry:
-                self.speech_log.update(entry, "interrupted")
-            return
+                           trim: bool, gain: float, session_id: str, entry: dict | None,
+                           cancel: threading.Event):
         cfg = self.config.get()
         q: "queue.Queue[np.ndarray | None]" = queue.Queue()
         loop = asyncio.get_running_loop()
@@ -529,8 +525,7 @@ class KokoroServer:
         finally:
             q.put(None)
             await self.pauser.end(f"server:{session_id}")
-            self.active_playbacks.pop(session_id, None)
-            self.cancel_events.pop(session_id, None)
+            self._release_playback(session_id, cancel)
 
     def _cancel_session(self, session_id: str):
         cancel = self.cancel_events.get(session_id)
@@ -539,6 +534,17 @@ class KokoroServer:
         existing = self.active_playbacks.get(session_id)
         if existing and not existing.done():
             existing.cancel()
+
+    def _release_playback(self, session_id: str, cancel: threading.Event) -> None:
+        """Forget session_id's playback, unless a newer one has replaced it.
+
+        A cancelled playback's cleanup can run after its replacement registered;
+        popping unconditionally would drop the replacement's cancel handle and
+        make it deaf to /interrupt, /mute, and typing-to-stop.
+        """
+        if self.cancel_events.get(session_id) is cancel:
+            self.cancel_events.pop(session_id, None)
+            self.active_playbacks.pop(session_id, None)
 
     async def handle_speak(self, request: web.Request) -> web.Response:
         try:
@@ -591,7 +597,7 @@ class KokoroServer:
         cancel = threading.Event()
         self.cancel_events[session_id] = cancel
         task = asyncio.create_task(self._play_stream(
-            text, cfg["voice"], cfg["speed"], cfg["lang"], cfg["trim"], cfg["speech_gain"], session_id, entry,
+            text, cfg["voice"], cfg["speed"], cfg["lang"], cfg["trim"], cfg["speech_gain"], session_id, entry, cancel,
         ))
         self.active_playbacks[session_id] = task
 
@@ -816,8 +822,7 @@ class KokoroServer:
             try:
                 await loop.run_in_executor(executor, play_samples_interruptible, samples, sr, cancel)
             finally:
-                self.active_playbacks.pop(session_id, None)
-                self.cancel_events.pop(session_id, None)
+                self._release_playback(session_id, cancel)
 
         task = asyncio.create_task(_play())
         self.active_playbacks[session_id] = task

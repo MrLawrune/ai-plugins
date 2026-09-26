@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import threading
 import time
 import types
 from collections import deque
@@ -352,3 +353,29 @@ def test_runtime_claim_survives_a_restart(tmp_path):
     assert time.time() - ks._read_bb_claim() < 5
     request(srv, "POST", "/runtime", {"bb_plugin": False})
     assert ks._read_bb_claim() == 0.0
+
+
+def test_release_keeps_a_replacement_playback(tmp_path):
+    srv = make_server(tmp_path)
+    old, new = threading.Event(), threading.Event()
+    srv.cancel_events["s1"] = new
+    srv.active_playbacks["s1"] = "replacement-task"
+    srv._release_playback("s1", old)  # the superseded playback finishing late
+    assert srv.cancel_events["s1"] is new
+    assert srv.active_playbacks["s1"] == "replacement-task"
+    srv._release_playback("s1", new)
+    assert "s1" not in srv.cancel_events and "s1" not in srv.active_playbacks
+
+
+def test_sound_cleanup_after_replacement_keeps_the_new_sound(tmp_path):
+    """Sound replacing sound: the first sound's cleanup runs after the second registered."""
+    srv = make_server(tmp_path)
+    first, second = threading.Event(), threading.Event()
+    srv.cancel_events["s1"] = first
+    srv.active_playbacks["s1"] = "first"
+    # _start_sound for the second sound registers its own entry...
+    srv.cancel_events["s1"] = second
+    srv.active_playbacks["s1"] = "second"
+    # ...then the first sound's finally block runs.
+    srv._release_playback("s1", first)
+    assert srv.active_playbacks["s1"] == "second"
