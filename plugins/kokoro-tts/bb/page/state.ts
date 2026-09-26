@@ -24,6 +24,9 @@ let latest: KokoroStatus | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let polling = false;
 let activeRpc: Rpc | null = null;
+let failures = 0;
+/** Consecutive failed polls before the last known status is dropped as stale. */
+const STALE_AFTER = 2;
 /** Bumped by resetStatusForTests so an in-flight poll from a previous mount is ignored. */
 let generation = 0;
 
@@ -37,8 +40,10 @@ async function poll(): Promise<void> {
   let next = latest;
   try {
     next = await activeRpc.call("status");
+    failures = 0;
   } catch {
-    // keep the last known status; the next poll retries
+    // Ride out a blip on the last known status, but a backend that keeps failing is not "Ready".
+    if (++failures >= STALE_AFTER) next = null;
   }
   if (gen !== generation) return;
   polling = false;
@@ -54,6 +59,7 @@ export function resetStatusForTests(): void {
   timer = null;
   polling = false;
   latest = null;
+  failures = 0;
   activeRpc = null;
   subscribers.clear();
 }
