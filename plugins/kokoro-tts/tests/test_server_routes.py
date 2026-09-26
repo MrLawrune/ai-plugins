@@ -456,3 +456,29 @@ def test_remote_without_url_is_rejected(tmp_path):
     status, body = request(srv, "PATCH", "/config", {"provider": "remote"})
     assert status == 400 and "remote_url" in body["fields"]
     assert srv.config.get()["provider"] == "cpu"
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/speak", {"text": 5}),
+    ("/speak", ["hello"]),
+    ("/preview", ["x"]),
+    ("/preview", {"text": 7}),
+    ("/synthesize", {"text": ["a"]}),
+    ("/mute", ["x"]),
+    ("/interrupt", {"session_id": ["a"]}),
+    ("/cleanup", [1]),
+    ("/play-sound", {"sound": 3}),
+    ("/play-sound", {"sound": "done", "volume": "loud"}),
+    ("/play-sound", {"sound": "done", "volume": 9}),
+])
+def test_malformed_bodies_are_rejected_not_crashed(tmp_path, path, body):
+    srv = make_server(tmp_path)
+    status, _ = request(srv, "POST", path, body)
+    assert status == 400
+
+
+def test_unknown_mode_falls_back_to_the_configured_mode(tmp_path):
+    srv = make_server(tmp_path)
+    srv.config.patch({"mode": "quiet"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "mode": "loud"})
+    assert body["action"] == "silent"

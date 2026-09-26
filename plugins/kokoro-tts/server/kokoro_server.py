@@ -42,11 +42,12 @@ from kokoro_config import (
     ConfigError,
     ConfigStore,
     blend_voice,
+    validate_patch,
     voice_metadata,
 )
 from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
-from kokoro_turn import apply_cue_prefs, route_cue, route_turn
+from kokoro_turn import MODE_CEILING, apply_cue_prefs, route_cue, route_turn
 
 SERVER_VERSION = "0.1.3"
 PREVIEW_TEXT = "This is how I will sound when reading your updates."
@@ -146,8 +147,31 @@ def validate_overrides(overrides: dict, voices: list[str]) -> dict:
             overrides["speed"] = float(overrides["speed"])
         except ValueError:
             pass
-    from kokoro_config import validate_patch
     return validate_patch(overrides, voices)
+
+
+MAX_SESSION_ID = 128
+
+
+async def read_object(request: web.Request) -> dict | None:
+    """The request's JSON body if it is an object, else None."""
+    try:
+        data = await request.json()
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def session_of(data: dict) -> str | None:
+    """The body's session_id ("default" when absent); None when it is not a short string."""
+    sid = data.get("session_id", "default")
+    if not isinstance(sid, str) or not sid or len(sid) > MAX_SESSION_ID:
+        return None
+    return sid
+
+
+def _bad(message: str) -> web.Response:
+    return web.json_response({"error": message}, status=400)
 
 
 def sentence_chunks(text: str, max_chars: int = 220) -> list[str]:
@@ -550,17 +574,16 @@ class KokoroServer:
             self.active_playbacks.pop(session_id, None)
 
     async def handle_speak(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-
-        text = data.get("text", "").strip()
-        if not text:
-            return web.json_response({"error": "empty text"}, status=400)
-
-        session_id = data.get("session_id", "default")
-        return await self._speak(text, data, session_id)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        text = data.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            return _bad("text must be a non-empty string")
+        session_id = session_of(data)
+        if session_id is None:
+            return _bad("session_id must be a short string")
+        return await self._speak(text.strip(), data, session_id)
 
     async def _speak(self, text: str, data: dict, session_id: str) -> web.Response:
         body, status = await self._start_speech(text, data, session_id)
@@ -614,11 +637,13 @@ class KokoroServer:
         return web.json_response({"entries": self.speech_log.recent(limit)})
 
     async def handle_preview(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            data = {}
-        text = (data.get("text") or PREVIEW_TEXT).strip()
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        text = data.get("text") or PREVIEW_TEXT
+        if not isinstance(text, str):
+            return _bad("text must be a string")
+        text = text.strip()
         was_muted = self.muted
         self.muted = False  # preview must be audible
         try:
@@ -662,13 +687,13 @@ class KokoroServer:
 
     async def handle_synthesize(self, request: web.Request) -> web.StreamResponse:
         """Stream float32 PCM frames (4-byte LE length prefix each) for remote playback nodes."""
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        text = (data.get("text") or "").strip()
-        if not text:
-            return web.json_response({"error": "empty text"}, status=400)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        text = data.get("text") or ""
+        if not isinstance(text, str) or not text.strip():
+            return _bad("text must be a non-empty string")
+        text = text.strip()
         cfg = self.config.get()
         overrides = {k: data[k] for k in ("voice", "speed", "lang", "trim") if k in data}
         try:
@@ -720,10 +745,9 @@ class KokoroServer:
         return web.json_response({"devices": devices, "selected": self.config.get()["output_device"]})
 
     async def handle_mute(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
         muted = data.get("muted")
         if muted is None:
             muted = not self.muted
@@ -736,12 +760,10 @@ class KokoroServer:
         return web.json_response({"status": "ok", "muted": self.muted})
 
     async def handle_interrupt(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-
-        session_id = data.get("session_id", "default")
+        data = await read_object(request)
+        session_id = session_of(data) if data is not None else None
+        if session_id is None:
+            return _bad("body must be an object with a short string session_id")
         existing = self.active_playbacks.get(session_id)
         if existing and not existing.done():
             self._cancel_session(session_id)
@@ -749,12 +771,10 @@ class KokoroServer:
         return web.json_response({"status": "nothing_playing", "session_id": session_id})
 
     async def handle_cleanup(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-
-        session_id = data.get("session_id", "default")
+        data = await read_object(request)
+        session_id = session_of(data) if data is not None else None
+        if session_id is None:
+            return _bad("body must be an object with a short string session_id")
         self._cancel_session(session_id)
         self.active_playbacks.pop(session_id, None)
         self.cancel_events.pop(session_id, None)
@@ -774,25 +794,25 @@ class KokoroServer:
         })
 
     async def handle_play_sound(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        sound = data.get("sound")
+        valid_sounds = {"working", "done", "attention", "error"}
+        if not isinstance(sound, str) or sound.strip() not in valid_sounds:
+            return _bad(f"invalid sound, must be one of: {', '.join(sorted(valid_sounds))}")
+        volume = None
+        if "volume" in data:
+            try:
+                volume = validate_patch({"sound_volume": data["volume"]}, self.config.voices)["sound_volume"]
+            except ConfigError:
+                return _bad("volume must be a number in the sound volume range")
+        session_id = session_of(data)
+        if session_id is None:
+            return _bad("session_id must be a short string")
         if HEADLESS:
             return web.json_response({"error": "headless node"}, status=501)
-        sound = data.get("sound", "").strip()
-        valid_sounds = {"working", "done", "attention", "error"}
-        if sound not in valid_sounds:
-            return web.json_response(
-                {"error": f"invalid sound, must be one of: {', '.join(sorted(valid_sounds))}"},
-                status=400,
-            )
-
-        body, status = await self._start_sound(
-            sound, data.get("session_id", "default"),
-            float(data["volume"]) if "volume" in data else None,
-        )
+        body, status = await self._start_sound(sound.strip(), session_id, volume)
         return web.json_response(body, status=status)
 
     async def _start_sound(self, sound: str, session_id: str, volume: float | None = None) -> tuple[dict, int]:
@@ -878,7 +898,7 @@ class KokoroServer:
         playback = "client" if data.get("playback") == "client" else "server"
         cfg = self.config.get()
         mode = data.get("mode")
-        if not isinstance(mode, str) or not mode:
+        if not isinstance(mode, str) or mode not in MODE_CEILING:
             mode = cfg["mode"]
         result = apply_cue_prefs(route_turn(text, mode, final_text), cfg)
 
