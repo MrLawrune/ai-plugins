@@ -1033,6 +1033,7 @@ class KokoroServer:
                 "spoken": self.spoken_count,
             },
             "uptime_s": int(time.time() - self.started_at),
+            "started_by": os.environ.get("KOKORO_STARTED_BY") or None,
             "bb_plugin_active": time.time() - self.bb_plugin_seen < 60,
             "output_device_ok": self._output_device_ok(),
         })

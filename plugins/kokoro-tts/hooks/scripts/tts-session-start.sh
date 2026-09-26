@@ -9,6 +9,18 @@ SERVER="http://127.0.0.1:$PORT"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tts-log.sh
 source "$SCRIPT_DIR/tts-log.sh"
+# Inside a bb thread, when the kokoro-tts bb plugin is loaded on this machine,
+# bb runs the server and gives the agent the voice contract: stand down.
+bb_owns_voice() {
+  [ -n "${BB_THREAD_ID:-}" ] || return 1
+  local pid
+  pid=$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/kokoro-tts/bb-plugin.pid" 2>/dev/null) || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+if bb_owns_voice; then
+  echo "[$(date)] bb plugin owns the server and contract; standing down" >> "$LOG"
+  exit 0
+fi
 PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "$SCRIPT_DIR")")}"
 CONTRACT="$SCRIPT_DIR/../context/tts-contract.md"
 CONTRACT_FULL="$SCRIPT_DIR/../context/tts-contract-full.md"
@@ -104,6 +116,7 @@ else
     emit_context "Downloading the Kokoro voice model (about 355 MB) in the background; speech starts on a later session once it finishes."
     exit 0
   fi
+  KOKORO_STARTED_BY=claude-code \
   KOKORO_MODEL="${KOKORO_MODEL:-$DATA_DIR/$(model_file .onnx)}" \
   KOKORO_VOICES="${KOKORO_VOICES:-$DATA_DIR/$(model_file .bin)}" \
     nohup "$UV" run --project "$PLUGIN_DIR/server" python "$PLUGIN_DIR/server/kokoro_server.py" >> "$LOG" 2>&1 &

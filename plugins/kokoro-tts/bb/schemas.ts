@@ -85,6 +85,7 @@ const healthSchema = z.object({
   engine: z.unknown().optional(),
   muted: z.boolean().optional(),
   uptime_s: z.number().optional(),
+  started_by: z.string().nullable().optional(),
   latency: z
     .object({
       last_ms: z.number().nullable(),

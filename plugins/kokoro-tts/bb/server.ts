@@ -12,7 +12,8 @@ import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
-import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
+import { dataDir, locatePluginRoot, pythonIn, stateDir, venvDir } from "./setup/paths.ts";
+import { writePresence } from "./setup/presence.ts";
 import { spawnServer } from "./setup/process.ts";
 import { findExecutable, findUv, probeAudio, syncRuntime } from "./setup/uv.ts";
 import { Supervisor } from "./supervisor.ts";
@@ -83,6 +84,11 @@ export default async function plugin(bb: BbPluginApi) {
   if (!root) {
     bb.log.error(`plugin files incomplete: no server/ next to ${fileURLToPath(import.meta.url)}`);
     return;
+  }
+  try {
+    bb.onDispose(writePresence(stateDir()));
+  } catch (cause) {
+    bb.log.warn(`could not write the hook presence file: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   const readText = (p: string) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
 

@@ -398,3 +398,44 @@ def test_session_start_starts_the_server_with_the_fetched_models(tmp_path, file_
     assert (model, voices) == (str(data / "m.onnx"), str(data / "v.bin"))
     assert args[:2] == ["run", "--project"] and args[-1].endswith("server/kokoro_server.py")
     assert file_server.gets == []
+
+
+def test_session_start_stands_down_when_the_bb_plugin_owns_the_voice(tmp_path, file_server):
+    manifest = make_manifest(tmp_path, file_server, {"m.onnx": (MODEL, MODEL)})
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "m.onnx").write_bytes(MODEL)
+    uv_log = tmp_path / "uv.log"
+    uv = _stub(tmp_path, "uv", f'echo run >> "{uv_log}"')
+    state = tmp_path / "state"
+    (state / "kokoro-tts").mkdir(parents=True)
+    (state / "kokoro-tts" / "bb-plugin.pid").write_text(str(os.getpid()))
+    env = session_start_env(tmp_path, manifest, data, uv)
+    r = run_hook("tts-session-start.sh", {}, _free_port(), BB_THREAD_ID="thr_x", XDG_STATE_HOME=str(state), **env)
+    assert r.stdout.strip() == ""
+    time.sleep(0.3)
+    assert not uv_log.exists()
+
+
+def test_session_start_ignores_a_stale_bb_presence_file(fake_server, tmp_path):
+    state = tmp_path / "state"
+    (state / "kokoro-tts").mkdir(parents=True)
+    (state / "kokoro-tts" / "bb-plugin.pid").write_text("999999")
+    r = run_hook("tts-session-start.sh", {}, fake_server.port, BB_THREAD_ID="thr_x", XDG_STATE_HOME=str(state))
+    assert "Voice Output" in json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_start_marks_the_server_it_starts(tmp_path, file_server):
+    manifest = make_manifest(tmp_path, file_server, {"m.onnx": (MODEL, MODEL), "v.bin": (VOICES, VOICES)})
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "m.onnx").write_bytes(MODEL)
+    (data / "v.bin").write_bytes(VOICES)
+    uv_log = tmp_path / "uv.log"
+    uv = _stub(tmp_path, "uv", f'echo "$KOKORO_STARTED_BY" >> "{uv_log}"')
+    run_hook("tts-session-start.sh", {}, _free_port(), **session_start_env(tmp_path, manifest, data, uv))
+    for _ in range(50):
+        if uv_log.exists():
+            break
+        time.sleep(0.1)
+    assert uv_log.read_text().strip() == "claude-code"

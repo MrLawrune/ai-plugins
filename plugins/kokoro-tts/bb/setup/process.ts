@@ -18,6 +18,7 @@ export function spawnServer(o: {
       KOKORO_MODEL: o.modelPath,
       KOKORO_VOICES: o.voicesPath,
       KOKORO_PORT: String(o.port),
+      KOKORO_STARTED_BY: "bb",
       ...(o.headless ? { KOKORO_HEADLESS: "1" } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],

@@ -510,3 +510,9 @@ def test_preview_plays_while_muted_without_unmuting(tmp_path):
     srv.muted = True
     status, _ = request(srv, "POST", "/preview", {"text": "Hi."})
     assert status == 200 and srv.allow_muted_seen is True and srv.muted is True
+
+
+def test_health_reports_who_started_the_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("KOKORO_STARTED_BY", "bb")
+    _, health = request(make_server(tmp_path), "GET", "/health")
+    assert health["started_by"] == "bb"
