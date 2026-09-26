@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fakeProvider, guest, host, inv, memDb } from "../test-util.ts";
+import { fakeActions, fakeProvider, guest, host, inv, memDb } from "../test-util.ts";
 import { Hub, type ChangeEvent } from "./hub.ts";
 import { PveError } from "./providers/proxmox/client.ts";
 import type { InfraProvider } from "./providers/types.ts";
@@ -199,4 +199,33 @@ test("IP sweeps follow the environment's interval and can be turned off", async 
   store.upsertEnv({ ...env, ipRefreshMinutes: 0 });
   await hub.reload();
   assert.equal(hub.ipRefreshDue(conns[0]!.id), false, "0 turns sweeps off");
+});
+
+test("protection: unknown guests are read each tick; a full sweep runs every 5 minutes", async () => {
+  let t = 1_000_000;
+  const store = new Store(memDb(), () => t);
+  const env = store.upsertEnv({ slug: "lab", name: "Lab", kind: "lab", color: "#22c55e", pollSeconds: 10, rules: "", exportDir: "" });
+  const conn = store.upsertConnection({ envId: env.id, label: "pve1", baseUrl: "https://pve1:8006", authKind: "token", username: "u@pve!t", tlsMode: "insecure", tlsFingerprint: "", caPem: "", enabled: true });
+  const reads: number[] = [];
+  const actions = fakeActions({ facts: async (ref) => { reads.push(ref.vmid); return { state: "running", protected: ref.vmid === 201, snapshots: [] }; } });
+  const p = fakeProvider([inv([host("pve1")], [guest("pve1", 201), guest("pve1", 202), guest("pve1", 9000, { template: true })])], {}, actions);
+  const hub = new Hub({ store, now: () => t, log: () => undefined, onChange: () => undefined, onSnapshot: () => undefined, providerFor: async () => p });
+  await hub.reload();
+  await hub.tick(conn.id, new AbortController().signal);
+  assert.equal(hub.protectedOf("lab/pve1/201"), null);
+  assert.equal(hub.protectionDue(conn.id), true);
+  await hub.refreshProtection(conn.id, new AbortController().signal, false);
+  assert.deepEqual(reads.sort(), [201, 202], "templates are skipped");
+  assert.equal(hub.protectedOf("lab/pve1/201"), true);
+  assert.equal(hub.protectedOf("lab/pve1/202"), false);
+  reads.length = 0;
+  await hub.refreshProtection(conn.id, new AbortController().signal, false);
+  assert.deepEqual(reads, [], "known guests are not re-read until the sweep is due");
+  await hub.refreshProtection(conn.id, new AbortController().signal, true);
+  assert.deepEqual(reads.sort(), [201, 202], "a full sweep re-reads every guest");
+  assert.equal(hub.protectionDue(conn.id), false);
+  t += 5 * 60_000;
+  assert.equal(hub.protectionDue(conn.id), true);
+  hub.recordProtected("lab/pve1/202", true);
+  assert.equal(hub.protectedOf("lab/pve1/202"), true);
 });

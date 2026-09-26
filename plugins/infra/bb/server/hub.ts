@@ -31,11 +31,13 @@ interface ConnState {
   health: ConnectionHealth;
   failures: number;
   ipsAt: number;
+  protAt: number;
 }
 
 const BACKOFF_BASE_MS = 10_000;
 const BACKOFF_CAP_MS = 300_000;
 const IP_CONCURRENCY = 4;
+const PROTECTION_SWEEP_MS = 5 * 60_000;
 
 const initialHealth = (): ConnectionHealth => ({ code: "ok", message: null, lastOkAt: null, staleSince: null });
 
@@ -55,6 +57,7 @@ export class Hub {
   private snaps = new Map<string, EnvSnapshot>(); // by env id
   private cache = new Map<string, { at: number; value?: unknown; pending?: Promise<unknown> }>();
   private ips = new Map<string, string[]>();
+  private protection = new Map<string, boolean>(); // by target
   private generation = new AbortController();
 
   constructor(deps: HubDeps) {
@@ -68,7 +71,7 @@ export class Hub {
     const next = new Map<string, ConnState>();
     for (const row of rows) {
       const prev = this.conns.get(row.id);
-      const state: ConnState = { row, provider: null, inventory: prev?.inventory ?? null, health: prev?.health ?? initialHealth(), failures: 0, ipsAt: prev?.ipsAt ?? 0 };
+      const state: ConnState = { row, provider: null, inventory: prev?.inventory ?? null, health: prev?.health ?? initialHealth(), failures: 0, ipsAt: prev?.ipsAt ?? 0, protAt: prev?.protAt ?? 0 };
       if (!row.enabled) {
         state.health = { ...state.health, code: "disabled", message: null };
       } else {
@@ -248,6 +251,42 @@ export class Hub {
     return c.ipsAt === 0 || this.deps.now() - c.ipsAt >= env.ipRefreshMinutes * 60_000;
   }
 
+  protectedOf(target: string): boolean | null {
+    return this.protection.get(target) ?? null;
+  }
+
+  recordProtected(target: string, value: boolean): void {
+    this.protection.set(target, value);
+  }
+
+  /** True before this connection's first full protection sweep and once the last one is older than the sweep interval. */
+  protectionDue(connectionId: string): boolean {
+    const c = this.conns.get(connectionId);
+    return !!c && (c.protAt === 0 || this.deps.now() - c.protAt >= PROTECTION_SWEEP_MS);
+  }
+
+  /** Reads the `protection` flag for guests not yet known (every tick) or for all guests (`all`, every 5 minutes). */
+  async refreshProtection(connectionId: string, signal: AbortSignal, all: boolean): Promise<void> {
+    const c = this.conns.get(connectionId);
+    const env = c && this.envs.find((x) => x.id === c.row.envId);
+    const actions = c?.provider?.actions;
+    if (!c || !c.inventory || !env || !actions) return;
+    const key = (g: { node: string; vmid: number }) => `${env.slug}/${g.node}/${g.vmid}`;
+    const queue = c.inventory.guests.filter((g) => !g.template && (all || !this.protection.has(key(g))));
+    if (all) c.protAt = this.deps.now();
+    const worker = async () => {
+      for (let g = queue.shift(); g && !signal.aborted; g = queue.shift()) {
+        try {
+          const f = await actions.facts({ kind: "guest", node: g.node, vmid: g.vmid, type: g.type }, signal);
+          this.recordProtected(key(g), f.protected);
+        } catch {
+          // keep the previous value
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: IP_CONCURRENCY }, worker));
+  }
+
   /** Poll every enabled connection on its own schedule until `signal` aborts; restarts when reload() changes the set. */
   async run(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
@@ -260,6 +299,9 @@ export class Hub {
           const c = this.conns.get(id);
           if (c && c.failures === 0 && this.ipRefreshDue(id)) {
             await this.refreshIps(id, gen).catch((e: unknown) => this.deps.log(`ip refresh failed: ${String(e)}`));
+          }
+          if (c && c.failures === 0) {
+            await this.refreshProtection(id, gen, this.protectionDue(id)).catch((e: unknown) => this.deps.log(`protection refresh failed: ${String(e)}`));
           }
           await sleep(this.nextDelayMs(id), gen);
         }
