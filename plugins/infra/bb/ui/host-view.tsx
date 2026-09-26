@@ -3,15 +3,53 @@ import { useState } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { MetricRange } from "../schemas.ts";
+import { cn } from "@/lib/utils";
+import type { MetricRange, StoragePool } from "../schemas.ts";
 import { ActivityList } from "./activity-feed.tsx";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { EnvBadge, StateDot, UsageBar } from "./badges.tsx";
+import { Chip, EnvBadge, Meter, StateDot, UsageBar } from "./badges.tsx";
 import { MetricsPanel } from "./metrics-panel.tsx";
 import { GuestTable } from "./env-view.tsx";
-import { age, bytes } from "./format.ts";
+import { age, bytes, pct } from "./format.ts";
 import { useInfraQuery } from "./hooks.ts";
+import { contentLabels } from "./pve-config.ts";
+import { DataTable, Empty, Head, Td, Th } from "./table.tsx";
 import { TaskList } from "./tasks.tsx";
+
+function StorageTable({ pools, compact }: { pools: StoragePool[]; compact?: boolean }) {
+  if (!pools.length) return <Empty>No storage reported.</Empty>;
+  const sorted = [...pools].sort((a, b) => a.storage.localeCompare(b.storage));
+  return (
+    <DataTable>
+      <Head><Th>Storage</Th>{compact ? null : <Th>Content</Th>}<Th>Usage</Th></Head>
+      <tbody className="divide-y">
+        {sorted.map((s) => {
+          const up = s.active && s.total > 0;
+          const p = pct(s.used, s.total);
+          return (
+            <tr key={s.storage} className={cn(!up && "text-muted-foreground")}>
+              <Td>
+                <span className="inline-flex items-center gap-1.5 font-medium">{s.storage}{s.shared ? <Chip>shared</Chip> : null}</span>
+                <span className="block text-xs text-muted-foreground">{s.type}</span>
+              </Td>
+              {compact ? null : (
+                <Td className="whitespace-normal"><span className="flex min-w-32 max-w-64 flex-wrap gap-1">{contentLabels(s.content).map((c) => <Chip key={c}>{c}</Chip>)}</span></Td>
+              )}
+              <Td>
+                {up ? (
+                  <span className="block w-36 space-y-1 sm:w-44">
+                    <span className="flex justify-between gap-2 text-xs tabular-nums"><span>{bytes(s.used)}<span className="text-muted-foreground"> of {bytes(s.total)}</span></span><span>{p}%</span></span>
+                    <Meter percent={p} label={`${s.storage} usage`} />
+                  </span>
+                ) : <span className="text-xs">unavailable</span>}
+              </Td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </DataTable>
+  );
+}
 
 export function HostView({ target, onOpen, compact }: { target: string; onOpen(target: string): void; compact?: boolean }) {
   const q = useInfraQuery("host", { target });
@@ -44,9 +82,9 @@ export function HostView({ target, onOpen, compact }: { target: string; onOpen(t
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <UsageBar label={`CPU · ${h.maxcpu} threads${detail.cpuModel ? ` · ${detail.cpuModel}` : ""}`} used={h.cpu} total={1} />
-        <UsageBar label={`Memory · ${bytes(h.mem)} of ${bytes(h.maxmem)}`} used={h.mem} total={h.maxmem} />
-        <UsageBar label={`Root disk · ${bytes(h.disk)} of ${bytes(h.maxdisk)}`} used={h.disk} total={h.maxdisk} />
+        <UsageBar label="CPU" detail={`${h.maxcpu} threads${detail.cpuModel ? ` · ${detail.cpuModel}` : ""}`} used={h.cpu} total={1} />
+        <UsageBar label="Memory" detail={`${bytes(h.mem)} of ${bytes(h.maxmem)}`} used={h.mem} total={h.maxmem} />
+        <UsageBar label="Root disk" detail={`${bytes(h.disk)} of ${bytes(h.maxdisk)}`} used={h.disk} total={h.maxdisk} />
       </div>
       {detail.loadavg ? <p className="text-xs text-muted-foreground">Load {detail.loadavg.join(" · ")}</p> : null}
       <Tabs defaultValue="guests">
@@ -59,14 +97,7 @@ export function HostView({ target, onOpen, compact }: { target: string; onOpen(t
         </TabsList>
         <TabsContent value="guests" className="pt-3"><GuestTable guests={guests} onOpen={(t) => onOpen(`${slug}/${t}`)} compact={compact} /></TabsContent>
         <TabsContent value="metrics" className="pt-3"><MetricsPanel target={target} range={range} onRange={setRange} compact={compact} /></TabsContent>
-        <TabsContent value="storage" className="space-y-3 pt-3">
-          {detail.storage.filter((s) => s.total > 0).map((s) => (
-            <div key={s.storage} className="space-y-1">
-              <UsageBar label={`${s.storage} · ${s.type}${s.shared ? " · shared" : ""} · ${bytes(s.used)} of ${bytes(s.total)}`} used={s.used} total={s.total} />
-              <p className="text-xs text-muted-foreground">{s.content.join(", ")}</p>
-            </div>
-          ))}
-        </TabsContent>
+        <TabsContent value="storage" className="pt-3"><StorageTable pools={detail.storage} compact={compact} /></TabsContent>
         <TabsContent value="tasks" className="pt-3"><TaskList tasks={q.data.tasks} /></TabsContent>
         <TabsContent value="activity" className="pt-3"><ActivityList items={q.data.activity} changes={[]} onOpenTarget={onOpen} compact={compact} /></TabsContent>
       </Tabs>

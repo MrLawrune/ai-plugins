@@ -22,8 +22,8 @@ export function HostCard({ slug, h, onOpen, compact }: { slug: string; h: HostSt
       {h.online && !compact ? (
         <div className="grid gap-1.5">
           <UsageBar label={`CPU · ${h.maxcpu} threads`} used={h.cpu} total={1} />
-          <UsageBar label={`Memory · ${bytes(h.maxmem)}`} used={h.mem} total={h.maxmem} />
-          <UsageBar label={`Root disk · ${bytes(h.maxdisk)}`} used={h.disk} total={h.maxdisk} />
+          <UsageBar label={`Memory · ${bytes(h.mem)} of ${bytes(h.maxmem)}`} used={h.mem} total={h.maxmem} />
+          <UsageBar label={`Root disk · ${bytes(h.disk)} of ${bytes(h.maxdisk)}`} used={h.disk} total={h.maxdisk} />
         </div>
       ) : null}
     </button>
@@ -70,7 +70,7 @@ export function GuestTable({ guests, onOpen, compact }: { guests: Guest[]; onOpe
                 </td>
                 {compact ? null : <td className="px-2 py-1.5 text-muted-foreground">{g.node}</td>}
                 <td className="px-2 py-1.5"><span className="inline-flex items-center gap-1.5"><StateDot state={g.state} active={g.active} />{g.state}</span></td>
-                <td className="px-2 py-1.5 font-mono text-xs text-muted-foreground">{g.ips[0] ?? "—"}</td>
+                <td className="px-2 py-1.5 font-mono text-xs text-muted-foreground" title={g.ips.join("\n") || undefined}>{g.ips[0] ?? "—"}{g.ips.length > 1 ? <span className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px]">+{g.ips.length - 1}</span> : null}</td>
                 {compact ? null : <td className="px-2 py-1.5 text-right tabular-nums">{g.state === "running" ? `${(g.cpu * 100).toFixed(g.cpu < 0.1 ? 1 : 0)}%` : "—"}</td>}
                 {compact ? null : <td className="px-2 py-1.5 text-right tabular-nums">{g.state === "running" ? `${bytes(g.mem)}` : "—"}</td>}
               </tr>

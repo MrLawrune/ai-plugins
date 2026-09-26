@@ -1,4 +1,4 @@
-// Small shared visual atoms: environment badge, run-state dot, health badge, usage bar.
+// Small shared visual atoms: environment badge, run-state dot, health badge, usage bar, chip.
 import { cn } from "@/lib/utils";
 import type { EnvBadgeDto, HealthCode, RunState } from "../schemas.ts";
 import { healthLabel, kindColor, pct, stateTone } from "./format.ts";
@@ -35,18 +35,31 @@ export function HealthBadge({ code, staleSince, now }: { code: HealthCode; stale
   return <span className={cn("text-xs font-medium", tone)}>{healthLabel(code, staleSince, now)}</span>;
 }
 
-export function UsageBar({ used, total, label }: { used: number; total: number; label: string }) {
+export function UsageBar({ used, total, label, detail }: { used: number; total: number; label: string; detail?: string }) {
   const p = pct(used, total);
-  const tone = p >= 90 ? "bg-red-500" : p >= 75 ? "bg-amber-500" : "bg-foreground/70";
   return (
     <div className="min-w-0 space-y-1">
       <div className="flex items-baseline justify-between gap-2 text-xs">
         <span className="truncate text-muted-foreground" title={label}>{label}</span>
         <span className="tabular-nums">{p}%</span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="meter" aria-label={label} aria-valuenow={p} aria-valuemin={0} aria-valuemax={100}>
-        <div className={cn("h-full rounded-full transition-[width]", tone)} style={{ width: `${p}%` }} />
-      </div>
+      <Meter percent={p} label={label} />
+      {detail ? <p className="truncate text-xs tabular-nums text-muted-foreground" title={detail}>{detail}</p> : null}
     </div>
   );
+}
+
+/** Bare usage meter: neutral until 75%, amber to 90%, red above. */
+export function Meter({ percent, label, className }: { percent: number; label: string; className?: string }) {
+  const tone = percent >= 90 ? "bg-red-500" : percent >= 75 ? "bg-amber-500" : "bg-foreground/70";
+  return (
+    <div className={cn("h-1.5 overflow-hidden rounded-full bg-muted", className)} role="meter" aria-label={label} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>
+      <div className={cn("h-full rounded-full transition-[width]", tone)} style={{ width: `${percent}%` }} />
+    </div>
+  );
+}
+
+/** Small rounded label for flags, tags and list values. */
+export function Chip({ children, mono, className }: { children: React.ReactNode; mono?: boolean; className?: string }) {
+  return <span className={cn("inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[11px] leading-none", mono && "font-mono", className)}>{children}</span>;
 }
