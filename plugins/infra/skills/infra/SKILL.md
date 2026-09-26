@@ -22,10 +22,13 @@ Nothing is injected into your turns by default. Pull what you need.
 | `bb infra registry <env>` | Full markdown inventory of one environment |
 | `bb infra rules <env>` | The environment's rules — follow them when working there |
 | `bb infra activity <target> [--since 6h]` | What agents recently ran against it |
+| `bb infra audit [target] [--since 24h] [--limit N]` | Guest actions humans ran from BB (default last 24 h, max 90d) |
 | `bb infra attach <threadId> <target>… [--rules]` | Pin cards into another thread's every turn |
 | `bb infra detach <threadId>` | Remove the pin |
 
 All commands accept `--json`.
+
+Humans can run guest actions from BB; the plugin gives agents no way to act. Check `bb infra audit` to see what a human changed.
 
 ## Before you touch a machine
 

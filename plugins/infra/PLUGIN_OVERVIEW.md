@@ -7,7 +7,8 @@ See your infrastructure and what your agents are doing to it, without leaving BB
 - **In threads**: an Infra side panel that lists what the thread touched, a header chip, a running marker on sidebar rows, and live `::infra-guest` cards agents can drop into chat.
 - **Ask agent**: start a thread about any environment, host, or guest with its live summary and your rules already in the prompt.
 - **Context for agents, on request**: `bb infra` prints compact cards, registries, and your per-environment rules; orchestrators can pin a card to a subagent's thread. Nothing is injected by default.
+- **Guest actions** (off until you allow them per environment): start, shut down, reboot, stop, VM reset/suspend/resume, snapshots, and Proxmox protection, with typed confirmation on production and a live task feed and audit log.
 
 ## How it works
 
-The plugin polls each Proxmox VE API endpoint you add (read-only GET requests; a `PVEAuditor` token is enough) and keeps the snapshot on the BB server. Credentials are stored as BB secrets and never reach the browser or agents. Certificates are pinned on first use.
+The plugin polls each Proxmox VE API endpoint you add with a read-only credential. Actions you allow use that credential or an optional, separately scoped action token; credentials are stored as BB secrets and never reach the browser or agents. The snapshot stays on the BB server. Certificates are pinned on first use.
