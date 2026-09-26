@@ -64,6 +64,15 @@ export function ServerSettings() {
     setDraft(null);
     const runtime: Prefs["runtime"] = next;
     if (managed && prefs.runtime !== runtime) {
+      // The supervisor only aligns cpu <-> cuda, so leave a remote engine first.
+      if (cfg?.provider === "remote") {
+        try {
+          await commit({ provider: "cpu" });
+        } catch (cause) {
+          setEngineError(errorText(cause));
+          return;
+        }
+      }
       // The supervisor restarts into the new runtime and aligns the engine to it.
       if (await setPrefs({ runtime })) {
         toast.message(runtime === "gpu"

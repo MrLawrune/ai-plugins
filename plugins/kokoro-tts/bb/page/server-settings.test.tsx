@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { READY, rpcStubs } from "./fixtures.ts";
+import { CONFIG_RESPONSE, READY, rpcStubs } from "./fixtures.ts";
 
 async function settings(overrides = {}) {
   const app = await loadPluginApp(() => import("../app.tsx"));
@@ -39,6 +39,22 @@ test("a managed runtime change goes through prefs, not a live engine patch", asy
   fireEvent.click(await screen.findByRole("radio", { name: "NVIDIA GPU" }));
   await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "setPrefs")).toBe(true));
   expect(slot.inspection.rpcCalls.some((c) => c.method === "patchConfig")).toBe(false);
+  expect(slot.inspection.rpcCalls.find((c) => c.method === "setPrefs")?.input).toEqual({ runtime: "gpu" });
+});
+
+test("switching the managed runtime leaves a remote engine first", async () => {
+  const slot = await settings({
+    status: () => ({ ...READY, setup: { ...READY.setup, gpuAvailable: true } }),
+    getConfig: () => ({ ...CONFIG_RESPONSE, config: { ...CONFIG_RESPONSE.config, provider: "remote", remote_url: "http://192.0.2.10:6789" } }),
+  });
+  await screen.findByLabelText("Remote node URL"); // config has loaded and shows the remote engine
+  fireEvent.click(await screen.findByRole("radio", { name: "NVIDIA GPU" }));
+  await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "setPrefs")).toBe(true));
+  const calls = slot.inspection.rpcCalls.filter((c) => c.method === "patchConfig" || c.method === "setPrefs");
+  expect(calls.map((c) => [c.method, c.input])).toEqual([
+    ["patchConfig", { provider: "cpu" }],
+    ["setPrefs", { runtime: "gpu" }],
+  ]);
 });
 
 test("paths are shown relative to home", async () => {
