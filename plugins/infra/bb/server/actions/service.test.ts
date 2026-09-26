@@ -150,3 +150,25 @@ test("capabilities summarize each credential", async () => {
   const id = h.store.listConnections()[0]!.id;
   assert.deepEqual(await h.actions.capabilities(id), [{ credential: "action", power: true, snapshots: false, rollback: false, protection: false }]);
 });
+
+test("a 403 while reading guest facts clears cached privileges", async () => {
+  let privCalls = 0;
+  let deny = false;
+  const fa = fakeActions({
+    privileges: async () => { privCalls++; return new Set(["VM.PowerMgmt"]); },
+    facts: async () => {
+      if (deny) throw new PveError("auth-failed", "Permission check failed (/vms/201, VM.Audit) (GET /x)", 403);
+      return { state: "running", protected: false, snapshots: [] };
+    },
+  });
+  const h = await lab(fa);
+  await h.actions.options("lab/pve1/201");
+  assert.equal(privCalls, 1);
+  deny = true;
+  const o = await h.actions.options("lab/pve1/201");
+  assert.ok(o && o.enabled);
+  assert.match(o.options[0]!.reason!, /Permission check failed/);
+  deny = false;
+  await h.actions.options("lab/pve1/201");
+  assert.equal(privCalls, 2, "privileges are re-read after a 403 from facts");
+});

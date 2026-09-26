@@ -97,6 +97,7 @@ export class ActionService {
       const facts = await actions.facts(r.ref, AbortSignal.timeout(CALL_TIMEOUT_MS));
       return { r, actions, facts, privileges: await this.privileges(r, actions) };
     } catch (e) {
+      if (e instanceof PveError && e.status === 403) this.clearPrivileges(r.guest.connectionId);
       return { reason: `Couldn't read ${r.guest.name || r.guest.vmid} from Proxmox: ${message(e)}`, r };
     }
   }
@@ -207,6 +208,7 @@ export class ActionService {
       await actions.abortTask(row.target.split("/")[1]!, row.upid, AbortSignal.timeout(CALL_TIMEOUT_MS));
       return { ok: true };
     } catch (e) {
+      if (e instanceof PveError && e.status === 403) this.clearPrivileges(row.connectionId);
       return { ok: false, reason: `Couldn't stop the task: ${message(e)}` };
     }
   }
