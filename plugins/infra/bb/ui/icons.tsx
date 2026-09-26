@@ -5,6 +5,8 @@ import ContainerIcon from "@hugeicons/core-free-icons/ContainerIcon";
 import ComputerIcon from "@hugeicons/core-free-icons/ComputerIcon";
 import ServerStack02Icon from "@hugeicons/core-free-icons/ServerStack02Icon";
 import ServerIcon from "@hugeicons/core-free-icons/ServerIcon";
+import Shield01Icon from "@hugeicons/core-free-icons/Shield01Icon";
+import Loading03Icon from "@hugeicons/core-free-icons/Loading03Icon";
 import type { PluginAppBuilder } from "@get-bb/plugin-sdk/app";
 
 export const ICONS = {
@@ -13,6 +15,8 @@ export const ICONS = {
   lxc: "infra-lxc",
   qemu: "infra-vm",
   activity: "infra-activity",
+  shield: "infra-shield",
+  spinner: "infra-spinner",
 } as const;
 
 const ART: Record<(typeof ICONS)[keyof typeof ICONS], IconSvgElement> = {
@@ -21,6 +25,8 @@ const ART: Record<(typeof ICONS)[keyof typeof ICONS], IconSvgElement> = {
   "infra-lxc": ContainerIcon,
   "infra-vm": ComputerIcon,
   "infra-activity": Activity01Icon,
+  "infra-shield": Shield01Icon,
+  "infra-spinner": Loading03Icon,
 };
 
 export function registerIcons(app: PluginAppBuilder): void {

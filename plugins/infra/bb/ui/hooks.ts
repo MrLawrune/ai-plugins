@@ -52,6 +52,7 @@ export function useInfraQuery<M extends Method>(method: M, input: RpcInput<M> | 
   useRealtime(CHANNELS.changed, () => { if (channels.includes(CHANNELS.changed)) debounced(); });
   useRealtime(CHANNELS.activity, () => { if (channels.includes(CHANNELS.activity)) debounced(); });
   useRealtime(CHANNELS.events, () => { if (channels.includes(CHANNELS.events)) debounced(); });
+  useRealtime(CHANNELS.task, () => { if (channels.includes(CHANNELS.task)) debounced(); });
 
   const conn = useRealtimeConnectionState();
   const prevConn = useRef(conn);

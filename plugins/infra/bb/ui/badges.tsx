@@ -1,7 +1,8 @@
-// Small shared visual atoms: environment badge, run-state dot, health badge, usage bar, chip.
+// Small shared visual atoms: environment badge, run-state dot, health badge, usage bar, chip, protected badge.
 import { cn } from "@/lib/utils";
 import type { EnvBadgeDto, HealthCode, RunState } from "../schemas.ts";
 import { healthLabel, kindColor, pct, stateTone } from "./format.ts";
+import { InfraIcon } from "./icons.tsx";
 
 export function EnvBadge({ env, className }: { env: EnvBadgeDto; className?: string }) {
   const color = kindColor(env.kind, env.color);
@@ -62,4 +63,12 @@ export function Meter({ percent, label, className }: { percent: number; label: s
 /** Small rounded label for flags, tags and list values. */
 export function Chip({ children, mono, className }: { children: React.ReactNode; mono?: boolean; className?: string }) {
   return <span className={cn("inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-[11px] leading-none", mono && "font-mono", className)}>{children}</span>;
+}
+
+export function ProtectedBadge({ compact }: { compact?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-sky-700 dark:text-sky-300" title="Protected: Proxmox refuses to destroy this guest or remove its disks">
+      <InfraIcon name="shield" className="size-3.5" />{compact ? null : "protected"}
+    </span>
+  );
 }

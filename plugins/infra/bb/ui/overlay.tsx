@@ -1,10 +1,11 @@
-// App-wide overlay (no UI of its own): inventory-change toasts and sidebar row status for running agents.
+// App-wide overlay (no UI of its own): inventory-change toasts, live action toasts, and sidebar row status for running agents.
 import { useEffect, useRef, useState } from "react";
 import { useBbNavigate, useRealtime } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { EventsSignal } from "../schemas.ts";
 import { CHANNELS } from "../shared/constants.ts";
-import { useInfraQuery } from "./hooks.ts";
+import { isWatched, updateWatched } from "./action-toasts.ts";
+import { useInfraQuery, useInfraRpc } from "./hooks.ts";
 import { PANEL_PATH } from "./page.tsx";
 import { applyStatuses, onSetterReady } from "./row-status.ts";
 
@@ -30,6 +31,13 @@ export function InfraOverlay() {
   useEffect(() => {
     applyStatuses(q.data?.threads ?? []);
   }, [q.data, ready]);
+
+  const call = useInfraRpc();
+  useRealtime(CHANNELS.task, (payload) => {
+    const id = (payload as { actionId?: unknown } | null)?.actionId;
+    if (typeof id !== "string" || !isWatched(id)) return;
+    void call("actionGet", { actionId: id }).then((r) => { if (r.found) updateWatched(r.action); }, () => undefined);
+  });
 
   const pending = useRef(new Map<string, { events: EventsSignal["events"]; timer: ReturnType<typeof setTimeout> }>());
   useEffect(() => () => { for (const p of pending.current.values()) clearTimeout(p.timer); }, []);
