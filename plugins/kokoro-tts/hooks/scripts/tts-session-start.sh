@@ -7,13 +7,14 @@
 PORT="${KOKORO_PORT:-6789}"
 SERVER="http://127.0.0.1:$PORT"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tts-log.sh
+source "$SCRIPT_DIR/tts-log.sh"
 PLUGIN_DIR="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "$SCRIPT_DIR")")}"
 CONTRACT="$SCRIPT_DIR/../context/tts-contract.md"
 CONTRACT_FULL="$SCRIPT_DIR/../context/tts-contract-full.md"
 MANIFEST="${KOKORO_MODELS_MANIFEST:-$PLUGIN_DIR/server/models.json}"
 DATA_DIR="${KOKORO_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kokoro-tts}"
 UV_INSTALL_COMMAND="curl -LsSf https://astral.sh/uv/install.sh | sh"
-LOG="/tmp/kokoro-hook.log"
 
 # Prints the hook output: the voice contract, plus an optional user-facing
 # systemMessage ($1).

@@ -35,6 +35,11 @@ fi
 [ -n "$KOKORO_MODE" ] && MODE="$KOKORO_MODE"
 [ -n "$KOKORO_LANG" ] && LANG_CODE="$KOKORO_LANG"
 
+case "$MODE" in
+  quiet|ambient|brief|conversational|verbose|full) ;;
+  *) MODE=brief ;;
+esac
+
 # Legacy flag file still mutes (hotkeys from older setups)
 [ -f "${XDG_RUNTIME_DIR:-/tmp}/kokoro-muted" ] && MUTED=true
 unset _kk_cfg

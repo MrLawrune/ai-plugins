@@ -54,6 +54,7 @@ def fake_server():
 def run_hook(name, payload, port, **env):
     base = {k: v for k, v in os.environ.items() if not k.startswith(("BB_", "KOKORO_"))}
     base.update({"KOKORO_PORT": str(port), **env})
+    base.setdefault("KOKORO_HOOK_LOG", str(Path(os.environ.get("TMPDIR", "/tmp")) / f"kokoro-hook-test-{os.getpid()}.log"))
     return subprocess.run(["bash", str(SCRIPTS / name)], input=json.dumps(payload),
                           capture_output=True, text=True, env=base, timeout=20)
 
@@ -101,7 +102,7 @@ def test_guard_ignored_outside_bb(fake_server):
 
 def test_notification_uses_cue(fake_server):
     run_hook("tts-notification.sh", {"session_id": "s1"}, fake_server.port)
-    assert fake_server.posts == [("/cue", {"sound": "attention", "session_id": "s1", "playback": "server"})]
+    assert fake_server.posts == [("/cue", {"sound": "attention", "session_id": "s1", "playback": "server", "mode": "brief"})]
 
 
 def test_session_start_emits_no_contract_under_active_bb_plugin(fake_server):
@@ -143,11 +144,43 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def test_stop_with_server_down_points_at_bb_page_and_skill():
-    r = run_hook("tts-stop.sh", {"session_id": "s1", "last_assistant_message": "Hi."}, _free_port())
+def test_stop_with_server_down_says_so_once_per_session(tmp_path):
+    log = str(tmp_path / "hook.log")
+    r = run_hook("tts-stop.sh", {"session_id": "s1", "last_assistant_message": "Hi."}, _free_port(), KOKORO_HOOK_LOG=log)
     msg = json.loads(r.stdout)["systemMessage"]
-    assert "In bb, open the Kokoro TTS page" in msg and "kokoro-tts skill, Troubleshooting" in msg
-    assert "systemctl" not in msg
+    assert "kokoro-tts skill, Troubleshooting" in msg and "systemctl" not in msg
+    again = run_hook("tts-stop.sh", {"session_id": "s1", "last_assistant_message": "Hi."}, _free_port(), KOKORO_HOOK_LOG=log)
+    assert again.stdout.strip() == ""
+    other = run_hook("tts-stop.sh", {"session_id": "s2", "last_assistant_message": "Hi."}, _free_port(), KOKORO_HOOK_LOG=log)
+    assert "systemMessage" in json.loads(other.stdout)
+
+
+def test_stop_with_server_down_is_quiet_inside_bb(tmp_path):
+    r = run_hook("tts-stop.sh", {"session_id": "s1", "last_assistant_message": "Hi."}, _free_port(),
+                 KOKORO_HOOK_LOG=str(tmp_path / "hook.log"), BB_THREAD_ID="thr_x")
+    assert r.stdout.strip() == ""
+
+
+def test_hooks_log_to_the_private_state_dir(fake_server, tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("BB_", "KOKORO_"))}
+    env.update({"KOKORO_PORT": str(fake_server.port), "XDG_STATE_HOME": str(tmp_path)})
+    subprocess.run(["bash", str(SCRIPTS / "tts-interrupt.sh")], input=json.dumps({"session_id": "s1"}),
+                   capture_output=True, text=True, env=env, timeout=20)
+    assert (tmp_path / "kokoro-tts" / "hook.log").exists()
+
+
+def test_invalid_kokoro_mode_falls_back_to_brief(fake_server):
+    r = run_hook("tts-session-start.sh", {}, fake_server.port, KOKORO_MODE="br/ief&")
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "Current mode: brief" in ctx
+
+
+def test_hook_commands_quote_the_plugin_root():
+    hooks = json.loads((SCRIPTS.parent / "hooks.json").read_text())["hooks"]
+    for entries in hooks.values():
+        for entry in entries:
+            for h in entry["hooks"]:
+                assert '"${CLAUDE_PLUGIN_ROOT}/' in h["command"]
 
 
 # --- model fetch (Claude Code-only installs) --------------------------------
