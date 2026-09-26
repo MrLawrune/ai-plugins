@@ -445,6 +445,7 @@ export class InfraService {
       const hasStored = existing ? await this.d.secrets.hasAction(existing.id) : false;
       if (!actionUser) throw new Error("the action credential needs a token ID or username");
       if (!actionSecret && !hasStored) throw new Error("the action credential needs its secret");
+      if (actionSecret && !secret && !(existing && await this.d.secrets.has(existing.id))) throw new Error("save the connection's main credential first");
     }
     const row = this.d.store.upsertConnection({ ...fields, actionAuthKind: actionKind, actionUsername: actionUser, caPem: caPem ?? existing?.caPem ?? "" });
     if (fields.tlsMode === "ca" && !row.caPem.trim()) throw new Error("paste the CA certificate (PEM)");

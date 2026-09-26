@@ -133,7 +133,8 @@ test("other Proxmox errors record a failed row with the message", async () => {
 
 test("abort only applies to running tracked tasks", async () => {
   let aborted = 0;
-  const fa = fakeActions({ abortTask: async () => { aborted++; } });
+  let markedFirst = false;
+  const fa = fakeActions({ abortTask: async () => { aborted++; markedFirst = h.abortsRequested.length === 1; } });
   const h = await lab(fa);
   const p = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: src });
   assert.ok(p.allowed);
@@ -142,18 +143,39 @@ test("abort only applies to running tracked tasks", async () => {
   assert.deepEqual(await h.actions.abort(r.action.id), { ok: true });
   assert.equal(aborted, 1);
   assert.deepEqual(h.abortsRequested, [r.action.id]);
+  assert.ok(markedFirst, "the task is marked aborting before the DELETE, so the tracker can't read it as failed");
+  assert.deepEqual(h.abortsFailed, []);
   h.store.updateAction(r.action.id, { status: "ok", endedAt: h.now() });
   assert.equal((await h.actions.abort(r.action.id)).ok, false);
 });
 
-test("a failed abort does not mark the task as aborting", async () => {
+test("a failed abort unmarks the task", async () => {
   const h = await lab(fakeActions({ abortTask: async () => { throw new PveError("degraded", "task not found", 500); } }));
   const p = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: src });
   assert.ok(p.allowed);
   const r = await h.actions.execute({ token: p.token });
   assert.ok(r.ok);
   assert.equal((await h.actions.abort(r.action.id)).ok, false);
-  assert.deepEqual(h.abortsRequested, []);
+  assert.deepEqual([h.abortsRequested, h.abortsFailed], [[r.action.id], [r.action.id]]);
+});
+
+test("prepare prunes expired approval tokens", async () => {
+  const h = await lab();
+  const tokens = (h.actions as unknown as { tokens: Map<string, unknown> }).tokens;
+  const p = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: src });
+  assert.ok(p.allowed);
+  h.advance(60_001);
+  const q = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: src });
+  assert.ok(q.allowed);
+  assert.deepEqual([...tokens.keys()], [q.token]);
+});
+
+test("prepare returns the environment badge for the confirm dialog", async () => {
+  const h = await lab(fakeActions(), { kind: "prod" });
+  const p = await h.actions.prepare({ target: "lab/pve1/201", action: "stop", params: {}, source: src });
+  assert.ok(p.allowed);
+  assert.deepEqual([p.env.slug, p.env.kind], ["lab", "prod"]);
+  assert.equal(typeof p.env.name, "string");
 });
 
 test("capabilities summarize each credential", async () => {

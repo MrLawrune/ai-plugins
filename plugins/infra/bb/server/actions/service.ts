@@ -1,11 +1,12 @@
 // Human-triggered guest actions: menu options, single-use approval tokens, server-side re-checks,
 // the Proxmox call, and an audit row for every attempt.
 import { randomUUID } from "node:crypto";
+import type { EnvBadgeDto } from "../../schemas.ts";
 import { GUEST_ACTIONS, QEMU_ONLY_ACTIONS, type ActionKind, type ActionParams, type ActionSource, type Confirm } from "../../shared/actions.ts";
 import type { Hub } from "../hub.ts";
 import { PveError } from "../providers/proxmox/client.ts";
 import type { CredentialKind, GuestFacts, ProviderActions, RunState } from "../providers/types.ts";
-import type { Resolved } from "../service.ts";
+import { badge, type Resolved } from "../service.ts";
 import type { ActionRow, Store } from "../store.ts";
 import { ACTION_NAMES, decide, type PolicyResult } from "./policy.ts";
 
@@ -13,7 +14,7 @@ export interface ActionOption { action: ActionKind; allowed: boolean; reason: st
 export type OptionsResult = { enabled: false } | { enabled: true; options: ActionOption[]; snapshots: string[]; protected: boolean };
 export type PrepareResult =
   | { allowed: false; reason: string }
-  | { allowed: true; token: string; confirm: Confirm; phrase: string | null; title: string; summary: string; consequence: string };
+  | { allowed: true; token: string; confirm: Confirm; phrase: string | null; title: string; summary: string; consequence: string; env: EnvBadgeDto };
 export type ExecuteResult = { ok: false; reason: string } | { ok: true; action: ActionRow };
 export interface CapabilitySummary { credential: CredentialKind; power: boolean; snapshots: boolean; rollback: boolean; protection: boolean }
 
@@ -26,6 +27,7 @@ export interface ActionServiceDeps {
   onAudit(row: ActionRow): void;
   onProtection(target: string, value: boolean): void;
   onAbortRequested(actionId: string): void;
+  onAbortFailed(actionId: string): void;
   newToken?(): string;
 }
 
@@ -145,6 +147,8 @@ export class ActionService {
   }
 
   async prepare(i: { target: string; action: ActionKind; params: ActionParams; source: ActionSource }): Promise<PrepareResult> {
+    const now = this.d.now();
+    for (const [t, p] of this.tokens) if (p.expiresAt < now) this.tokens.delete(t);
     const c = await this.context(i.target);
     if ("reason" in c) return this.reject(c.r, i, c.reason);
     const d = this.policy(c, i.action, i.params);
@@ -158,6 +162,7 @@ export class ActionService {
       title: `${ACTION_NAMES[i.action]}${what} on ${who}?`,
       summary: `${ACTION_NAMES[i.action]}${what} · ${c.r.target} (${c.r.guest.type === "qemu" ? "VM" : "CT"} ${c.r.guest.vmid}) in ${c.r.snap.env.name}`,
       consequence: CONSEQUENCE[i.action],
+      env: badge(c.r.snap.env),
     };
   }
 
@@ -203,11 +208,13 @@ export class ActionService {
     if (!row || row.status !== "running" || !row.upid) return { ok: false, reason: "That task is not running." };
     const actions = this.d.hub.provider(row.connectionId)?.actions;
     if (!actions) return { ok: false, reason: "This connection can't run actions." };
+    // Mark first: if the tracker sees the task end right after the DELETE, it must read as aborted.
+    this.d.onAbortRequested(actionId);
     try {
       await actions.abortTask(row.target.split("/")[1]!, row.upid, AbortSignal.timeout(CALL_TIMEOUT_MS));
-      this.d.onAbortRequested(actionId);
       return { ok: true };
     } catch (e) {
+      this.d.onAbortFailed(actionId);
       if (e instanceof PveError && e.status === 403) this.clearPrivileges(row.connectionId);
       return { ok: false, reason: `Couldn't stop the task: ${message(e)}` };
     }

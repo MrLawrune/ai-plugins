@@ -7,6 +7,8 @@ import type { ActionRow, Store } from "./store.ts";
 export interface TrackerDeps {
   store: Store;
   providerFor(connectionId: string): InfraProvider | null;
+  /** Rows on an unhealthy connection wait (no Proxmox calls) until it recovers. */
+  healthy(connectionId: string): boolean;
   now(): number;
   onUpdate(row: ActionRow): void;
   onFinished(row: ActionRow): void;
@@ -51,6 +53,10 @@ export class Tracker {
     this.aborting.add(actionId);
   }
 
+  unmarkAborting(actionId: string): void {
+    this.aborting.delete(actionId);
+  }
+
   private finish(row: ActionRow, patch: Partial<ActionRow>): void {
     const done = this.d.store.updateAction(row.id, { ...patch, endedAt: this.d.now() });
     this.offsets.delete(row.id);
@@ -78,6 +84,7 @@ export class Tracker {
         this.finish(row, { status: "unknown", error: row.error ?? "Outcome unknown after 24 hours; check the Proxmox task list." });
         continue;
       }
+      if (!this.d.healthy(row.connectionId)) continue;
       const provider = this.d.providerFor(row.connectionId);
       const actions = provider?.actions;
       if (!provider || !actions) continue;

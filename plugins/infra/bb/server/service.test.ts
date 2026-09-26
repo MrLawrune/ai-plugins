@@ -212,3 +212,14 @@ test("an action credential needs a username and a secret", async () => {
   await assert.rejects(h.service.saveConnection({ ...base, actionAuthKind: "token", actionUsername: "" }), /action credential/);
   await assert.rejects(h.service.saveConnection({ ...base, actionAuthKind: "token", actionUsername: "bb-ops@pve!actions" }), /action credential/);
 });
+
+test("a new connection with an action credential but no main secret is rejected before it is stored", async () => {
+  const h = await serviceHarness([{ slug: "lab", conns: { pve1: fakeProvider([inv([host("pve1")])]) } }]);
+  const env = h.store.listEnvs()[0]!;
+  const input = { envId: env.id, label: "pve2", baseUrl: "https://192.0.2.2:8006", authKind: "token" as const, username: "bb-view@pve!infra", tlsMode: "insecure" as const, tlsFingerprint: "", enabled: true, actionAuthKind: "token" as const, actionUsername: "bb-ops@pve!actions", actionSecret: "act" };
+  await assert.rejects(h.service.saveConnection(input), /main credential/);
+  await assert.rejects(h.service.saveConnection(input), /main credential/);
+  assert.equal(h.store.listConnections().length, 1, "no half-configured rows");
+  const saved = await h.service.saveConnection({ ...input, secret: "main" });
+  assert.deepEqual([saved.hasSecret, saved.hasActionSecret], [true, true]);
+});

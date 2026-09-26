@@ -207,6 +207,7 @@ export default async function plugin(bb: BbPluginApi) {
   const tracker = new Tracker({
     store, now: Date.now, log: (m) => bb.log.warn(m),
     providerFor: (id) => hub.provider(id),
+    healthy: (id) => hub.health(id)?.code === "ok",
     onUpdate: publishTask,
     onFinished: (row) => { void hub.tick(row.connectionId, AbortSignal.timeout(10_000)).catch(() => undefined); },
   });
@@ -221,6 +222,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (env) publishChanged(env.id);
     },
     onAbortRequested: (id) => tracker.markAborting(id),
+    onAbortFailed: (id) => tracker.unmarkAborting(id),
   });
 
   await hub.reload();
