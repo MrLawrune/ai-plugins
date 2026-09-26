@@ -4,6 +4,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeWebStream } from "node:stream/web";
+import { sleep } from "../util.ts";
 import { SetupError } from "./errors.ts";
 
 export interface ModelFile {
@@ -39,22 +40,89 @@ async function verified(target: string, f: ModelFile): Promise<boolean> {
   return true;
 }
 
+const LOCK = ".fetch-models.lock";
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Run fn holding the model-download lock shared with tts-fetch-models.sh: a
+ * file holding the owner's pid, created atomically by hard-linking a temp file.
+ * Waits while a live process holds it; takes over a lock whose owner is gone.
+ */
+export async function withFetchLock<T>(
+  dir: string,
+  fn: () => Promise<T>,
+  opts: { signal?: AbortSignal; pollMs?: number; isAlive?: (pid: number) => boolean } = {},
+): Promise<T> {
+  const lock = path.join(dir, LOCK);
+  const isAlive = opts.isAlive ?? pidAlive;
+  const tmpFile = path.join(dir, `${LOCK}.${process.pid}.tmp`);
+  for (;;) {
+    opts.signal?.throwIfAborted();
+    fs.writeFileSync(tmpFile, String(process.pid));
+    try {
+      fs.linkSync(tmpFile, lock);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    } finally {
+      fs.rmSync(tmpFile, { force: true });
+    }
+    let holder: number;
+    try {
+      holder = Number.parseInt(fs.readFileSync(lock, "utf8").trim(), 10);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; // released meanwhile
+      throw e;
+    }
+    if (Number.isFinite(holder) && holder !== process.pid && isAlive(holder)) {
+      await sleep(opts.pollMs ?? 1_000, opts.signal);
+    } else {
+      fs.rmSync(lock, { force: true });
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      if (fs.readFileSync(lock, "utf8").trim() === String(process.pid)) fs.rmSync(lock);
+    } catch {
+      // already gone
+    }
+  }
+}
+
 export async function ensureModels(
   dir: string,
   files: ModelFile[],
-  opts: { fetchImpl?: typeof fetch; signal?: AbortSignal; onProgress?: (fraction: number) => void } = {},
+  opts: {
+    fetchImpl?: typeof fetch;
+    signal?: AbortSignal;
+    onProgress?: (fraction: number) => void;
+    pollMs?: number;
+    isAlive?: (pid: number) => boolean;
+  } = {},
 ): Promise<void> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   fs.mkdirSync(dir, { recursive: true });
-  const total = files.reduce((n, f) => n + f.size, 0);
-  let done = 0;
-  const report = (inFlight: number) => opts.onProgress?.(total ? Math.min(1, (done + inFlight) / total) : 1);
-  for (const f of files) {
-    const target = path.join(dir, f.name);
-    if (!(await verified(target, f))) await download(f, target, fetchImpl, opts.signal, report);
-    done += f.size;
-    report(0);
-  }
+  await withFetchLock(dir, async () => {
+    const total = files.reduce((n, f) => n + f.size, 0);
+    let done = 0;
+    const report = (inFlight: number) => opts.onProgress?.(total ? Math.min(1, (done + inFlight) / total) : 1);
+    for (const f of files) {
+      const target = path.join(dir, f.name);
+      if (!(await verified(target, f))) await download(f, target, fetchImpl, opts.signal, report);
+      done += f.size;
+      report(0);
+    }
+  }, { signal: opts.signal, pollMs: opts.pollMs, isAlive: opts.isAlive });
 }
 
 async function download(

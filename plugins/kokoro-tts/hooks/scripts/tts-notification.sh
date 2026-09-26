@@ -2,8 +2,9 @@
 # Plays the attention ping on Claude Code Notification events
 # (permission prompts, idle waiting). No model involvement, no tokens.
 
-LOG="/tmp/kokoro-hook.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tts-log.sh
+source "$SCRIPT_DIR/tts-log.sh"
 # shellcheck source=tts-config.sh
 source "$SCRIPT_DIR/tts-config.sh"
 # shellcheck source=tts-guard.sh
@@ -15,7 +16,7 @@ session_id=$(echo "$input" | jq -r '.session_id // "default"' 2>/dev/null)
 [ -z "$session_id" ] && session_id="default"
 
 curl -s --max-time 2 -X POST "$SERVER/cue" -H "Content-Type: application/json" \
-  -d "$(jq -nc --arg s "$session_id" '{sound: "attention", session_id: $s, playback: "server"}')" \
+  -d "$(jq -nc --arg s "$session_id" --arg mode "$MODE" '{sound: "attention", session_id: $s, playback: "server", mode: $mode}')" \
   >/dev/null 2>&1
 echo "[$(date)] Notification cue for session $session_id" >> "$LOG"
 exit 0

@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { KokoroClient } from "./kokoro-client.ts";
 import type { PlayerHub } from "./hub.ts";
+import { PREVIEW_ID_BASE } from "./protocol.ts";
 import type { PrefsStore } from "./prefs.ts";
 import { rpcContract, type ConfigResponse, type Health } from "./schemas.ts";
 import { installUv } from "./setup/uv.ts";
@@ -11,9 +12,15 @@ export interface RpcDeps {
   /** Null when the plugin install is broken (no server/ found): health/config RPC still work. */
   supervisor: () => Supervisor | null;
   prefs: PrefsStore;
-  hub: Pick<PlayerHub, "clients" | "stop">;
+  hub: Pick<PlayerHub, "clients" | "stop" | "speak" | "sound" | "hasReadyClient">;
   log: BbPluginApi["log"];
+  publish: (channel: string, payload: unknown) => void;
 }
+
+/** Same sample sentence as the Python server's PREVIEW_TEXT. */
+export const PREVIEW_TEXT = "This is how I will sound when reading your updates.";
+let previewSeq = 0;
+const nextPreviewId = () => PREVIEW_ID_BASE + (previewSeq++ % 0x0fff_ffff);
 
 const brokenInstallStatus = {
   state: "error" as const,
@@ -34,20 +41,49 @@ export function installerFailure(code: number, output: string): string {
 export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const call = <T>(...a: Parameters<KokoroClient["call"]>) => deps.client().call<T>(...a);
   let installing = false;
+  const health = async () => {
+    try {
+      return { up: true as const, health: await call<Health>("GET", "/health") };
+    } catch (cause) {
+      return { up: false as const, error: cause instanceof Error ? cause.message : String(cause) };
+    }
+  };
   bb.rpc.register(rpcContract, {
-    async health() {
-      try {
-        return { up: true as const, health: await call<Health>("GET", "/health") };
-      } catch (cause) {
-        return { up: false as const, error: cause instanceof Error ? cause.message : String(cause) };
-      }
-    },
+    health,
+    status: async () => ({
+      health: await health(),
+      setup: deps.supervisor()?.status() ?? brokenInstallStatus,
+      clients: deps.hub.clients(),
+    }),
     getConfig: () => call<ConfigResponse>("GET", "/config"),
-    patchConfig: (patch) => call<ConfigResponse>("PATCH", "/config", patch),
+    patchConfig: async (patch) => {
+      const next = await call<ConfigResponse>("PATCH", "/config", patch);
+      deps.publish("kokoro-config", next);
+      return next;
+    },
     listVoices: () => call("GET", "/voices"),
     listDevices: () => call("GET", "/devices"),
-    preview: (input) => call("POST", "/preview", { ...input, session_id: "preview" }),
-    playSound: ({ sound }) => call("POST", "/play-sound", { sound, session_id: "bb-preview" }),
+    // Previews and sound tests play where replies play: in a browser window
+    // when browser playback is selected, else on the server's speakers.
+    preview: async (input) => {
+      if (deps.prefs.get().playback === "client") {
+        if (!deps.hub.hasReadyClient()) return { status: "no_window" };
+        const { config } = await call<ConfigResponse>("GET", "/config");
+        const { text, speech_gain, ...opts } = input;
+        deps.hub.speak(nextPreviewId(), text?.trim() || PREVIEW_TEXT, "preview", speech_gain ?? config.speech_gain, opts);
+        return { status: "playing" };
+      }
+      return call("POST", "/preview", { ...input, session_id: "preview" });
+    },
+    playSound: async ({ sound }) => {
+      if (deps.prefs.get().playback === "client") {
+        if (!deps.hub.hasReadyClient()) return { status: "no_window" };
+        const { config } = await call<ConfigResponse>("GET", "/config");
+        deps.hub.sound(sound, config.sound_volume, "bb-preview");
+        return { status: "playing" };
+      }
+      return call("POST", "/play-sound", { sound, session_id: "bb-preview" });
+    },
     setMuted: async ({ muted }) => {
       // Muting silences browser playback too, not just the server's speaker.
       if (muted) deps.hub.stop(null);

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import TestServer  # noqa: E402
 
-from kokoro_engine import RemoteEngine  # noqa: E402
+from kokoro_engine import EngineError, RemoteEngine  # noqa: E402
 
 
 def frame(value):
@@ -75,3 +75,64 @@ def test_failure_before_audio_uses_the_fallback():
     fallback = FakeFallback()
     assert collect(remote_app([1], 0, fail_after=0), fallback, timeout_s=2) == [0.0]
     assert fallback.calls == 1
+
+
+from kokoro_engine import FRAME_END, FRAME_ERROR, split_frames  # noqa: E402
+
+
+def marker(n):
+    return n.to_bytes(4, "little")
+
+
+def test_split_frames_stops_at_the_end_marker():
+    frames, rest, m = split_frames(frame(1) + marker(FRAME_END) + b"junk", markers=True)
+    assert len(frames) == 1 and rest == b"" and m == "end"
+
+
+def test_split_frames_reports_the_error_marker():
+    assert split_frames(frame(1) + marker(FRAME_ERROR), markers=True)[2] == "error"
+
+
+def test_split_frames_keeps_a_partial_frame():
+    whole = frame(1)
+    frames, rest, m = split_frames(whole[:6], markers=True)
+    assert frames == [] and rest == whole[:6] and m is None
+
+
+def test_split_frames_rejects_unaligned_lengths():
+    with pytest.raises(EngineError):
+        split_frames((3).to_bytes(4, "little") + b"abc", markers=False)
+
+
+def v2_app(frames, end=FRAME_END, send_marker=True):
+    async def synthesize(request):
+        assert request.headers.get("X-Kokoro-Frames") == "2"
+        resp = web.StreamResponse(headers={"X-Sample-Rate": "24000", "X-Kokoro-Frames": "2"})
+        await resp.prepare(request)
+        for value in frames:
+            await resp.write(frame(value))
+        if send_marker:
+            await resp.write(marker(end))
+        return resp
+    app = web.Application()
+    app.router.add_post("/synthesize", synthesize)
+    return app
+
+
+def test_v2_stream_completes_on_the_end_marker():
+    assert collect(v2_app([1, 2]), None, timeout_s=2) == [1, 2]
+
+
+def test_v2_error_marker_after_audio_raises():
+    with pytest.raises(EngineError):
+        collect(v2_app([1], end=FRAME_ERROR), None, timeout_s=2)
+
+
+def test_v2_stream_without_marker_is_truncated():
+    with pytest.raises(EngineError):
+        collect(v2_app([1], send_marker=False), None, timeout_s=2)
+
+
+def test_empty_stream_uses_the_fallback():
+    fallback = FakeFallback()
+    assert collect(v2_app([]), fallback, timeout_s=2) == [0.0]

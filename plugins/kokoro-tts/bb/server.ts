@@ -8,11 +8,12 @@ import { ClientRegistry } from "./clients.ts";
 import { PlayerHub } from "./hub.ts";
 import { createKokoroClient, portOf, type KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
-import { SOUNDS } from "./protocol.ts";
+import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
-import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
+import { dataDir, locatePluginRoot, pythonIn, stateDir, venvDir } from "./setup/paths.ts";
+import { writePresence } from "./setup/presence.ts";
 import { spawnServer } from "./setup/process.ts";
 import { findExecutable, findUv, probeAudio, syncRuntime } from "./setup/uv.ts";
 import { Supervisor } from "./supervisor.ts";
@@ -40,7 +41,7 @@ export default async function plugin(bb: BbPluginApi) {
   const hub = new PlayerHub({
     registry,
     routing: () => prefs.get(),
-    synthesize: (text, signal) => client.synthesize(text, signal),
+    synthesize: (text, signal, opts) => client.synthesize(text, signal, opts),
     log: (message) => bb.log.info(message),
     // Other media is only paused for a window on this computer.
     speaking: ({ key, on, local }) => {
@@ -48,6 +49,7 @@ export default async function plugin(bb: BbPluginApi) {
       void client.call("POST", "/other-audio", { action: on ? "start" : "end", key }).catch(() => undefined);
     },
     reportStatus: async (id, status, extra) => {
+      if (id >= PREVIEW_ID_BASE) return;
       await client.call("POST", "/speech-log/status", {
         id, status, first_audio_ms: extra?.firstAudioMs, error: extra?.error,
       });
@@ -67,6 +69,7 @@ export default async function plugin(bb: BbPluginApi) {
       hub.routingChanged();
     }
   });
+  prefs.onChange((next) => bb.realtime.publish("kokoro-prefs", next));
 
   let supervisor: Supervisor | null = null;
   let serverUrl = (await settings.get()).serverUrl;
@@ -76,12 +79,19 @@ export default async function plugin(bb: BbPluginApi) {
     supervisor?.restart();
   });
   bb.log.info(`proxying to ${client.baseUrl}`);
-  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, hub, log: bb.log });
+  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, hub, log: bb.log,
+    publish: (channel, payload) => bb.realtime.publish(channel, payload),
+  });
 
   const root = locatePluginRoot(path.dirname(fileURLToPath(import.meta.url)));
   if (!root) {
     bb.log.error(`plugin files incomplete: no server/ next to ${fileURLToPath(import.meta.url)}`);
     return;
+  }
+  try {
+    bb.onDispose(writePresence(stateDir()));
+  } catch (cause) {
+    bb.log.warn(`could not write the hook presence file: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   const readText = (p: string) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
 

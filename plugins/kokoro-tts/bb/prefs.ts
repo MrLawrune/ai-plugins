@@ -19,6 +19,7 @@ export class PrefsStore {
   #kv: KvLike;
   #cache: Prefs = DEFAULT_PREFS;
   #listeners = new Set<Listener>();
+  #queue: Promise<unknown> = Promise.resolve();
 
   constructor(kv: KvLike) {
     this.#kv = kv;
@@ -34,13 +35,19 @@ export class PrefsStore {
     return this.#cache;
   }
 
-  async update(patch: Partial<Prefs>): Promise<Prefs> {
-    const next = prefsSchema.parse({ ...this.#cache, ...patch });
-    const prev = this.#cache;
-    await this.#kv.set("prefs", next);
-    this.#cache = next;
-    for (const l of this.#listeners) l(next, prev);
-    return next;
+  /** Applies patches one at a time, in call order, each on top of the last committed prefs. */
+  update(patch: Partial<Prefs>): Promise<Prefs> {
+    const run = async () => {
+      const next = prefsSchema.parse({ ...this.#cache, ...patch });
+      const prev = this.#cache;
+      await this.#kv.set("prefs", next);
+      this.#cache = next;
+      for (const l of this.#listeners) l(next, prev);
+      return next;
+    };
+    const result = this.#queue.then(run, run);
+    this.#queue = result.catch(() => undefined);
+    return result;
   }
 
   onChange(listener: Listener): () => void {

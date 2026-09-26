@@ -1,11 +1,13 @@
 import asyncio
 import os
 import sys
+import threading
 import time
 import types
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 os.environ["KOKORO_HEADLESS"] = "1"  # no sounddevice import in tests
@@ -33,7 +35,7 @@ def make_server(tmp_path):
     srv.active_playbacks = {}
     srv.cancel_events = {}
     srv.bb_plugin_seen = 0.0
-    srv.last_turn = {}
+    srv.last_turn = OrderedDict()
     srv.recent_turns = deque(maxlen=20)
     srv.model_path = "kokoro-v1.0.onnx"
     srv.started_at = time.time()
@@ -42,9 +44,13 @@ def make_server(tmp_path):
     srv.last_first_audio_ms = None
     srv.engine = types.SimpleNamespace(info=lambda: {"kind": "local"})
     srv.calls = []
+    srv.voices_path = "voices-v1.0.bin"
+    srv.port = 6789
+    srv._config_lock = asyncio.Lock()
 
-    async def fake_speech(text, data, session_id):
+    async def fake_speech(text, data, session_id, allow_muted=False):
         srv.calls.append(("speech", text, session_id, data))
+        srv.allow_muted_seen = allow_muted
         return {"status": "playing", "session_id": session_id}, 200
 
     async def fake_sound(sound, session_id, volume=None):
@@ -260,9 +266,9 @@ def test_loopback_host_headers_are_allowed(tmp_path, host):
 
 def test_lan_bind_accepts_any_host_but_still_refuses_origin(tmp_path):
     srv = make_server(tmp_path)
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": "desk.lan:6789"}, host="0.0.0.0")
+    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": "desk.example:6789"}, host="0.0.0.0")
     assert status == 200
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Origin": "http://desk.lan"}, host="0.0.0.0")
+    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Origin": "http://desk.example"}, host="0.0.0.0")
     assert status == 403
 
 
@@ -338,12 +344,38 @@ def test_turn_repeat_for_the_same_session_is_silent(tmp_path):
     assert len(srv.calls) == 1
 
 
-def test_turn_same_text_from_another_caller_moments_later_is_silent(tmp_path):
+def test_turn_same_text_from_the_other_surface_moments_later_is_silent(tmp_path):
     srv = make_server(tmp_path)
-    request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "claude-session"})
-    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_1", "playback": "client"})[1]["action"] == "silent"
-    srv.recent_turns = deque([(t - 60, k) for t, k in srv.recent_turns], maxlen=20)
-    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_2"})[1]["action"] == "speech"
+    request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "claude-session", "source": "claude-code"})
+    _, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_1", "playback": "client", "source": "bb"})
+    assert body["action"] == "silent"
+    srv.recent_turns = deque([(t - 60, k, s) for t, k, s in srv.recent_turns], maxlen=20)
+    _, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_2", "source": "bb"})
+    assert body["action"] == "speech"
+
+
+def test_two_threads_on_one_surface_may_say_the_same_thing(tmp_path):
+    srv = make_server(tmp_path)
+    for thread in ("thr_1", "thr_2"):
+        _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": thread, "source": "bb"})
+        assert body["action"] == "speech"
+    assert len(srv.calls) == 2
+
+
+def test_cleanup_forgets_the_sessions_last_reply(tmp_path):
+    srv = make_server(tmp_path)
+    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "source": "bb"})
+    request(srv, "POST", "/cleanup", {"session_id": "s1"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "source": "bb"})
+    assert body["action"] == "speech"
+
+
+def test_last_turn_memory_is_bounded(tmp_path):
+    srv = make_server(tmp_path)
+    for i in range(ks.LAST_TURN_MAX + 5):
+        srv._is_repeat_turn(f"s{i}", f"reply {i}", "bb")
+    assert len(srv.last_turn) == ks.LAST_TURN_MAX
+    assert "s0" not in srv.last_turn
 
 
 def test_runtime_claim_survives_a_restart(tmp_path):
@@ -352,3 +384,135 @@ def test_runtime_claim_survives_a_restart(tmp_path):
     assert time.time() - ks._read_bb_claim() < 5
     request(srv, "POST", "/runtime", {"bb_plugin": False})
     assert ks._read_bb_claim() == 0.0
+
+
+def test_release_keeps_a_replacement_playback(tmp_path):
+    srv = make_server(tmp_path)
+    old, new = threading.Event(), threading.Event()
+    srv.cancel_events["s1"] = new
+    srv.active_playbacks["s1"] = "replacement-task"
+    srv._release_playback("s1", old)  # the superseded playback finishing late
+    assert srv.cancel_events["s1"] is new
+    assert srv.active_playbacks["s1"] == "replacement-task"
+    srv._release_playback("s1", new)
+    assert "s1" not in srv.cancel_events and "s1" not in srv.active_playbacks
+
+
+def test_sound_cleanup_after_replacement_keeps_the_new_sound(tmp_path):
+    """Sound replacing sound: the first sound's cleanup runs after the second registered."""
+    srv = make_server(tmp_path)
+    first, second = threading.Event(), threading.Event()
+    srv.cancel_events["s1"] = first
+    srv.active_playbacks["s1"] = "first"
+    # _start_sound for the second sound registers its own entry...
+    srv.cancel_events["s1"] = second
+    srv.active_playbacks["s1"] = "second"
+    # ...then the first sound's finally block runs.
+    srv._release_playback("s1", first)
+    assert srv.active_playbacks["s1"] == "second"
+
+
+def test_turn_sound_respects_the_working_tick_switch(tmp_path):
+    srv = make_server(tmp_path)
+    srv.config.patch({"working_sound": False})
+    _, body = request(srv, "POST", "/turn", {"text": '<!-- TTS_RESPONSE weight="sound:working" -->'})
+    assert body["action"] == "silent" and srv.calls == []
+
+
+def test_concurrent_engine_patches_leave_config_and_engine_in_agreement(tmp_path):
+    srv = make_server(tmp_path)
+    built = []
+
+    async def slow_swap(cfg):
+        await asyncio.sleep(0.05 if cfg["intra_op_threads"] == 1 else 0)
+        built.append(cfg["intra_op_threads"])
+
+    srv._swap_engine = slow_swap
+
+    async def go():
+        async with TestClient(TestServer(ks.build_app(srv))) as c:
+            first = asyncio.create_task(c.patch("/config", json={"intra_op_threads": 1}))
+            await asyncio.sleep(0.01)
+            second = asyncio.create_task(c.patch("/config", json={"intra_op_threads": 2}))
+            await asyncio.gather(first, second)
+
+    asyncio.run(go())
+    assert built[-1] == srv.config.get()["intra_op_threads"] == 2
+
+
+def test_failed_engine_change_rolls_back_every_key_of_that_patch(tmp_path):
+    srv = make_server(tmp_path)
+
+    async def failing_swap(cfg):
+        raise ks.EngineError("no such device")
+
+    srv._swap_engine = failing_swap
+    status, body = request(srv, "PATCH", "/config", {"intra_op_threads": 3, "speed": 1.4})
+    assert status == 400
+    cfg = srv.config.get()
+    assert cfg["intra_op_threads"] == 0 and cfg["speed"] == 1.0
+
+
+def test_remote_without_url_is_rejected(tmp_path):
+    srv = make_server(tmp_path)
+    status, body = request(srv, "PATCH", "/config", {"provider": "remote"})
+    assert status == 400 and "remote_url" in body["fields"]
+    assert srv.config.get()["provider"] == "cpu"
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/speak", {"text": 5}),
+    ("/speak", ["hello"]),
+    ("/preview", ["x"]),
+    ("/preview", {"text": 7}),
+    ("/synthesize", {"text": ["a"]}),
+    ("/mute", ["x"]),
+    ("/interrupt", {"session_id": ["a"]}),
+    ("/cleanup", [1]),
+    ("/play-sound", {"sound": 3}),
+    ("/play-sound", {"sound": "done", "volume": "loud"}),
+    ("/play-sound", {"sound": "done", "volume": 9}),
+])
+def test_malformed_bodies_are_rejected_not_crashed(tmp_path, path, body):
+    srv = make_server(tmp_path)
+    status, _ = request(srv, "POST", path, body)
+    assert status == 400
+
+
+def test_unknown_mode_falls_back_to_the_configured_mode(tmp_path):
+    srv = make_server(tmp_path)
+    srv.config.patch({"mode": "quiet"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "mode": "loud"})
+    assert body["action"] == "silent"
+
+
+def test_synthesize_marks_a_mid_stream_failure(tmp_path):
+    srv = make_server(tmp_path)
+
+    async def failing_stream(text, voice, speed, lang, trim):
+        yield np.zeros(4, dtype=np.float32), 24000
+        raise RuntimeError("engine died")
+
+    srv._synth_stream = failing_stream
+
+    async def go():
+        async with TestClient(TestServer(ks.build_app(srv))) as c:
+            r = await c.post("/synthesize", json={"text": "Hi."}, headers={"X-Kokoro-Frames": "2"})
+            return r.headers.get("X-Kokoro-Frames"), await r.read()
+
+    header, raw = asyncio.run(go())
+    assert header == "2"
+    assert raw[-4:] == (0xFFFFFFFF).to_bytes(4, "little")
+
+
+def test_preview_plays_while_muted_without_unmuting(tmp_path):
+    srv = make_server(tmp_path)
+    srv.muted = True
+    status, _ = request(srv, "POST", "/preview", {"text": "Hi."})
+    assert status == 200 and srv.allow_muted_seen is True and srv.muted is True
+
+
+def test_health_reports_who_started_the_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("KOKORO_STARTED_BY", "bb")
+    _, health = request(make_server(tmp_path), "GET", "/health")
+    assert health["started_by"] == "bb"

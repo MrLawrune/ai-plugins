@@ -4,6 +4,7 @@
 // the output drops off (a phone losing signal or freezing), holds replies for
 // it for a while instead of playing them on some other device.
 import type { ClientRegistry } from "./clients.ts";
+import type { SynthOptions } from "./kokoro-client.ts";
 import { encodeFrame, parseClientMsg, type ServerMsg, type SoundName } from "./protocol.ts";
 import type { PlayOn, PublicClientInfo } from "./schemas.ts";
 
@@ -18,7 +19,7 @@ export interface HubDeps {
   registry: ClientRegistry;
   /** With `playback: "server"` no window holds the output. */
   routing: () => { playOn: PlayOn; pinnedDevice: string | null; playback?: "client" | "server" };
-  synthesize: (text: string, signal: AbortSignal) => AsyncIterable<Uint8Array>;
+  synthesize: (text: string, signal: AbortSignal, opts?: SynthOptions) => AsyncIterable<Uint8Array>;
   reportStatus: (entryId: number, status: EntryStatus, extra?: { firstAudioMs?: number; error?: string }) => Promise<void>;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
@@ -48,6 +49,7 @@ interface Job {
   text: string;
   sessionId: string;
   gain: number;
+  opts?: SynthOptions;
   frames: Uint8Array[];
   complete: boolean;
   targets: Set<string>;
@@ -195,10 +197,10 @@ export class PlayerHub {
     return () => { this.#readyListeners.delete(listener); };
   }
 
-  speak(entryId: number, text: string, sessionId: string, gain: number): void {
+  speak(entryId: number, text: string, sessionId: string, gain: number, opts?: SynthOptions): void {
     this.stop(sessionId);
     const job: Job = {
-      entryId, text, sessionId, gain, frames: [], complete: false, targets: new Set(), tried: new Set(),
+      entryId, text, sessionId, gain, opts, frames: [], complete: false, targets: new Set(), tried: new Set(),
       attempts: 0, acked: false, finished: false, abort: new AbortController(), timer: null, synthTimer: null,
       report: Promise.resolve(), speaking: false, doneTimer: null,
     };
@@ -478,7 +480,7 @@ export class PlayerHub {
 
   async #pump(job: Job): Promise<void> {
     try {
-      for await (const pcm of this.#deps.synthesize(job.text, job.abort.signal)) {
+      for await (const pcm of this.#deps.synthesize(job.text, job.abort.signal, job.opts)) {
         if (job.finished) return;
         job.frames.push(pcm);
         for (const id of job.targets) this.#sendFrame(id, job.entryId, pcm);

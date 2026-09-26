@@ -145,3 +145,20 @@ def route_cue(sound: str, mode: str, cfg: dict) -> dict:
     if sound == "working" and not cfg.get("working_sound", True):
         return {"action": "silent"}
     return {"action": "sound", "sound": sound}
+
+
+def apply_cue_prefs(result: dict, cfg: dict) -> dict:
+    """Honor the Working tick and Attention ping switches for a turn's sound.
+
+    A reply capped to the attention ping (ambient mode) still ends with the
+    done cue when pings are off, so a finished reply is never silent just
+    because the ping is disabled.
+    """
+    if result.get("action") != "sound":
+        return result
+    sound = result.get("sound")
+    if sound == "working" and not cfg.get("working_sound", True):
+        return {"action": "silent"}
+    if sound == "attention" and not cfg.get("attention_sound", True):
+        return {"action": "sound", "sound": "done"}
+    return result
