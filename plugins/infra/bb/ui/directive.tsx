@@ -24,6 +24,15 @@ function Literal({ source }: { source: string }) {
   return <code className="text-xs text-muted-foreground">{source}</code>;
 }
 
+function Unavailable({ target, error, retry }: { target: string; error: string; retry(): void }) {
+  return (
+    <div className="my-1 flex max-w-md items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+      <span className="min-w-0 truncate" title={error}>{target}: Infra data unavailable ({error})</span>
+      <button type="button" className="shrink-0 hover:underline" onClick={retry}>Retry</button>
+    </div>
+  );
+}
+
 function Card({ children, onClick, label }: { children: React.ReactNode; onClick(): void; label: string }) {
   return (
     <button type="button" onClick={onClick} aria-label={label} className="my-1 flex w-full max-w-md items-center gap-3 rounded-lg border bg-card px-3 py-2 text-left hover:bg-state-hover">
@@ -36,6 +45,7 @@ function GuestCard({ target }: { target: string }) {
   const q = useInfraQuery("guestSummary", { target }, { refreshOn: ["infra:changed", "infra:activity", "infra:task"] });
   const m = useInfraQuery("metrics", { target, range: "hour" }, { refreshOn: [], intervalMs: 60_000 });
   const open = useOpenTarget();
+  if (q.error && !q.data) return <Unavailable target={target} error={q.error} retry={q.refresh} />;
   if (!q.data) return <div className="my-1 h-14 max-w-md animate-pulse rounded-lg border bg-muted/40" />;
   if (!q.data.found) return <div className="my-1 max-w-md rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">{target} is not in the current inventory</div>;
   const { guest: g, env, ips, running, protected: isProtected, action } = q.data;
@@ -58,6 +68,7 @@ function GuestCard({ target }: { target: string }) {
 function HostCardInline({ target }: { target: string }) {
   const q = useInfraQuery("hostSummary", { target }, { refreshOn: ["infra:changed", "infra:activity"] });
   const open = useOpenTarget();
+  if (q.error && !q.data) return <Unavailable target={target} error={q.error} retry={q.refresh} />;
   if (!q.data) return <div className="my-1 h-14 max-w-md animate-pulse rounded-lg border bg-muted/40" />;
   if (!q.data.found) return <div className="my-1 max-w-md rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">{target} is not in the current inventory</div>;
   const { host: h, env, guests, running } = q.data;

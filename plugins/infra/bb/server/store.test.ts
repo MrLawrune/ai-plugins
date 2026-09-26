@@ -173,3 +173,19 @@ test("action rows round-trip, update, filter, and list open rows", () => {
   s.pruneActions(1002);
   assert.deepEqual(s.listActions({ limit: 10, includeRejected: true }).map((r) => r.target), ["lab/pve1/203"]);
 });
+
+test("export folder must be absolute, like the conventions file", () => {
+  const s = new Store(memDb());
+  assert.throws(() => s.upsertEnv({ ...envInput, exportDir: "notes/infra" }), /absolute path/);
+  assert.equal(s.upsertEnv({ ...envInput, exportDir: "/home/me/notes/infra" }).exportDir, "/home/me/notes/infra");
+});
+
+test("rewriteCommands updates only rows the function changes", () => {
+  const s = new Store(memDb());
+  const env = s.upsertEnv(envInput);
+  const row = { envId: env.id, target: "homelab/pve1", threadId: "t", turnId: "", phase: "completed" as const, exitCode: 0, at: 1 };
+  s.addActivity({ ...row, itemId: "a", command: "ssh pve1 TOKEN=abc run" });
+  s.addActivity({ ...row, itemId: "b", command: "ssh pve1 uptime" });
+  assert.equal(s.rewriteCommands((c) => c.replace("abc", "<redacted>")), 1);
+  assert.deepEqual(s.activityFor({ limit: 10 }).map((a) => a.command).sort(), ["ssh pve1 TOKEN=<redacted> run", "ssh pve1 uptime"]);
+});

@@ -96,6 +96,18 @@ test("guest agent failure yields agent unavailable and no interfaces", async () 
   assert.deepEqual(d.interfaces, []);
 });
 
+test("guestAddresses reads only interfaces and propagates failures", async () => {
+  const before = calls.length;
+  const lxc = await provider.guestAddresses({ kind: "guest", node: "pve1", vmid: 201, type: "lxc" }, sig);
+  assert.deepEqual(calls.slice(before).map((c) => c.path), ["/nodes/pve1/lxc/201/interfaces"]);
+  assert.ok(lxc.some((i) => i.ipv4.length));
+  const vm = await provider.guestAddresses({ kind: "guest", node: "pve1", vmid: 101, type: "qemu" }, sig);
+  assert.deepEqual(calls.slice(before + 1).map((c) => c.path), ["/nodes/pve1/qemu/101/agent/network-get-interfaces"]);
+  assert.ok(vm.some((i) => i.ipv4.length));
+  const p = new ProxmoxProvider({ async get<T>(): Promise<T> { throw new Error("QEMU guest agent is not running"); } }, "https://x:8006");
+  await assert.rejects(p.guestAddresses({ kind: "guest", node: "pve1", vmid: 101, type: "qemu" }, sig), /guest agent/);
+});
+
 test("host detail parses version, kernel, cpu model, load, storage", async () => {
   const h = await provider.hostDetail("pve1", sig);
   assert.equal(h.pveVersion, "9.1.4");

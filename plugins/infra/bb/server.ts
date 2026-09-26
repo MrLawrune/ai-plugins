@@ -17,6 +17,7 @@ import { Pins } from "./server/pins.ts";
 import { ProxmoxProvider } from "./server/providers/proxmox/adapter.ts";
 import { PveClient, PveError, type Auth } from "./server/providers/proxmox/client.ts";
 import { probeCertificate, type TlsMode } from "./server/providers/proxmox/tls.ts";
+import { redactSecrets } from "./server/redact.ts";
 import { createRpcHandlers } from "./server/rpc.ts";
 import { isCredentialMap, Secrets } from "./server/secrets.ts";
 import { badge, InfraService } from "./server/service.ts";
@@ -56,6 +57,8 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [...MIGRATIONS]);
   const store = new Store(db as unknown as SqlDb);
+  const redacted = store.rewriteCommands(redactSecrets);
+  if (redacted) bb.log.info(`redacted credentials in ${redacted} previously recorded command(s)`);
   const secrets = new Secrets(settings);
   const pins = new Pins(store);
   pins.load();
@@ -83,17 +86,20 @@ export default async function plugin(bb: BbPluginApi) {
   // Optional human-facing export of registry + rules.
   const exportTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const lastExport = new Map<string, string>();
+  // Throttled, not debounced: a pending write is never postponed by further snapshots, so environments
+  // whose connections poll more often than the delay still export.
   const scheduleExport = (envId: string) => {
-    clearTimeout(exportTimers.get(envId));
-    exportTimers.set(envId, setTimeout(() => {
+    if (exportTimers.has(envId)) return;
+    exportTimers.set(envId, setTimeout(async () => {
       exportTimers.delete(envId);
       const env = store.getEnv(envId);
       if (!env?.exportDir.trim()) return;
       const registry = service.registry(env.slug);
       if (registry === null) return;
-      const key = `${env.exportDir}\n${registry}\n${env.rules}`;
+      const rules = ((await service.rules(env.slug)) ?? env.rules).trim() + "\n";
+      const key = `${env.exportDir}\n${registry}\n${rules}`;
       if (lastExport.get(envId) === key) return;
-      writeExport(env.exportDir, env.slug, registry, env.rules.trim() + "\n")
+      writeExport(env.exportDir, env.slug, registry, rules)
         .then(() => lastExport.set(envId, key))
         .catch((e: unknown) => bb.log.warn(`export for ${env.slug} failed: ${message(e)}`));
     }, EXPORT_DEBOUNCE_MS));
@@ -193,7 +199,9 @@ export default async function plugin(bb: BbPluginApi) {
       const live = new Set(store.listConnections().filter((c) => c.enabled).map((c) => c.id));
       for (const id of [...clients.keys()]) if (!live.has(id.split(":")[0]!)) closeClient(id);
       indexDirty = true;
-      for (const env of store.listEnvs()) { publishChanged(env.id); scheduleExport(env.id); }
+      const envs = store.listEnvs();
+      for (const env of envs) { publishChanged(env.id); scheduleExport(env.id); }
+      if (!envs.length) publishChanged("");
       if (initialGap && !reloadScheduled && !(await setupGap())) {
         reloadScheduled = true;
         bb.log.info("setup complete; reloading to clear the needs-configuration status");

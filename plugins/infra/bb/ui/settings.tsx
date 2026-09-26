@@ -175,7 +175,7 @@ function EnvDialog({ env, onClose }: { env: InfraEnvRow | null; onClose(): void 
               <Input type="number" min={5} max={300} value={form.pollSeconds} onChange={(e) => set("pollSeconds", Number(e.target.value))} />
             </Field>
           </div>
-          <Field label="Guest IP sweep (minutes)" hint="How often to read guest IPs (one request per running guest). 0 turns it off; IPs then load when you open a guest.">
+          <Field label="Guest IP sweep (minutes)" hint="How often to read guest network interfaces (one request per running guest, in the background). 0 turns it off; IPs then load when you open a guest.">
             <Input type="number" min={0} max={1440} value={form.ipRefreshMinutes ?? 5} onChange={(e) => set("ipRefreshMinutes", Number(e.target.value))} />
           </Field>
           <Field label="Rules for agents" hint="Short conventions agents get with this environment's context, e.g. “Podman, not Docker”, “prefer LXCs”, “new CTs go in pool bb-lab”.">
@@ -184,7 +184,7 @@ function EnvDialog({ env, onClose }: { env: InfraEnvRow | null; onClose(): void 
           <Field label="Conventions file (optional)" hint="Absolute path on the BB server to an existing AGENTS.md, runbook, or conventions doc. Agents get it with this environment's rules.">
             <Input value={form.conventionsPath ?? ""} onChange={(e) => set("conventionsPath", e.target.value)} placeholder="/srv/docs/AGENTS.md" />
           </Field>
-          <Field label="Export folder (optional)" hint="Writes <slug>-registry.md and <slug>-rules.md here on every change, e.g. a notes vault folder.">
+          <Field label="Export folder (optional)" hint="Absolute path on the BB server. Writes <slug>-registry.md and <slug>-rules.md here on every change, e.g. a notes vault folder.">
             <Input value={form.exportDir} onChange={(e) => set("exportDir", e.target.value)} placeholder="/home/me/notes/Infra" />
           </Field>
           <label className="flex items-start gap-2 text-sm">

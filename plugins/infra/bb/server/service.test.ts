@@ -96,12 +96,71 @@ test("pinned TLS requires a fingerprint; CA mode requires a PEM", async () => {
   const base = { envId: env.id, label: "x", baseUrl: "https://192.0.2.9:8006", authKind: "token" as const, username: "a@pve!b", tlsFingerprint: "", enabled: true };
   await assert.rejects(h.service.saveConnection({ ...base, tlsMode: "pinned" }), /fingerprint/);
   await assert.rejects(h.service.saveConnection({ ...base, tlsMode: "ca" }), /CA certificate/);
+  assert.equal(h.store.listConnections().length, 0, "a rejected save writes nothing");
+  assert.equal(h.reloads(), 0);
+});
+
+test("requested rules survive a tight budget on host, guest, and environment cards", async () => {
+  const rules = Array.from({ length: 6 }, (_, i) => `Rule ${i + 1}.`).join("\n");
+  const h = await serviceHarness([{ slug: "homelab", rules, conns: { pve1: homelab() } }]);
+  for (const target of ["homelab", "homelab/pve1", "homelab/pve1/201"]) {
+    const card = h.service.cardSync(target, { budget: 10, rules: true })!;
+    assert.ok(card.split("\n").length <= 10, `${target}: ${card.split("\n").length} lines\n${card}`);
+    assert.match(card, /Rule 1\./, target);
+    assert.match(card, /Rule 6\./, target);
+    const tight = h.service.cardSync(target, { budget: 6, rules: true })!;
+    assert.ok(tight.split("\n").length <= 6, `${target}: ${tight.split("\n").length} lines\n${tight}`);
+    assert.match(tight, /Rule 1\./, target);
+    assert.match(tight, /more lines \(bb infra rules homelab\)/, target);
+  }
+  const pin = h.pins.set("thr_p", ["homelab/pve1", "homelab/pve1/201"], true);
+  const text = h.service.renderPin(pin);
+  assert.ok(text.length <= 4096);
+  assert.match(text, /Rule 6\./);
+});
+
+test("huge rules in a pin leave room for the cards and point at the full text", async () => {
+  const rules = Array.from({ length: 70 }, (_, i) => `Rule ${i + 1}: keep doing the right thing on every host.`).join("\n"); // ~3.8 KiB, near the rules cap
+  const h = await serviceHarness([{ slug: "homelab", rules, conns: { pve1: homelab() } }]);
+  const text = h.service.renderPin(h.pins.set("thr_p", ["homelab/pve1", "homelab/pve1/201"], true));
+  assert.ok(text.length <= 4096 - 120, `${text.length} chars`);
+  assert.match(text, /^homelab\/pve1 · online/, "the first card is intact");
+  assert.match(text, /homelab\/pve1\/201 proxy/, "the second card is present");
+  assert.match(text, /Rule 1:/);
+  assert.match(text, /full text: bb infra rules homelab/);
+});
+
+test("credentials in observed commands are redacted before storage", async () => {
+  const h = await serviceHarness([{ slug: "homelab", conns: { pve1: homelab() } }]);
+  h.pageBox.pages.push([cmd(1, "item/completed", "ssh pve1 env PVE_TOKEN=abc123 pct exec 201 -- true", h.now())]);
+  await h.activity.onThreadEvents("thr_a");
+  const rows = h.service.activity({ limit: 10 }).items;
+  assert.ok(rows.length > 0);
+  for (const r of rows) { assert.doesNotMatch(r.command, /abc123/); assert.match(r.command, /PVE_TOKEN=<redacted>/); }
 });
 
 test("probe reports errors as data", async () => {
   const h = await serviceHarness([{ slug: "homelab", conns: {} }]);
   assert.deepEqual(await h.service.probe("https://bad:8006"), { ok: false, error: "ECONNREFUSED" });
   assert.equal((await h.service.probe("https://ok:8006")).ok, true);
+});
+
+test("the same endpoint cannot be added twice, across environments", async () => {
+  const h = await serviceHarness([{ slug: "homelab", conns: { pve1: homelab() } }, { slug: "pve3", conns: {} }]);
+  const other = h.store.getEnvBySlug("pve3")!;
+  const base = { envId: other.id, label: "again", authKind: "token" as const, username: "a@pve!b", tlsMode: "insecure" as const, tlsFingerprint: "", enabled: true };
+  await assert.rejects(h.service.saveConnection({ ...base, baseUrl: "https://PVE1:8006/" }), /already added as "pve1" in Homelab/);
+  assert.equal(h.store.listConnections(other.id).length, 0);
+});
+
+test("deleting an environment drops the pins that pointed into it", async () => {
+  const h = await serviceHarness([{ slug: "homelab", conns: { pve1: homelab() } }, { slug: "staging", kind: "staging", conns: { s1: staging() } }]);
+  h.pins.set("thr_a", ["homelab/pve1", "staging/stage1"], true);
+  h.pins.set("thr_b", ["homelab/pve1/201"], false);
+  await h.service.deleteEnv(h.store.getEnvBySlug("homelab")!.id);
+  assert.deepEqual(h.pins.get("thr_a")?.targets, ["staging/stage1"]);
+  assert.equal(h.pins.get("thr_b"), null);
+  assert.equal(h.store.listPins().length, 1);
 });
 
 test("deleting an environment removes its connection secrets", async () => {

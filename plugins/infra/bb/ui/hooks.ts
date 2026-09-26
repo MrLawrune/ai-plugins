@@ -13,6 +13,12 @@ type Channel = (typeof CHANNELS)[keyof typeof CHANNELS];
 
 export interface QueryState<T> { data: T | null; error: string | null; loading: boolean; refresh(): void }
 
+const REFRESH_EVENT = "infra:refresh";
+/** Ask every mounted Infra query to reload (the page header's Refresh button). */
+export function refreshAllQueries(): void {
+  window.dispatchEvent(new Event(REFRESH_EVENT));
+}
+
 export function useInfraRpc() {
   const rpc = useRpc<Methods>();
   return useCallback(<M extends Method>(method: M, input: RpcInput<M>) => rpc.call(method, dropUndefined(input as object) as never) as Promise<RpcResult<M>>, [rpc]);
@@ -37,6 +43,9 @@ export function useInfraQuery<M extends Method>(method: M, input: RpcInput<M> | 
   }, [call, method, key]);
 
   useEffect(() => {
+    // A new key invalidates in-flight responses and any refresh queued for the previous key.
+    seq.current++;
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
     setState({ data: null, error: null, loading: input !== null });
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -53,6 +62,12 @@ export function useInfraQuery<M extends Method>(method: M, input: RpcInput<M> | 
   useRealtime(CHANNELS.activity, () => { if (channels.includes(CHANNELS.activity)) debounced(); });
   useRealtime(CHANNELS.events, () => { if (channels.includes(CHANNELS.events)) debounced(); });
   useRealtime(CHANNELS.task, () => { if (channels.includes(CHANNELS.task)) debounced(); });
+
+  useEffect(() => {
+    const onRefresh = () => load();
+    window.addEventListener(REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(REFRESH_EVENT, onRefresh);
+  }, [load]);
 
   const conn = useRealtimeConnectionState();
   const prevConn = useRef(conn);

@@ -56,7 +56,7 @@ const envSave = z.object({
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   pollSeconds: z.number().int().min(5).max(300),
   rules: z.string().max(RULES_MAX),
-  exportDir: z.string().max(500),
+  exportDir: z.string().max(500).refine((p) => p === "" || p.startsWith("/"), "use an absolute path on the BB server"),
   /** Minutes between guest-IP sweeps; 0 turns them off. */
   ipRefreshMinutes: z.number().int().min(0).max(1440).optional(),
   /** Absolute path on the BB server to an existing conventions file (AGENTS.md, runbook). */
@@ -140,7 +140,7 @@ export const rpcContract = defineRpcContract({
   connectionSave: { input: connectionSave, output: out<{ connection: ConnectionDto }>() },
   connectionDelete: { input: z.object({ id: z.string().min(1).max(64) }).strict(), output: out<{ deleted: true }>() },
   connectionProbe: {
-    input: z.object({ baseUrl: z.string().url() }).strict(),
+    input: z.object({ baseUrl: z.string().url().refine((u) => u.startsWith("https://"), "use an https:// URL") }).strict(),
     output: out<{ ok: true; cert: CertInfo } | { ok: false; error: string }>(),
   },
   connectionTest: { input: z.object({ id: z.string().min(1).max(64) }).strict(), output: out<{ health: ConnectionHealth | null; version: string | null }>() },

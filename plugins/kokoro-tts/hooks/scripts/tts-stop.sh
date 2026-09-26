@@ -2,14 +2,15 @@
 # Kokoro TTS -- Stop hook. Sends the turn's final text to the server's
 # /turn router; block parsing, mode ceiling, and fallback live server-side.
 
-LOG="/tmp/kokoro-hook.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tts-log.sh
+source "$SCRIPT_DIR/tts-log.sh"
 # shellcheck source=tts-config.sh
 source "$SCRIPT_DIR/tts-config.sh"
 # shellcheck source=tts-guard.sh
 source "$SCRIPT_DIR/tts-guard.sh"
 
-if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
   tail -c 524288 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 fi
 
@@ -26,7 +27,13 @@ last_message=$(echo "$input" | jq -r '.last_assistant_message // empty')
 
 if [ "$KOKORO_SERVER_UP" != "1" ]; then
   echo "[$(date)] ERROR: Kokoro server not responding" >> "$LOG"
-  jq -n --arg msg "Kokoro TTS server not responding on port $PORT. In bb, open the Kokoro TTS page; otherwise it starts on your next Claude Code session (see the kokoro-tts skill, Troubleshooting)" \
+  # Inside bb the Kokoro TTS page shows setup progress; outside, say it once per session.
+  [ -n "${BB_THREAD_ID:-}" ] && exit 0
+  find "${LOG%/*}" -maxdepth 1 -name 'down-notified-*' -mtime +1 -delete 2>/dev/null
+  marker="${LOG%/*}/down-notified-$(printf '%s' "$session_id" | tr -c 'A-Za-z0-9_-' '_')"
+  [ -e "$marker" ] && exit 0
+  : > "$marker"
+  jq -n --arg msg "Kokoro TTS server not responding on port $PORT. It starts on your next Claude Code session (see the kokoro-tts skill, Troubleshooting)" \
     '{systemMessage: $msg}'
   exit 0
 fi
@@ -40,7 +47,7 @@ else
   kind=$(echo "$parsed" | jq -r '.kind // "empty"')
   if [ "$kind" = "intermediate" ]; then
     curl -s -X POST "$SERVER/cue" --max-time 2 -H "Content-Type: application/json" \
-      -d "$(jq -n --arg id "$session_id" '{sound: "working", session_id: $id, playback: "server"}')" >/dev/null 2>&1
+      -d "$(jq -n --arg id "$session_id" --arg mode "$MODE" '{sound: "working", session_id: $id, playback: "server", mode: $mode}')" >/dev/null 2>&1
     exit 0
   fi
   [ "$kind" = "final" ] || exit 0

@@ -4,12 +4,11 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { ActionSource, EnvViewDto, HostState } from "../schemas.ts";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { EnvBadge, HealthBadge, ProtectedBadge, StateDot, UsageBar } from "./badges.tsx";
+import { EnvBadge, HealthBadge, ProtectedBadge, StaleNotice, StateDot, UsageBar } from "./badges.tsx";
 import { age, bytes, pct } from "./format.ts";
 import { GuestActions } from "./guest-actions.tsx";
 import { useInfraQuery, useNow } from "./hooks.ts";
 import { InfraIcon } from "./icons.tsx";
-import { ActivityList } from "./activity-feed.tsx";
 
 type Guest = EnvViewDto["guests"][number];
 type SortKey = "vmid" | "name" | "state" | "cpu" | "mem";
@@ -101,6 +100,7 @@ export function EnvView({ slug, onOpen, source, compact }: { slug: string; onOpe
         <div className="flex items-center gap-3"><EnvBadge env={v.env} /><HealthBadge code={v.health} staleSince={v.connections.map((c) => c.health.staleSince).filter((x): x is number => x !== null)[0] ?? null} now={now} /></div>
         <AskAgentMenu target={slug} kind="env" />
       </div>
+      <StaleNotice error={q.error} />
       {v.connections.filter((c) => c.health.code !== "ok").map((c) => (
         <p key={c.id} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">{c.label}: {c.health.code}{c.health.message ? ` — ${c.health.message}` : ""}</p>
       ))}
@@ -112,12 +112,6 @@ export function EnvView({ slug, onOpen, source, compact }: { slug: string; onOpe
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Guests</h3>
         <GuestTable slug={slug} guests={v.guests} onOpen={(t) => onOpen(`${slug}/${t}`)} actionsEnabled={v.actionsEnabled} source={source} compact={compact} />
       </section>
-      {!compact ? (
-        <section className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Recent agent activity</h3>
-          <ActivityList items={v.recentActivity} changes={[]} onOpenTarget={onOpen} />
-        </section>
-      ) : null}
     </div>
   );
 }

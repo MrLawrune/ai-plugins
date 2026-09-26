@@ -2,7 +2,7 @@
 import type { PinRow, Store } from "./store.ts";
 
 export const INSTRUCTIONS_MAX = 4096;
-const HEADER = "Infra context pinned to this thread (read-only reference; operate through your usual tools such as ssh):";
+export const HEADER = "Infra context pinned to this thread (read-only reference; operate through your usual tools such as ssh):";
 
 export class Pins {
   private readonly store: Store;
@@ -29,6 +29,16 @@ export class Pins {
   clear(threadId: string): void {
     this.store.deletePin(threadId);
     this.pins.delete(threadId);
+  }
+
+  /** Forget every target under an environment; a pin left without targets is removed. */
+  dropEnv(slug: string): void {
+    for (const pin of [...this.pins.values()]) {
+      const keep = pin.targets.filter((t) => t !== slug && !t.startsWith(`${slug}/`));
+      if (keep.length === pin.targets.length) continue;
+      if (keep.length) this.set(pin.threadId, keep, pin.rulesIncluded);
+      else this.clear(pin.threadId);
+    }
   }
 
   get(threadId: string): PinRow | null {

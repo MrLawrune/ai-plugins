@@ -25,3 +25,9 @@ test("loads a conventions file, serves it synchronously after, and caps its size
   t += 31_000;
   assert.equal(await c.load(small), "changed\n");
 });
+
+test("directories and other non-regular files are reported as unreadable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conv-"));
+  const c = new Conventions(() => 0);
+  assert.match(await c.load(dir), /not readable/);
+});

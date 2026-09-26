@@ -3,8 +3,9 @@
 
 PORT="${KOKORO_PORT:-6789}"
 SERVER="http://127.0.0.1:$PORT"
-LOG="/tmp/kokoro-hook.log"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tts-log.sh
+source "$SCRIPT_DIR/tts-log.sh"
 # shellcheck source=tts-guard.sh
 source "$SCRIPT_DIR/tts-guard.sh"
 

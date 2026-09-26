@@ -1,9 +1,28 @@
 // Linked conventions files (an existing AGENTS.md, runbook, …) read on the BB server and cached,
 // so synchronous callers (pinned instructions) can include them.
-import { readFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 
 export const CONVENTIONS_MAX_BYTES = 16 * 1024;
 const TTL_MS = 30_000;
+const READ_TIMEOUT_MS = 5_000;
+
+/** At most CONVENTIONS_MAX_BYTES + 1 bytes of a regular file; special files and directories are rejected. */
+async function readCapped(path: string): Promise<Buffer> {
+  if (!(await stat(path)).isFile()) throw new Error("not a regular file");
+  const fh = await open(path, "r");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const buf = Buffer.alloc(CONVENTIONS_MAX_BYTES + 1);
+    const { bytesRead } = await Promise.race([
+      fh.read(buf, 0, buf.length, 0),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("read timed out")), READ_TIMEOUT_MS); }),
+    ]);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    clearTimeout(timer);
+    await fh.close().catch(() => undefined);
+  }
+}
 
 export class Conventions {
   private readonly now: () => number;
@@ -26,7 +45,7 @@ export class Conventions {
     if (hit && this.now() - hit.at < TTL_MS) return Promise.resolve(hit.text);
     const inflight = this.pending.get(path);
     if (inflight) return inflight;
-    const p = readFile(path)
+    const p = readCapped(path)
       .then((buf) => buf.length > CONVENTIONS_MAX_BYTES
         ? `${buf.subarray(0, CONVENTIONS_MAX_BYTES).toString("utf8")}\n… (truncated at ${CONVENTIONS_MAX_BYTES / 1024} KiB)`
         : buf.toString("utf8"))

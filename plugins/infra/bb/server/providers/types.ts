@@ -27,6 +27,8 @@ export interface InfraProvider {
   inventory(signal: AbortSignal): Promise<Inventory>;
   hostDetail(node: string, signal: AbortSignal): Promise<HostDetail>;
   guestDetail(ref: GuestRef, signal: AbortSignal): Promise<GuestDetail>;
+  /** Network interfaces only (one request); throws when they cannot be read so callers keep what they knew. */
+  guestAddresses(ref: GuestRef, signal: AbortSignal): Promise<NetIf[]>;
   metrics(target: TargetRef, range: MetricRange, signal: AbortSignal): Promise<MetricSeries>;
   tasks(target: TargetRef, limit: number, signal: AbortSignal): Promise<TaskEntry[]>;
   backups(ref: GuestRef, signal: AbortSignal): Promise<BackupEntry[]>;

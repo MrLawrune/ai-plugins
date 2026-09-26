@@ -81,8 +81,29 @@ export function envCard(s: EnvSnapshot, o: { rules: boolean; budget: number; ips
     const ips = guestIpsOf(s, g.node, g.vmid, o.ips);
     lines.push(`  ${g.vmid} ${g.name} ${g.type} ${g.state} ${ips.length ? ips.join(",") : "-"}`);
   }
-  if (o.rules && s.env.rules.trim()) lines.push("Rules:", ...s.env.rules.trim().split(/\r?\n/));
-  return applyBudget(lines, o.budget, s.env.slug);
+  if (!o.rules || !s.env.rules.trim()) return applyBudget(lines, o.budget, s.env.slug);
+  const block = rulesBlock(s.env.rules, s.env.slug, Math.max(2, o.budget - CARD_MIN_LINES), "Rules:");
+  return `${applyBudget(lines, Math.max(1, o.budget - block.length), s.env.slug)}\n${block.join("\n")}`;
+}
+
+/** Lines a card keeps for itself when rules follow it. */
+export const CARD_MIN_LINES = 3;
+
+/** Heading plus rule lines, at most maxLines long; cut rules end with a pointer to the full text. */
+export function rulesBlock(rules: string, envSlug: string, maxLines: number, heading = `Rules (${envSlug}):`): string[] {
+  const lines = rules.trim().split(/\r?\n/);
+  const room = Math.max(1, maxLines - 1);
+  if (lines.length <= room) return [heading, ...lines];
+  const keep = Math.max(0, room - 1);
+  return [heading, ...lines.slice(0, keep), `… ${lines.length - keep} more lines (bb infra rules ${envSlug})`];
+}
+
+/** A card with its environment's rules appended; together they stay within the line budget. */
+export function withRules(card: string, rules: string, envSlug: string, budget: number): string {
+  const block = rulesBlock(rules, envSlug, Math.max(2, budget - CARD_MIN_LINES));
+  const cardLines = card.split("\n");
+  const room = Math.max(1, budget - block.length);
+  return `${cardLines.length > room ? applyBudget(cardLines, room, envSlug) : card}\n${block.join("\n")}`;
 }
 
 const cell = (v: string) => v.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");

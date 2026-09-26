@@ -26,7 +26,7 @@ Username/password sign-in also works (tickets renew automatically). OIDC realms 
 | Option | Default | Notes |
 |---|---|---|
 | Poll interval | lab/dev 10 s · staging/other 30 s · prod/customer 60 s | Each poll is two small GETs per connection |
-| Guest IP sweep | 5 min | One detail read per running guest; 0 turns it off (IPs then load when a guest is opened) |
+| Guest IP sweep | 5 min | One interfaces read per running guest, in the background; 0 turns it off (IPs then load when a guest is opened) |
 | Rules for agents | — | Short conventions, e.g. "Podman, not Docker" |
 | Conventions file | — | Absolute path on the BB server to an existing `AGENTS.md` or runbook; included with the rules (capped at 16 KiB) |
 | Export folder | — | Writes `<slug>-registry.md` and `<slug>-rules.md` on change |
@@ -63,7 +63,7 @@ Agents have no action path: the plugin gives them no command or tool that change
 
 | Where | What |
 |---|---|
-| Sidebar → **Infra** | Environments → hosts → guests, charts, tasks, backups; **Agent activity** tab |
+| Sidebar → **Infra** | Environments → hosts → guests, charts, tasks, backups; the **Agent activity** tab beside the page follows what you are looking at |
 | Thread side panel → **+ → Infra** | What this thread touched, then everything; one tab per target, each closable |
 | Thread header | `⬢ N` chip of touched targets |
 | Chat | `::infra-guest{env="homelab" id="pve1/201"}`, `::infra-host{env="homelab" node="pve1"}` |

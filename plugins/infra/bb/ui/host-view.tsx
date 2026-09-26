@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import type { MetricRange, StoragePool } from "../schemas.ts";
 import { ActivityList } from "./activity-feed.tsx";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { Chip, EnvBadge, Meter, StateDot, UsageBar } from "./badges.tsx";
+import { Chip, EnvBadge, Meter, StaleNotice, StateDot, UsageBar } from "./badges.tsx";
 import { MetricsPanel } from "./metrics-panel.tsx";
 import { GuestTable } from "./env-view.tsx";
 import { age, bytes, pct } from "./format.ts";
@@ -52,8 +52,8 @@ function StorageTable({ pools, compact }: { pools: StoragePool[]; compact?: bool
 }
 
 export function HostView({ target, onOpen, compact }: { target: string; onOpen(target: string): void; compact?: boolean }) {
-  const q = useInfraQuery("host", { target });
-  const env = useInfraQuery("env", { slug: target.split("/")[0]! });
+  const q = useInfraQuery("host", { target }, { refreshOn: ["infra:changed", "infra:activity"] });
+  const env = useInfraQuery("env", { slug: target.split("/")[0]! }, { refreshOn: ["infra:changed", "infra:activity"] });
   const nav = useBbNavigate();
   const [range, setRange] = useState<MetricRange>("hour");
   if (q.error && !q.data) return <p className="text-sm text-destructive">{q.error}</p>;
@@ -65,6 +65,7 @@ export function HostView({ target, onOpen, compact }: { target: string; onOpen(t
   const guests = env.data?.found ? env.data.guests.filter((g) => g.node === h.node) : [];
   return (
     <div className="space-y-4">
+      <StaleNotice error={q.error} />
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="space-y-1">
           <div className="flex items-center gap-2 text-lg font-semibold"><StateDot state={h.online ? "online" : "offline"} />{h.node}</div>
@@ -93,7 +94,7 @@ export function HostView({ target, onOpen, compact }: { target: string; onOpen(t
           <TabsTrigger value="metrics">Metrics</TabsTrigger>
           <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
+          {compact ? <TabsTrigger value="activity">Activity</TabsTrigger> : null}
         </TabsList>
         <TabsContent value="guests" className="pt-3"><GuestTable slug={slug} guests={guests} onOpen={(t) => onOpen(`${slug}/${t}`)} compact={compact} /></TabsContent>
         <TabsContent value="metrics" className="pt-3"><MetricsPanel target={target} range={range} onRange={setRange} compact={compact} /></TabsContent>

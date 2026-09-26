@@ -136,6 +136,7 @@ export class Store {
     if (!Number.isInteger(ipRefreshMinutes) || ipRefreshMinutes < 0 || ipRefreshMinutes > 1440) throw new Error("IP refresh must be 0 (off) to 1440 minutes");
     const conventionsPath = (e.conventionsPath ?? "").trim();
     if (conventionsPath && !conventionsPath.startsWith("/")) throw new Error("conventions file must be an absolute path on the BB server");
+    if (e.exportDir.trim() && !e.exportDir.trim().startsWith("/")) throw new Error("export folder must be an absolute path on the BB server");
     const clash = this.getEnvBySlug(e.slug);
     if (clash && clash.id !== e.id) throw new Error(`slug "${e.slug}" is already used`);
     const existing = e.id ? this.getEnv(e.id) : null;
@@ -293,6 +294,18 @@ export class Store {
   setCursor(threadId: string, seq: number): void {
     this.db.prepare(`INSERT INTO cursors (thread_id, last_seq) VALUES (?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET last_seq = excluded.last_seq`).run(threadId, seq);
+  }
+
+  /** Rewrites every stored command through `fn`; used once at startup to redact rows recorded before redaction existed. */
+  rewriteCommands(fn: (command: string) => string): number {
+    const rows = this.db.prepare("SELECT id, command FROM activity").all() as Row[];
+    const update = this.db.prepare("UPDATE activity SET command = ? WHERE id = ?");
+    let changed = 0;
+    for (const r of rows) {
+      const next = fn(r.command as string);
+      if (next !== r.command) { update.run(next, r.id); changed++; }
+    }
+    return changed;
   }
 
   prune(olderThan: number): void {

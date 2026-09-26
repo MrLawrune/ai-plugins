@@ -88,3 +88,27 @@ test("existing file without marker is hashed once and adopted", async () => {
   await ensureModels(dir, [file("http://unused")], { fetchImpl });
   assert.equal(fs.readFileSync(path.join(dir, "m.bin.sha256"), "utf8"), SHA);
 });
+
+test("a live shell fetch holds the lock until it finishes", async () => {
+  const srv = await serve({ honorRange: true });
+  const dir = tmp();
+  const lock = path.join(dir, ".fetch-models.lock");
+  fs.writeFileSync(lock, "4242");
+  let released = false;
+  setTimeout(() => { fs.rmSync(lock); released = true; }, 60);
+  await ensureModels(dir, [file(srv.url)], { pollMs: 10, isAlive: () => true });
+  srv.close();
+  assert.equal(released, true);
+  assert.equal(fs.existsSync(lock), false);
+  assert.ok(fs.existsSync(path.join(dir, "m.bin")));
+});
+
+test("a stale lock from a dead process is taken over", async () => {
+  const srv = await serve({ honorRange: true });
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, ".fetch-models.lock"), "999999");
+  await ensureModels(dir, [file(srv.url)], { pollMs: 10, isAlive: () => false });
+  srv.close();
+  assert.ok(fs.existsSync(path.join(dir, "m.bin")));
+  assert.equal(fs.existsSync(path.join(dir, ".fetch-models.lock")), false);
+});

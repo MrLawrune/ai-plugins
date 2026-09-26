@@ -53,7 +53,7 @@ const localEngineSchema = z.object({
   load_ms: z.number().nullable(),
   available: availableSchema,
 });
-const remoteEngineSchema = z.object({
+export const remoteEngineSchema = z.object({
   kind: z.literal("remote"),
   provider: z.string(),
   url: z.string(),
@@ -65,7 +65,7 @@ const remoteEngineSchema = z.object({
 export const engineSchema = z.union([localEngineSchema, remoteEngineSchema]);
 export type EngineInfo = z.infer<typeof engineSchema>;
 
-const configResponseSchema = z.object({
+export const configResponseSchema = z.object({
   config: configSchema,
   muted: z.boolean(),
   providers_available: availableSchema,
@@ -85,6 +85,8 @@ const healthSchema = z.object({
   engine: z.unknown().optional(),
   muted: z.boolean().optional(),
   uptime_s: z.number().optional(),
+  started_by: z.string().nullable().optional(),
+  headless: z.boolean().optional(),
   latency: z
     .object({
       last_ms: z.number().nullable(),
@@ -114,10 +116,11 @@ const deviceSchema = z.object({
 export type DeviceInfo = z.infer<typeof deviceSchema>;
 
 /** Health wrapped so the page can render "server down" without throwing. */
-const healthResultSchema = z.union([
+export const healthResultSchema = z.union([
   z.object({ up: z.literal(true), health: healthSchema }),
   z.object({ up: z.literal(false), error: z.string() }),
 ]);
+export type HealthResult = z.infer<typeof healthResultSchema>;
 
 const speechLogEntrySchema = z.object({
   id: z.number(),
@@ -160,8 +163,16 @@ export const clientInfoSchema = z.object({
 });
 export type PublicClientInfo = z.infer<typeof clientInfoSchema>;
 
+export const statusSchema = z.object({
+  health: healthResultSchema,
+  setup: setupStateSchema,
+  clients: z.array(clientInfoSchema),
+});
+export type KokoroStatus = z.infer<typeof statusSchema>;
+
 export const rpcContract = defineRpcContract({
   health: { input: z.null(), output: healthResultSchema },
+  status: { input: z.null(), output: statusSchema },
   speechLog: { input: z.null(), output: z.object({ entries: z.array(speechLogEntrySchema) }) },
   getConfig: { input: z.null(), output: configResponseSchema },
   patchConfig: { input: configPatchSchema, output: configResponseSchema },
