@@ -55,7 +55,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "environments",
     title: "Environments",
-    description: "Proxmox hosts and clusters this plugin reads from. Read-only: nothing here changes your infrastructure.",
+    description: "Proxmox hosts and clusters this plugin watches. Guest actions stay off until you allow them per environment.",
     component: SettingsSection,
   });
 });

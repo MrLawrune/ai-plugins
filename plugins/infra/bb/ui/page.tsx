@@ -11,6 +11,7 @@ import { Overview } from "./overview.tsx";
 import { parseSubPath, type Route } from "./route.ts";
 
 export const PANEL_PATH = "infra";
+const PAGE_SOURCE = { surface: "page", threadId: null } as const;
 
 function Crumbs({ route, go }: { route: Route; go(subPath: string): void }) {
   const parts: { label: string; sub: string }[] = [{ label: "Environments", sub: "" }];
@@ -45,9 +46,9 @@ export function InfraPage({ subPath }: { subPath: string }) {
               <ActivityFeed onOpenTarget={go} />
             </section>
           </div>
-        ) : route.view === "env" ? <EnvView slug={route.slug} onOpen={go} />
+        ) : route.view === "env" ? <EnvView slug={route.slug} onOpen={go} source={PAGE_SOURCE} />
           : route.view === "host" ? <HostView target={route.target} onOpen={go} />
-          : <GuestView target={route.target} onOpen={go} />}
+          : <GuestView target={route.target} onOpen={go} source={PAGE_SOURCE} />}
       </div>
     </div>
   );

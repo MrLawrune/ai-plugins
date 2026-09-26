@@ -11,7 +11,8 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { CertInfo, ConnectionDto, ConnectionSaveInput, EnvKind, EnvSaveInput, InfraEnvRow } from "../schemas.ts";
+import type { CapabilitySummary, CertInfo, ConnectionDto, ConnectionSaveInput, EnvKind, EnvSaveInput, InfraEnvRow } from "../schemas.ts";
+import { capabilityText } from "./actions-model.ts";
 import { EnvBadge, HealthBadge } from "./badges.tsx";
 import { KIND_DEFAULT_COLORS, slugify } from "./format.ts";
 import { DEFAULT_POLL_SECONDS } from "../shared/constants.ts";
@@ -68,7 +69,7 @@ export function SettingsSection() {
             >
               <span className="min-w-0">
                 <span className="block truncate text-sm font-medium">{c.label}</span>
-                <span className="block truncate text-xs text-muted-foreground">{c.baseUrl} · {c.authKind === "token" ? "API token" : "password"} · TLS {c.tlsMode}{c.hasSecret ? "" : " · no credential"}</span>
+                <span className="block truncate text-xs text-muted-foreground">{c.baseUrl} · {c.authKind === "token" ? "API token" : "password"} · TLS {c.tlsMode}{c.hasSecret ? "" : " · no credential"}{c.actionAuthKind ? ` · actions via ${c.actionUsername}` : ""}</span>
               </span>
               {c.health ? <HealthBadge code={c.health.code} staleSince={c.health.staleSince} now={now} /> : null}
             </button>
@@ -85,24 +86,37 @@ export function SettingsSection() {
 
 function SetupHelp() {
   return (
-    <details className="rounded-lg border p-3 text-sm">
-      <summary className="cursor-pointer font-medium">Create a read-only Proxmox token</summary>
-      <p className="mt-2 text-muted-foreground">Run on each standalone host (or once per cluster). The plugin only reads; whatever the role allows is what you see.</p>
-      <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 text-xs">{[
-        'pveum user add bb-view@pve --comment "BB Infra (read-only)"',
-        "pveum aclmod / -user bb-view@pve -role PVEAuditor",
-        "pveum user token add bb-view@pve infra --privsep 0",
-      ].join("\n")}</pre>
-      <p className="mt-2 text-muted-foreground">Then add a connection with username <code>bb-view@pve!infra</code> and the token's secret value.</p>
-    </details>
+    <>
+      <details className="rounded-lg border p-3 text-sm">
+        <summary className="cursor-pointer font-medium">Create a read-only Proxmox token</summary>
+        <p className="mt-2 text-muted-foreground">Run on each standalone host (or once per cluster). The plugin only reads; whatever the role allows is what you see.</p>
+        <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 text-xs">{[
+          'pveum user add bb-view@pve --comment "BB Infra (read-only)"',
+          "pveum aclmod / -user bb-view@pve -role PVEAuditor",
+          "pveum user token add bb-view@pve infra --privsep 0",
+        ].join("\n")}</pre>
+        <p className="mt-2 text-muted-foreground">Then add a connection with username <code>bb-view@pve!infra</code> and the token's secret value.</p>
+      </details>
+      <details className="rounded-lg border p-3 text-sm">
+        <summary className="cursor-pointer font-medium">Create a token for actions (optional)</summary>
+        <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 text-xs">{[
+          'pveum role add BBOperator -privs "VM.PowerMgmt VM.Snapshot VM.Snapshot.Rollback VM.Config.Options"',
+          'pveum user add bb-ops@pve --comment "BB Infra (actions)"',
+          "pveum aclmod / -user bb-ops@pve -role PVEAuditor",
+          "pveum aclmod /vms -user bb-ops@pve -role BBOperator",
+          "pveum user token add bb-ops@pve actions --privsep 0",
+        ].join("\n")}</pre>
+        <p className="mt-2 text-muted-foreground">Add it under "Separate credential for actions" as <code>bb-ops@pve!actions</code>, then turn on "Allow actions" for the environment.</p>
+      </details>
+    </>
   );
 }
 
 function EnvDialog({ env, onClose }: { env: InfraEnvRow | null; onClose(): void }) {
   const call = useInfraRpc();
   const [form, setForm] = useState<EnvSaveInput>(() => env
-    ? { id: env.id, slug: env.slug, name: env.name, kind: env.kind, color: env.color, pollSeconds: env.pollSeconds, rules: env.rules, exportDir: env.exportDir, ipRefreshMinutes: env.ipRefreshMinutes, conventionsPath: env.conventionsPath }
-    : { slug: "", name: "", kind: "lab", color: KIND_DEFAULT_COLORS.lab, pollSeconds: DEFAULT_POLL_SECONDS.lab, rules: "", exportDir: "", ipRefreshMinutes: 5, conventionsPath: "" });
+    ? { id: env.id, slug: env.slug, name: env.name, kind: env.kind, color: env.color, pollSeconds: env.pollSeconds, rules: env.rules, exportDir: env.exportDir, ipRefreshMinutes: env.ipRefreshMinutes, conventionsPath: env.conventionsPath, actionsEnabled: env.actionsEnabled }
+    : { slug: "", name: "", kind: "lab", color: KIND_DEFAULT_COLORS.lab, pollSeconds: DEFAULT_POLL_SECONDS.lab, rules: "", exportDir: "", ipRefreshMinutes: 5, conventionsPath: "", actionsEnabled: false });
   const [slugTouched, setSlugTouched] = useState(!!env);
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -173,6 +187,14 @@ function EnvDialog({ env, onClose }: { env: InfraEnvRow | null; onClose(): void 
           <Field label="Export folder (optional)" hint="Writes <slug>-registry.md and <slug>-rules.md here on every change, e.g. a notes vault folder.">
             <Input value={form.exportDir} onChange={(e) => set("exportDir", e.target.value)} placeholder="/home/me/notes/Infra" />
           </Field>
+          <label className="flex items-start gap-2 text-sm">
+            <Switch checked={form.actionsEnabled ?? false} onCheckedChange={(v) => set("actionsEnabled", v)} />
+            <span>
+              Allow actions
+              <span className="block text-xs text-muted-foreground">Lets you start, stop, snapshot, and protect guests from BB. Agents never get this; they keep using their own tools.</span>
+              {form.kind === "prod" && form.actionsEnabled ? <span className="block text-xs text-amber-600 dark:text-amber-400">Production: every action asks you to type the guest's name.</span> : null}
+            </span>
+          </label>
         </div>
         <DialogFooter className="gap-2 sm:justify-between">
           {env ? <Button variant="ghost" className="text-destructive" onClick={() => setConfirmDelete(true)}>Delete</Button> : <span />}
@@ -201,9 +223,12 @@ function EnvDialog({ env, onClose }: { env: InfraEnvRow | null; onClose(): void 
 function ConnectionDialog({ env, conn, onClose }: { env: InfraEnvRow; conn: ConnectionDto | null; onClose(): void }) {
   const call = useInfraRpc();
   const [form, setForm] = useState<ConnectionSaveInput>(() => conn
-    ? { id: conn.id, envId: env.id, label: conn.label, baseUrl: conn.baseUrl, authKind: conn.authKind, username: conn.username, tlsMode: conn.tlsMode, tlsFingerprint: conn.tlsFingerprint, enabled: conn.enabled, webUrl: conn.webUrl }
-    : { envId: env.id, label: "", baseUrl: "https://", authKind: "token", username: "bb-view@pve!infra", tlsMode: "pinned", tlsFingerprint: "", enabled: true });
+    ? { id: conn.id, envId: env.id, label: conn.label, baseUrl: conn.baseUrl, authKind: conn.authKind, username: conn.username, tlsMode: conn.tlsMode, tlsFingerprint: conn.tlsFingerprint, enabled: conn.enabled, webUrl: conn.webUrl, actionAuthKind: conn.actionAuthKind, actionUsername: conn.actionUsername }
+    : { envId: env.id, label: "", baseUrl: "https://", authKind: "token", username: "bb-view@pve!infra", tlsMode: "pinned", tlsFingerprint: "", enabled: true, actionAuthKind: "", actionUsername: "" });
   const [secret, setSecret] = useState("");
+  const [actionOpen, setActionOpen] = useState(!!conn?.actionAuthKind);
+  const [actionSecret, setActionSecret] = useState("");
+  const [caps, setCaps] = useState<CapabilitySummary[] | null>(null);
   const [caPem, setCaPem] = useState("");
   const [cert, setCert] = useState<CertInfo | null>(null);
   const [busy, setBusy] = useState(false);
@@ -218,9 +243,10 @@ function ConnectionDialog({ env, conn, onClose }: { env: InfraEnvRow; conn: Conn
   const save = async (): Promise<string | null> => {
     setBusy(true);
     try {
-      const r = await call("connectionSave", { ...form, ...(secret ? { secret } : {}), ...(caPem.trim() ? { caPem } : {}) });
+      const r = await call("connectionSave", { ...form, ...(secret ? { secret } : {}), ...(actionSecret ? { actionSecret } : {}), ...(caPem.trim() ? { caPem } : {}) });
       setForm((f) => ({ ...f, id: r.connection.id }));
       setSecret("");
+      setActionSecret("");
       return r.connection.id;
     } catch (e) {
       toast.error(errorText(e));
@@ -234,7 +260,9 @@ function ConnectionDialog({ env, conn, onClose }: { env: InfraEnvRow; conn: Conn
     if (!id) return;
     setTest("Testing…");
     const r = await call("connectionTest", { id });
-    setTest(r.health?.code === "ok" ? `Connected · Proxmox VE ${r.version ?? "?"}` : `${r.health?.code ?? "not tested"}${r.health?.message ? `: ${r.health.message}` : ""}`);
+    const cap = await call("connectionCapabilities", { id });
+    setCaps(cap.capabilities);
+    setTest(`${r.health?.code === "ok" ? `Connected · Proxmox VE ${r.version ?? "?"}` : `${r.health?.code ?? "not tested"}${r.health?.message ? `: ${r.health.message}` : ""}`}${cap.error ? ` · capabilities: ${cap.error}` : ""}`);
   };
   const remove = async () => {
     if (!form.id) return;
@@ -299,6 +327,26 @@ function ConnectionDialog({ env, conn, onClose }: { env: InfraEnvRow; conn: Conn
             </Field>
           ) : null}
           {form.tlsMode === "insecure" ? <p className="text-xs text-amber-600 dark:text-amber-400">Anyone on the network path could impersonate this host and receive the credential.</p> : null}
+          <div className="space-y-2 rounded-md border p-2">
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={actionOpen} onCheckedChange={(v) => { setActionOpen(v); set("actionAuthKind", v ? "token" : ""); }} />
+              Separate credential for actions (optional)
+            </label>
+            <p className="text-xs text-muted-foreground">Without one, actions use the credential above if its role allows them. With one, polling keeps the credential above and only actions use this.</p>
+            {actionOpen ? (
+              <div className="grid gap-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Select value={form.actionAuthKind || "token"} onValueChange={(v) => set("actionAuthKind", v as "token" | "password")}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectItem value="token">API token</SelectItem><SelectItem value="password">Username and password</SelectItem></SelectContent>
+                  </Select>
+                  <Input value={form.actionUsername ?? ""} onChange={(e) => set("actionUsername", e.target.value)} placeholder={form.actionAuthKind === "password" ? "ops@pve" : "bb-ops@pve!actions"} />
+                </div>
+                <Input type="password" autoComplete="off" value={actionSecret} onChange={(e) => setActionSecret(e.target.value)} placeholder={conn?.hasActionSecret && !actionSecret ? "•••••••• saved — type to replace" : "Secret"} />
+              </div>
+            ) : null}
+          </div>
+          {caps ? <p className="whitespace-pre-line text-xs">{caps.map(capabilityText).join("\n")}</p> : null}
           <label className="flex items-center gap-2 text-sm"><Switch checked={form.enabled} onCheckedChange={(v) => set("enabled", v)} /> Poll this connection</label>
           {test ? <p className="text-xs">{test}</p> : null}
         </div>

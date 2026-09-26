@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canSubmit, menuActions, primaryAction, progressText } from "./actions-model.ts";
+import { canSubmit, capabilityText, menuActions, primaryAction, progressText } from "./actions-model.ts";
 import type { ActionDto } from "../schemas.ts";
 
 const row = (over: Partial<ActionDto>): ActionDto => ({
@@ -35,4 +35,9 @@ test("progress text for each outcome", () => {
   assert.deepEqual(progressText(row({ status: "unknown", endedAt: null })), { tone: "loading", text: "Stopping proxy… (waiting for Proxmox)" });
   assert.equal(progressText(row({ status: "unknown", endedAt: 5 })).tone, "warning");
   assert.deepEqual(progressText(row({ action: "snapshot.create", params: { snapname: "pre" }, status: "ok" })), { tone: "success", text: "Took snapshot pre of proxy" });
+});
+
+test("capability text names the credential and marks each privilege", () => {
+  assert.equal(capabilityText({ credential: "main", power: true, snapshots: false, rollback: false, protection: true }), "Main credential: Power ✓ · Snapshots ✗ · Rollback ✗ · Protection ✓");
+  assert.equal(capabilityText({ credential: "action", power: true, snapshots: true, rollback: true, protection: true }), "Action credential: Power ✓ · Snapshots ✓ · Rollback ✓ · Protection ✓");
 });

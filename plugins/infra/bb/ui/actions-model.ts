@@ -1,5 +1,5 @@
 // Pure presentation logic for guest actions (labels, menus, confirmation gating, progress text).
-import type { ActionDto, ActionKind, Confirm, GuestState, RunState } from "../schemas.ts";
+import type { ActionDto, ActionKind, CapabilitySummary, Confirm, GuestState, RunState } from "../schemas.ts";
 
 type GuestType = GuestState["type"];
 
@@ -42,4 +42,9 @@ export function progressText(a: ActionDto): { tone: "loading" | "success" | "err
   if (a.status === "aborted") return { tone: "warning", text: `${NOUN[a.action]} stopped on ${who}` };
   if (a.status === "unknown") return { tone: "warning", text: `${NOUN[a.action]} on ${who}: outcome unknown; check Proxmox tasks` };
   return { tone: "error", text: `${NOUN[a.action]} failed on ${who}: ${a.exitstatus ?? a.error?.split("\n").at(-1) ?? "error"}` };
+}
+
+export function capabilityText(c: CapabilitySummary): string {
+  const marks = ([["Power", c.power], ["Snapshots", c.snapshots], ["Rollback", c.rollback], ["Protection", c.protection]] as const).map(([k, v]) => `${k} ${v ? "✓" : "✗"}`);
+  return `${c.credential === "main" ? "Main" : "Action"} credential: ${marks.join(" · ")}`;
 }

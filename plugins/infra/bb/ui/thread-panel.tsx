@@ -104,9 +104,9 @@ export function ThreadInfraPanel({ threadId, params }: { threadId: string; param
             <Overview onOpen={open} compact />
           </section>
         </div>
-      ) : parsed.vmid !== undefined ? <GuestView target={current!} onOpen={open} compact />
+      ) : parsed.vmid !== undefined ? <GuestView target={current!} onOpen={open} source={{ surface: "thread-panel", threadId }} compact />
         : parsed.node !== undefined ? <HostView target={current!} onOpen={open} compact />
-        : <EnvView slug={parsed.env} onOpen={open} compact />}
+        : <EnvView slug={parsed.env} onOpen={open} source={{ surface: "thread-panel", threadId }} compact />}
     </div>
   );
 }

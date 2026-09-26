@@ -1,16 +1,17 @@
 // Agent activity and inventory changes, newest first.
 import { ThreadTitle, useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { cn } from "@/lib/utils";
-import type { ActivityDto, ChangeDto } from "../schemas.ts";
+import type { ActionDto, ActivityDto, ChangeDto } from "../schemas.ts";
+import { progressText } from "./actions-model.ts";
 import { age } from "./format.ts";
 import { useInfraQuery, useNow } from "./hooks.ts";
 
-type Row = { kind: "cmd"; at: number; a: ActivityDto; more: number } | { kind: "change"; at: number; c: ChangeDto };
+type Row = { kind: "cmd"; at: number; a: ActivityDto; more: number } | { kind: "change"; at: number; c: ChangeDto } | { kind: "action"; at: number; x: ActionDto };
 
 const CHANGE_TEXT: Record<ChangeDto["kind"], string> = { "guest.added": "created", "guest.removed": "removed", "guest.state": "changed state", "host.state": "host changed state" };
 
 /** One row per command run: started+completed collapse, and a run touching a host and its guest shows the most specific target. */
-function rowsOf(items: ActivityDto[], changes: ChangeDto[]): Row[] {
+function rowsOf(items: ActivityDto[], changes: ChangeDto[], actions: ActionDto[]): Row[] {
   const runs = new Map<string, { a: ActivityDto; targets: string[] }>();
   for (const a of items) {
     const key = `${a.threadId}|${a.itemId}`;
@@ -23,15 +24,15 @@ function rowsOf(items: ActivityDto[], changes: ChangeDto[]): Row[] {
     const deepest = [...targets].sort((x, y) => y.split("/").length - x.split("/").length)[0]!;
     return { kind: "cmd", at: a.at, a: { ...a, target: deepest }, more: targets.filter((t) => t !== deepest && !deepest.startsWith(t + "/")).length };
   });
-  return [...cmds, ...changes.map((c): Row => ({ kind: "change", at: c.at, c }))].sort((x, y) => y.at - x.at);
+  return [...cmds, ...changes.map((c): Row => ({ kind: "change", at: c.at, c })), ...actions.map((x): Row => ({ kind: "action", at: x.requestedAt, x }))].sort((x, y) => y.at - x.at);
 }
 
-export function ActivityList({ items, changes, onOpenTarget, compact, showTarget = true }: {
-  items: ActivityDto[]; changes: ChangeDto[]; onOpenTarget?(target: string): void; compact?: boolean; showTarget?: boolean;
+export function ActivityList({ items, changes, actions = [], onOpenTarget, compact, showTarget = true }: {
+  items: ActivityDto[]; changes: ChangeDto[]; actions?: ActionDto[]; onOpenTarget?(target: string): void; compact?: boolean; showTarget?: boolean;
 }) {
   const nav = useBbNavigate();
   const now = useNow();
-  const rows = rowsOf(items, changes);
+  const rows = rowsOf(items, changes, actions);
   if (!rows.length) return <p className="py-6 text-center text-sm text-muted-foreground">No agent activity recorded yet. Commands agents run against these hosts (ssh, pct, qm, pvesh) show up here.</p>;
   return (
     <ul className="divide-y">
@@ -48,6 +49,14 @@ export function ActivityList({ items, changes, onOpenTarget, compact, showTarget
                 </div>
                 <code className="block truncate text-xs text-muted-foreground" title={r.a.command}>$ {r.a.command}</code>
               </>
+            ) : r.kind === "action" ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2">
+                <span className="font-medium">You</span>
+                <span>{progressText(r.x).text}</span>
+                {showTarget ? <button type="button" className="font-mono text-xs text-muted-foreground hover:underline" onClick={() => onOpenTarget?.(r.x.target)}>{r.x.target}</button> : null}
+                <span className="text-xs text-muted-foreground">from {r.x.sourceSurface === "thread-panel" ? "the thread panel" : "the Infra page"}</span>
+                {r.x.sourceThreadId ? <button type="button" className="text-xs text-muted-foreground hover:underline" onClick={() => nav.toThread(r.x.sourceThreadId!)}><ThreadTitle threadId={r.x.sourceThreadId} /></button> : null}
+              </div>
             ) : (
               <div className="flex min-w-0 flex-wrap items-center gap-x-2">
                 <button type="button" className="font-mono text-xs hover:underline" onClick={() => onOpenTarget?.(r.c.target)}>{r.c.target}</button>
@@ -63,7 +72,7 @@ export function ActivityList({ items, changes, onOpenTarget, compact, showTarget
 }
 
 export function ActivityFeed({ envSlug, target, onOpenTarget, compact }: { envSlug?: string; target?: string; onOpenTarget?(target: string): void; compact?: boolean }) {
-  const q = useInfraQuery("activity", { envSlug, target, limit: 100 }, { refreshOn: ["infra:activity", "infra:events"] });
+  const q = useInfraQuery("activity", { envSlug, target, limit: 100 }, { refreshOn: ["infra:activity", "infra:events", "infra:task"] });
   if (q.error) return <p className="text-sm text-destructive">{q.error}</p>;
-  return <ActivityList items={q.data?.items ?? []} changes={q.data?.changes ?? []} onOpenTarget={onOpenTarget} compact={compact} />;
+  return <ActivityList items={q.data?.items ?? []} changes={q.data?.changes ?? []} actions={q.data?.actions ?? []} onOpenTarget={onOpenTarget} compact={compact} />;
 }

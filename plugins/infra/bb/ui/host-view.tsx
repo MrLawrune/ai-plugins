@@ -95,7 +95,7 @@ export function HostView({ target, onOpen, compact }: { target: string; onOpen(t
           <TabsTrigger value="tasks">Tasks</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
-        <TabsContent value="guests" className="pt-3"><GuestTable guests={guests} onOpen={(t) => onOpen(`${slug}/${t}`)} compact={compact} /></TabsContent>
+        <TabsContent value="guests" className="pt-3"><GuestTable slug={slug} guests={guests} onOpen={(t) => onOpen(`${slug}/${t}`)} compact={compact} /></TabsContent>
         <TabsContent value="metrics" className="pt-3"><MetricsPanel target={target} range={range} onRange={setRange} compact={compact} /></TabsContent>
         <TabsContent value="storage" className="pt-3"><StorageTable pools={detail.storage} compact={compact} /></TabsContent>
         <TabsContent value="tasks" className="pt-3"><TaskList tasks={q.data.tasks} /></TabsContent>

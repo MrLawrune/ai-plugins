@@ -2,11 +2,13 @@
 import { useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { EnvViewDto, HostState } from "../schemas.ts";
+import type { ActionSource, EnvViewDto, HostState } from "../schemas.ts";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { EnvBadge, HealthBadge, StateDot, UsageBar } from "./badges.tsx";
+import { EnvBadge, HealthBadge, ProtectedBadge, StateDot, UsageBar } from "./badges.tsx";
 import { age, bytes, pct } from "./format.ts";
+import { GuestActions } from "./guest-actions.tsx";
 import { useInfraQuery, useNow } from "./hooks.ts";
+import { InfraIcon } from "./icons.tsx";
 import { ActivityList } from "./activity-feed.tsx";
 
 type Guest = EnvViewDto["guests"][number];
@@ -41,7 +43,9 @@ function sortGuests(guests: Guest[], key: SortKey): Guest[] {
   });
 }
 
-export function GuestTable({ guests, onOpen, compact }: { guests: Guest[]; onOpen(target: string, g: Guest): void; compact?: boolean }) {
+export function GuestTable({ slug, guests, onOpen, actionsEnabled = false, source, compact }: {
+  slug: string; guests: Guest[]; onOpen(target: string, g: Guest): void; actionsEnabled?: boolean; source?: ActionSource; compact?: boolean;
+}) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("vmid");
   const shown = useMemo(() => {
@@ -59,23 +63,24 @@ export function GuestTable({ guests, onOpen, compact }: { guests: Guest[]; onOpe
       <div className="overflow-x-auto rounded-lg border">
         <table className="w-full whitespace-nowrap text-sm">
           <thead className="bg-muted/50 text-xs text-muted-foreground">
-            <tr>{th("vmid", "ID")}{th("name", "Name")}{compact ? null : <th className="px-2 py-1.5 text-left font-medium">Host</th>}{th("state", "State")}<th className="px-2 py-1.5 text-left font-medium">IP</th>{compact ? null : th("cpu", "CPU", "text-right")}{compact ? null : th("mem", "Mem", "text-right")}</tr>
+            <tr>{th("vmid", "ID")}{th("name", "Name")}{compact ? null : <th className="px-2 py-1.5 text-left font-medium">Host</th>}{th("state", "State")}<th className="px-2 py-1.5 text-left font-medium">IP</th>{compact ? null : th("cpu", "CPU", "text-right")}{compact ? null : th("mem", "Mem", "text-right")}<th /></tr>
           </thead>
           <tbody className="divide-y">
             {shown.map((g) => (
               <tr key={`${g.node}/${g.vmid}`} className="cursor-pointer hover:bg-state-hover" onClick={() => onOpen(`${g.node}/${g.vmid}`, g)}>
                 <td className="px-2 py-1.5 tabular-nums text-muted-foreground">{g.vmid}</td>
                 <td className="max-w-[16rem] truncate px-2 py-1.5 font-medium">
-                  <span className="inline-flex items-center gap-2">{g.name}<span className="text-xs font-normal text-muted-foreground">{g.type === "qemu" ? "VM" : "CT"}</span>{g.active ? <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400" title="An agent touched this recently">● agent</span> : null}</span>
+                  <span className="inline-flex items-center gap-2">{g.name}<span className="text-xs font-normal text-muted-foreground">{g.type === "qemu" ? "VM" : "CT"}</span>{g.protected ? <ProtectedBadge compact /> : null}{g.action ? <InfraIcon name="spinner" className="size-3.5 animate-spin text-muted-foreground" /> : null}{g.active ? <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400" title="An agent touched this recently">● agent</span> : null}</span>
                 </td>
                 {compact ? null : <td className="px-2 py-1.5 text-muted-foreground">{g.node}</td>}
                 <td className="px-2 py-1.5"><span className="inline-flex items-center gap-1.5"><StateDot state={g.state} active={g.active} />{g.state}</span></td>
                 <td className="px-2 py-1.5 font-mono text-xs text-muted-foreground" title={g.ips.join("\n") || undefined}>{g.ips[0] ?? "—"}{g.ips.length > 1 ? <span className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px]">+{g.ips.length - 1}</span> : null}</td>
                 {compact ? null : <td className="px-2 py-1.5 text-right tabular-nums">{g.state === "running" ? `${(g.cpu * 100).toFixed(g.cpu < 0.1 ? 1 : 0)}%` : "—"}</td>}
                 {compact ? null : <td className="px-2 py-1.5 text-right tabular-nums">{g.state === "running" ? `${bytes(g.mem)}` : "—"}</td>}
+                <td className="px-1 py-1 text-right">{actionsEnabled && source && !g.template ? <GuestActions target={`${slug}/${g.node}/${g.vmid}`} guest={g} source={source} variant="row" /> : null}</td>
               </tr>
             ))}
-            {!shown.length ? <tr><td colSpan={7} className="px-2 py-6 text-center text-muted-foreground">No matching guests</td></tr> : null}
+            {!shown.length ? <tr><td colSpan={8} className="px-2 py-6 text-center text-muted-foreground">No matching guests</td></tr> : null}
           </tbody>
         </table>
       </div>
@@ -83,8 +88,8 @@ export function GuestTable({ guests, onOpen, compact }: { guests: Guest[]; onOpe
   );
 }
 
-export function EnvView({ slug, onOpen, compact }: { slug: string; onOpen(target: string): void; compact?: boolean }) {
-  const q = useInfraQuery("env", { slug }, { refreshOn: ["infra:changed", "infra:activity"] });
+export function EnvView({ slug, onOpen, source, compact }: { slug: string; onOpen(target: string): void; source: ActionSource; compact?: boolean }) {
+  const q = useInfraQuery("env", { slug }, { refreshOn: ["infra:changed", "infra:activity", "infra:task"] });
   const now = useNow();
   if (q.error && !q.data) return <p className="text-sm text-destructive">{q.error}</p>;
   if (!q.data) return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -105,7 +110,7 @@ export function EnvView({ slug, onOpen, compact }: { slug: string; onOpen(target
       </section>
       <section className="space-y-2">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Guests</h3>
-        <GuestTable guests={v.guests} onOpen={(t) => onOpen(`${slug}/${t}`)} compact={compact} />
+        <GuestTable slug={slug} guests={v.guests} onOpen={(t) => onOpen(`${slug}/${t}`)} actionsEnabled={v.actionsEnabled} source={source} compact={compact} />
       </section>
       {!compact ? (
         <section className="space-y-2">

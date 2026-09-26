@@ -3,24 +3,25 @@ import { useState } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { MetricRange } from "../schemas.ts";
+import type { ActionDto, ActionSource, MetricRange } from "../schemas.ts";
 import { ActivityList } from "./activity-feed.tsx";
 import { AskAgentMenu } from "./ask-agent.tsx";
-import { Chip, EnvBadge, StateDot, UsageBar } from "./badges.tsx";
+import { Chip, EnvBadge, ProtectedBadge, StateDot, UsageBar } from "./badges.tsx";
 import { age, bytes } from "./format.ts";
+import { ActionPill, GuestActions, useActionRunner } from "./guest-actions.tsx";
 import { useInfraQuery, useNow } from "./hooks.ts";
 import { MetricsPanel } from "./metrics-panel.tsx";
 import { configRows, DISK_KEY, networkRows, parseDisk, type NetworkRow } from "./pve-config.ts";
 import { DataTable, Empty, Head, SectionTitle, Td, Th } from "./table.tsx";
 import { TaskList } from "./tasks.tsx";
 
-function Extras({ target, tab }: { target: string; tab: "tasks" | "backups" }) {
-  const q = useInfraQuery("guestExtras", { target, tab }, { refreshOn: [] });
+function Extras({ target, tab, tracked }: { target: string; tab: "tasks" | "backups"; tracked?: ActionDto[] }) {
+  const q = useInfraQuery("guestExtras", { target, tab }, { refreshOn: tab === "tasks" ? ["infra:task"] : [] });
   const now = useNow();
   if (q.error) return <p className="text-sm text-destructive">{q.error}</p>;
   if (!q.data) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (!q.data.found) return null;
-  if (tab === "tasks") return <TaskList tasks={q.data.tasks ?? []} />;
+  if (tab === "tasks") return <TaskList tasks={q.data.tasks ?? []} target={target} tracked={tracked} />;
   const backups = q.data.backups ?? [];
   if (!backups.length) return <Empty>No backups found on this host's backup storages.</Empty>;
   return (
@@ -38,6 +39,17 @@ function Extras({ target, tab }: { target: string; tab: "tasks" | "backups" }) {
         ))}
       </tbody>
     </DataTable>
+  );
+}
+
+function SnapshotRowActions({ target, snapname, source }: { target: string; snapname: string; source: ActionSource }) {
+  const { run, dialog } = useActionRunner(source);
+  return (
+    <span className="inline-flex gap-1">
+      <Button size="sm" variant="ghost" onClick={() => void run(target, "snapshot.rollback", { snapname })}>Roll back</Button>
+      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void run(target, "snapshot.delete", { snapname })}>Delete</Button>
+      {dialog}
+    </span>
   );
 }
 
@@ -111,14 +123,15 @@ function DiskTable({ config, compact }: { config: Record<string, string>; compac
   );
 }
 
-export function GuestView({ target, onOpen, compact }: { target: string; onOpen(target: string): void; compact?: boolean }) {
-  const q = useInfraQuery("guest", { target }, { refreshOn: ["infra:changed", "infra:activity"] });
+export function GuestView({ target, onOpen, source, compact }: { target: string; onOpen(target: string): void; source: ActionSource; compact?: boolean }) {
+  const q = useInfraQuery("guest", { target }, { refreshOn: ["infra:changed", "infra:activity", "infra:task"] });
   const nav = useBbNavigate();
   const [range, setRange] = useState<MetricRange>("hour");
+  const [tab, setTab] = useState("overview");
   if (q.error && !q.data) return <p className="text-sm text-destructive">{q.error}</p>;
   if (!q.data) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (!q.data.found) return <p className="text-sm text-muted-foreground">{target} is not in the current inventory. It may have been removed.</p>;
-  const { detail, env, webUrl } = q.data;
+  const { detail, env, webUrl, actionsEnabled } = q.data;
   const g = detail.guest;
   const running = g.state === "running";
   const summary = configRows(detail.config, bytes);
@@ -134,14 +147,17 @@ export function GuestView({ target, onOpen, compact }: { target: string; onOpen(
             <span>{g.state}{running ? ` · up ${age(g.uptime * 1000)}` : ""}</span>
             {detail.os ? <span>{detail.os}</span> : null}
             {g.tags.map((t) => <span key={t} className="rounded bg-muted px-1.5 py-0.5">{t}</span>)}
+            {detail.protected ? <ProtectedBadge /> : null}
           </div>
+          {q.data.action ? <ActionPill action={q.data.action} onClick={() => setTab("tasks")} /> : null}
         </div>
         <div className="flex gap-2">
+          {actionsEnabled ? <GuestActions target={target} guest={g} source={source} variant="header" compact={compact} /> : null}
           <AskAgentMenu target={target} kind="guest" size={compact ? "icon" : "sm"} />
           <Button variant="ghost" size="sm" onClick={() => nav.openUrl(webUrl)}>{compact ? "Proxmox" : "Open in Proxmox"}</Button>
         </div>
       </div>
-      <Tabs defaultValue="overview">
+      <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="max-w-full justify-start overflow-x-auto">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="metrics">Metrics</TabsTrigger>
@@ -187,13 +203,14 @@ export function GuestView({ target, onOpen, compact }: { target: string; onOpen(
             <SectionTitle>Snapshots</SectionTitle>
             {detail.snapshots.length ? (
               <DataTable>
-                <Head><Th>Name</Th><Th>Taken</Th><Th>Description</Th></Head>
+                <Head><Th>Name</Th><Th>Taken</Th><Th>Description</Th>{actionsEnabled ? <Th /> : null}</Head>
                 <tbody className="divide-y">
                   {detail.snapshots.map((sn) => (
                     <tr key={sn.name}>
                       <Td className="font-mono text-xs font-medium">{sn.name}</Td>
                       <Td className="tabular-nums text-muted-foreground">{sn.time ? new Date(sn.time * 1000).toLocaleString() : "—"}</Td>
                       <Td className="max-w-[20rem] truncate text-muted-foreground" title={sn.description}>{sn.description}</Td>
+                      {actionsEnabled ? <Td className="text-right"><SnapshotRowActions target={target} snapname={sn.name} source={source} /></Td> : null}
                     </tr>
                   ))}
                 </tbody>
@@ -205,8 +222,8 @@ export function GuestView({ target, onOpen, compact }: { target: string; onOpen(
             <Extras target={target} tab="backups" />
           </section>
         </TabsContent>
-        <TabsContent value="tasks" className="pt-3"><Extras target={target} tab="tasks" /></TabsContent>
-        <TabsContent value="activity" className="pt-3"><ActivityList items={q.data.activity} changes={q.data.changes} onOpenTarget={onOpen} compact={compact} showTarget={false} /></TabsContent>
+        <TabsContent value="tasks" className="pt-3"><Extras target={target} tab="tasks" tracked={q.data.tracked} /></TabsContent>
+        <TabsContent value="activity" className="pt-3"><ActivityList items={q.data.activity} changes={q.data.changes} actions={q.data.tracked} onOpenTarget={onOpen} compact={compact} showTarget={false} /></TabsContent>
       </Tabs>
     </div>
   );
