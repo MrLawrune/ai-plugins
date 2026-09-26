@@ -76,6 +76,12 @@ test("facts combine state, protection, and snapshot names (without 'current')", 
   assert.deepEqual(await new ProxmoxActions(client, client, "main").facts(ct, sig), { state: "running", protected: true, snapshots: ["pre"] });
 });
 
+test("facts report a VM paused in RAM (status running, qmpstatus paused) as paused", async () => {
+  const { client } = recorder((c) => c.path.endsWith("/status/current") ? { status: "running", qmpstatus: "paused" }
+    : c.path.endsWith("/config") ? {} : []);
+  assert.equal((await new ProxmoxActions(client, client, "main").facts(vm, sig)).state, "paused");
+});
+
 test("task status, log, and abort address the node's task by encoded UPID", async () => {
   const upid = "UPID:pve1:0000ABCD:00001234:66F00000:vzstop:201:u@pve!t:";
   const { client, calls } = recorder((c) => c.path.endsWith("/status") ? { status: "stopped", exitstatus: "OK" } : c.path.endsWith("/log") ? [{ n: 1, t: "stopping" }, { n: 2, t: "TASK OK" }] : null);

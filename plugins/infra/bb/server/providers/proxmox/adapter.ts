@@ -3,7 +3,7 @@ import type {
   BackupEntry, GuestDetail, GuestRef, GuestState, HostDetail, HostState, InfraProvider, Inventory,
   MetricRange, MetricSeries, NetIf, RunState, Snapshot, StoragePool, TargetRef, TaskEntry,
 } from "../types.ts";
-import { isWriteClient, ProxmoxActions, type GetClient, type WriteClient } from "./actions.ts";
+import { isWriteClient, liveStatus, ProxmoxActions, type GetClient, type WriteClient } from "./actions.ts";
 import { guestPath, hostPath } from "./paths.ts";
 
 export type { GetClient, WriteClient } from "./actions.ts";
@@ -206,7 +206,7 @@ export class ProxmoxProvider implements InfraProvider {
         agent = "unavailable";
       }
     }
-    const guest = mapGuest({ ...status, tags: config.tags ?? status.tags, template: config.template ?? status.template }, ref.node, ref.type);
+    const guest = mapGuest({ ...status, status: liveStatus(status), tags: config.tags ?? status.tags, template: config.template ?? status.template }, ref.node, ref.type);
     const cfg: Record<string, string> = {};
     for (const [k, v] of Object.entries(config)) if (!CONFIG_NOISE.has(k) && (typeof v === "string" || typeof v === "number")) cfg[k] = String(v);
     const snapshots: Snapshot[] = snaps

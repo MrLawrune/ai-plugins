@@ -73,6 +73,17 @@ test("VM detail reads interfaces from the guest agent and lists snapshots", asyn
   assert.equal(d.snapshots[0]!.time, 1700000000);
 });
 
+test("VM detail reports a paused VM (qmpstatus paused) as paused", async () => {
+  const p = new ProxmoxProvider({
+    async get<T>(path: string, q?: Record<string, string | number>): Promise<T> {
+      if (path.endsWith("/status/current")) return { ...(await fake.get<object>(path, q)), status: "running", qmpstatus: "paused" } as T;
+      return fake.get<T>(path, q);
+    },
+  }, "https://x:8006");
+  const d = await p.guestDetail({ kind: "guest", node: "pve1", vmid: 101, type: "qemu" }, sig);
+  assert.equal(d.guest.state, "paused");
+});
+
 test("guest agent failure yields agent unavailable and no interfaces", async () => {
   const p = new ProxmoxProvider({
     async get<T>(path: string, q?: Record<string, string | number>): Promise<T> {

@@ -21,6 +21,9 @@ const POWER: Partial<Record<ActionKind, string>> = { start: "start", shutdown: "
 const STATES: ReadonlySet<string> = new Set(["running", "stopped", "paused"]);
 const str = (v: unknown) => (typeof v === "string" ? v : typeof v === "number" ? String(v) : "");
 const task = (upid: string): ActionResult => ({ kind: "task", upid });
+const PAUSED_QMP: ReadonlySet<string> = new Set(["paused", "suspended"]);
+/** A VM paused in RAM reports `status: "running"`; the pause shows only in `qmpstatus` on status/current. */
+export const liveStatus = (current: Raw): string => (PAUSED_QMP.has(str(current.qmpstatus)) ? "paused" : str(current.status));
 
 export class ProxmoxActions implements ProviderActions {
   private readonly reader: GetClient;
@@ -54,7 +57,7 @@ export class ProxmoxActions implements ProviderActions {
       this.reader.get<Raw>(`${base}/config`, undefined, signal),
       this.reader.get<Raw[]>(`${base}/snapshot`, undefined, signal).catch(() => [] as Raw[]),
     ]);
-    const s = str(status.status);
+    const s = liveStatus(status);
     return {
       state: (STATES.has(s) ? s : "unknown") as RunState,
       protected: str(config.protection) === "1",
