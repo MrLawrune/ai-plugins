@@ -1,4 +1,6 @@
 // Provider-neutral infrastructure model. Proxmox is the first InfraProvider.
+import type { ActionKind, ActionParams } from "../../shared/actions.ts";
+
 export type GuestType = "lxc" | "qemu";
 export type RunState = "running" | "stopped" | "paused" | "unknown";
 export type HealthCode = "ok" | "auth-failed" | "unreachable" | "tls-mismatch" | "degraded" | "disabled";
@@ -10,7 +12,7 @@ export interface StoragePool { node: string; storage: string; type: string; cont
 export interface Inventory { hosts: HostState[]; guests: GuestState[]; storage: StoragePool[] }
 export interface NetIf { name: string; mac: string | null; ipv4: string[]; ipv6: string[] }
 export interface Snapshot { name: string; description: string; time: number | null; parent: string | null }
-export interface GuestDetail { guest: GuestState; hostname: string | null; os: string | null; interfaces: NetIf[]; config: Record<string, string>; notes: string; snapshots: Snapshot[]; agent: "ok" | "unavailable" | "n/a" }
+export interface GuestDetail { guest: GuestState; hostname: string | null; os: string | null; interfaces: NetIf[]; config: Record<string, string>; notes: string; snapshots: Snapshot[]; agent: "ok" | "unavailable" | "n/a"; protected: boolean }
 export interface HostDetail { host: HostState; pveVersion: string | null; kernel: string | null; cpuModel: string | null; loadavg: [number, number, number] | null; storage: StoragePool[] }
 export type MetricRange = "hour" | "day" | "week";
 export interface MetricPoint { t: number; cpu: number | null; mem: number | null; maxmem: number | null; netin: number | null; netout: number | null; diskread: number | null; diskwrite: number | null }
@@ -30,4 +32,20 @@ export interface InfraProvider {
   backups(ref: GuestRef, signal: AbortSignal): Promise<BackupEntry[]>;
   webUrl(target: TargetRef | null): string;
   version(signal: AbortSignal): Promise<string | null>;
+  readonly actions?: ProviderActions;
+}
+
+export interface GuestFacts { state: RunState; protected: boolean; snapshots: string[] }
+export type ActionResult = { kind: "task"; upid: string } | { kind: "done" };
+export interface TaskStatus { running: boolean; exitstatus: string | null }
+export type CredentialKind = "main" | "action";
+export interface ProviderActions {
+  readonly credential: CredentialKind;
+  privileges(ref: GuestRef, signal: AbortSignal): Promise<Set<string>>;
+  capabilities(signal: AbortSignal): Promise<{ credential: CredentialKind; privileges: Set<string> }[]>;
+  facts(ref: GuestRef, signal: AbortSignal): Promise<GuestFacts>;
+  run(action: ActionKind, ref: GuestRef, params: ActionParams, signal: AbortSignal): Promise<ActionResult>;
+  taskStatus(node: string, upid: string, signal: AbortSignal): Promise<TaskStatus>;
+  taskLog(node: string, upid: string, start: number, limit: number, signal: AbortSignal): Promise<string[]>;
+  abortTask(node: string, upid: string, signal: AbortSignal): Promise<void>;
 }

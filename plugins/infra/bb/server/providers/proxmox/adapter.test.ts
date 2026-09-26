@@ -135,3 +135,9 @@ test("backups come from storages with backup content, skipping failing storages"
 test("version reads the release string", async () => {
   assert.equal(await provider.version(sig), "9.1.4");
 });
+
+test("guest detail reports protection; providers built on read-only clients have no actions", async () => {
+  const d = await provider.guestDetail({ kind: "guest", node: "pve1", vmid: 201, type: "lxc" }, sig);
+  assert.equal(d.protected, false);
+  assert.equal(provider.actions, undefined);
+});

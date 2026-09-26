@@ -37,7 +37,7 @@ test("guest card", () => {
 test("guest card with detail adds os, hostname, snapshots, and notes", () => {
   const card = guestCard(snap, "pve1", 201, {
     guest: snap.guests[0]!, hostname: "proxy", os: "debian", interfaces: [{ name: "eth0", mac: null, ipv4: ["192.0.2.201"], ipv6: [] }],
-    config: {}, notes: "Reverse proxy\n\nCaddyfile at /etc/proxy\nline3\nline4", snapshots: [{ name: "pre", description: "", time: 1, parent: null }], agent: "n/a",
+    config: {}, notes: "Reverse proxy\n\nCaddyfile at /etc/proxy\nline3\nline4", snapshots: [{ name: "pre", description: "", time: 1, parent: null }], agent: "n/a", protected: false,
   }, [], { budget: 40, ips: new Map(), now });
   assert.match(card!, /^os debian · hostname proxy$/m);
   assert.match(card!, /^snapshots pre$/m);

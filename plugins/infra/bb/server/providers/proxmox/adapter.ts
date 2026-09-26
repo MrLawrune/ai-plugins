@@ -1,12 +1,12 @@
-// Proxmox VE → provider-neutral model. Read-only: every call is a GET.
+// Proxmox VE → provider-neutral model. Reads use the polling client; actions live in ./actions.ts.
 import type {
   BackupEntry, GuestDetail, GuestRef, GuestState, HostDetail, HostState, InfraProvider, Inventory,
   MetricRange, MetricSeries, NetIf, RunState, Snapshot, StoragePool, TargetRef, TaskEntry,
 } from "../types.ts";
+import { isWriteClient, ProxmoxActions, type GetClient, type WriteClient } from "./actions.ts";
+import { guestPath, hostPath } from "./paths.ts";
 
-export interface GetClient {
-  get<T>(path: string, query?: Record<string, string | number>, signal?: AbortSignal): Promise<T>;
-}
+export type { GetClient, WriteClient } from "./actions.ts";
 
 type Raw = Record<string, unknown>;
 
@@ -138,17 +138,17 @@ function mapTask(r: Raw): TaskEntry {
   };
 }
 
-const guestPath = (ref: GuestRef) => `/nodes/${encodeURIComponent(ref.node)}/${ref.type}/${ref.vmid}`;
-const hostPath = (node: string) => `/nodes/${encodeURIComponent(node)}`;
-
 export class ProxmoxProvider implements InfraProvider {
   readonly kind = "proxmox" as const;
   private readonly client: GetClient;
   private readonly baseUrl: string;
+  readonly actions?: ProxmoxActions;
 
-  constructor(client: GetClient, baseUrl: string) {
+  constructor(client: GetClient, baseUrl: string, actionClient?: WriteClient) {
     this.client = client;
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    const writer = actionClient ?? (isWriteClient(client) ? client : null);
+    if (writer) this.actions = new ProxmoxActions(client, writer, actionClient ? "action" : "main");
   }
 
   async inventory(signal: AbortSignal): Promise<Inventory> {
@@ -221,6 +221,7 @@ export class ProxmoxProvider implements InfraProvider {
       notes: decodeNotes(config.description),
       snapshots,
       agent,
+      protected: str(config.protection) === "1",
     };
   }
 

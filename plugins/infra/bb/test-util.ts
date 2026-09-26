@@ -46,7 +46,7 @@ export function fakeProvider(script: (Inventory | Error)[], details: Record<stri
       if (!d) throw new Error("no detail");
       const last = script.filter((x): x is Inventory => !(x instanceof Error)).at(-1);
       const g = last?.guests.find((x) => x.node === ref.node && x.vmid === ref.vmid) ?? guest(ref.node, ref.vmid);
-      return { guest: structuredClone(g), hostname: null, os: null, interfaces: [], config: {}, notes: "", snapshots: [], agent: "n/a" as const, ...d };
+      return { guest: structuredClone(g), hostname: null, os: null, interfaces: [], config: {}, notes: "", snapshots: [], agent: "n/a" as const, protected: false, ...d };
     },
     async metrics(): Promise<never> { throw new Error("not scripted"); },
     async tasks() { return []; },
@@ -55,6 +55,30 @@ export function fakeProvider(script: (Inventory | Error)[], details: Record<stri
     async version() { return "9.1.4"; },
   };
   return p;
+}
+
+import type { ActionKind, ActionParams } from "./shared/actions.ts";
+import type { GuestFacts, GuestRef, ProviderActions } from "./server/providers/types.ts";
+
+/** Scripted action capability: records runs, returns a fixed UPID unless overridden. */
+export function fakeActions(over: Partial<ProviderActions> & { facts?: ProviderActions["facts"] } = {}) {
+  const calls: { action: ActionKind; ref: GuestRef; params: ActionParams }[] = [];
+  const a: ProviderActions & { calls: typeof calls } = {
+    credential: "action",
+    calls,
+    async privileges() { return new Set(["VM.Audit", "VM.PowerMgmt", "VM.Snapshot", "VM.Snapshot.Rollback", "VM.Config.Options"]); },
+    async capabilities() { return [{ credential: "action" as const, privileges: new Set(["VM.PowerMgmt"]) }]; },
+    async facts(): Promise<GuestFacts> { return { state: "running", protected: false, snapshots: ["pre"] }; },
+    async run(action, ref, params) {
+      calls.push({ action, ref, params });
+      return action === "protect" || action === "unprotect" ? { kind: "done" } : { kind: "task", upid: `UPID:${ref.node}:1:2:3:x:${ref.vmid}:u@pve!t:` };
+    },
+    async taskStatus() { return { running: true, exitstatus: null }; },
+    async taskLog() { return []; },
+    async abortTask() {},
+    ...over,
+  };
+  return a;
 }
 
 import type { EnvSnapshot } from "./server/hub.ts";
