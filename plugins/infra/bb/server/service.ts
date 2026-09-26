@@ -12,6 +12,7 @@ import type { GuestDetail, GuestRef, GuestState, HostState, InfraProvider, Metri
 import type { Secrets } from "./secrets.ts";
 import type { ActionRow, ActivityRow, ChangeRow, InfraEnvRow, PinRow, Store } from "./store.ts";
 import { parseTarget } from "./targets.ts";
+import { age } from "../shared/format.ts";
 
 export interface ServiceDeps {
   conventions?: Conventions;
@@ -127,6 +128,16 @@ export class InfraService {
     return openAction(this.d.store.listActions({ targetPrefix: target, limit: 5 }).filter((a) => a.target === target));
   }
 
+  private actionLine(target: string): string | null {
+    const a = this.runningAction(target);
+    return a ? `${a.action} ${a.status} (started ${age(this.d.now() - a.requestedAt)} ago)` : null;
+  }
+
+  auditText(target: string | null, sinceMs: number, limit: number): ActionRow[] | null {
+    if (target && !this.resolve(target)) return null;
+    return this.d.store.listActions({ targetPrefix: target ?? undefined, since: this.d.now() - sinceMs, limit, includeRejected: true });
+  }
+
   // ---- context (agents) ----
 
   envIndex(): string {
@@ -143,7 +154,7 @@ export class InfraService {
     let card: string | null;
     if (r.kind === "env") card = envCard({ ...r.snap, env: { ...r.snap.env, rules: this.rulesSync(r.snap.env) } }, { rules: o.rules, budget: o.budget, ips });
     else if (r.kind === "host") card = hostCard(r.snap, r.host.node, this.recent(r.target, 3), { budget: o.budget, now });
-    else card = guestCard(r.snap, r.guest.node, r.guest.vmid, null, this.recent(r.target, 3), { budget: o.budget, ips, now });
+    else card = guestCard(r.snap, r.guest.node, r.guest.vmid, null, this.recent(r.target, 3), { budget: o.budget, ips, now, protected: this.d.hub.protectedOf(r.target), action: this.actionLine(r.target) });
     const rules = o.rules ? this.rulesSync(r.snap.env) : "";
     if (card && r.kind !== "env" && rules) card += `\nRules (${r.snap.env.slug}):\n${rules}`;
     return card;
@@ -155,7 +166,7 @@ export class InfraService {
     const r = this.resolve(target);
     if (!r || r.kind !== "guest") return this.cardSync(target, o);
     const detail = await this.guestDetail(r).catch(() => null);
-    let card = guestCard(r.snap, r.guest.node, r.guest.vmid, detail, this.recent(r.target, 3), { budget: o.budget, ips: this.d.hub.guestIps(), now: this.d.now() });
+    let card = guestCard(r.snap, r.guest.node, r.guest.vmid, detail, this.recent(r.target, 3), { budget: o.budget, ips: this.d.hub.guestIps(), now: this.d.now(), protected: this.d.hub.protectedOf(r.target), action: this.actionLine(r.target) });
     const rules = o.rules ? this.rulesSync(r.snap.env) : "";
     if (card && rules) card += `\nRules (${r.snap.env.slug}):\n${rules}`;
     return card;

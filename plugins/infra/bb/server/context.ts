@@ -33,16 +33,17 @@ function activityLines(rows: ActivityRow[], now: number): string[] {
   return ["recent agent activity:", ...rows.slice(0, 3).map((a) => `  ${age(now - a.at)} ago ${a.threadId} $ ${a.command.slice(0, CMD_PREVIEW)}`)];
 }
 
-export function guestCard(s: EnvSnapshot, node: string, vmid: number, detail: GuestDetail | null, activity: ActivityRow[], o: { budget: number; ips: Ips; now: number }): string | null {
+export function guestCard(s: EnvSnapshot, node: string, vmid: number, detail: GuestDetail | null, activity: ActivityRow[], o: { budget: number; ips: Ips; now: number; protected?: boolean | null; action?: string | null }): string | null {
   const g = s.guests.find((x) => x.vmid === vmid && x.node.toLowerCase() === node.toLowerCase());
   if (!g) return null;
   const ipList = detail ? detail.interfaces.flatMap((i) => i.ipv4) : guestIpsOf(s, g.node, g.vmid, o.ips);
   const lines = [
-    `${s.env.slug}/${g.node}/${g.vmid} ${g.name} · ${g.type} · ${g.state}${g.state === "running" ? ` · up ${age(g.uptime * 1000)}` : ""}${g.template ? " · template" : ""}`,
+    `${s.env.slug}/${g.node}/${g.vmid} ${g.name} · ${g.type} · ${g.state}${g.state === "running" ? ` · up ${age(g.uptime * 1000)}` : ""}${g.template ? " · template" : ""}${o.protected ? " · protected" : ""}`,
     `cpu ${g.maxcpu} cores · mem ${bytes(g.mem)}/${bytes(g.maxmem)} · disk ${bytes(g.disk)}/${bytes(g.maxdisk)}`,
     `ips ${ipList.length ? ipList.join(", ") : "-"}`,
   ];
   if (g.tags.length) lines.push(`tags ${g.tags.join(", ")}`);
+  if (o.action) lines.push(`action: ${o.action}`);
   if (detail) {
     const facts = [detail.os && `os ${detail.os}`, detail.hostname && `hostname ${detail.hostname}`].filter(Boolean);
     if (facts.length) lines.push(facts.join(" · "));

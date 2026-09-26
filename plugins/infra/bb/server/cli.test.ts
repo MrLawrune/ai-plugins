@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fakeProvider, guest, host, inv, serviceHarness } from "../test-util.ts";
+import { fakeActions, fakeProvider, guest, host, inv, serviceHarness } from "../test-util.ts";
 import { createCli } from "./cli.ts";
 
 const provider = () => fakeProvider([inv([host("pve1", { ip: "192.0.2.10" })], Array.from({ length: 120 }, (_, i) => guest("pve1", 100 + i, { name: `ct${100 + i}` })))]);
@@ -16,6 +16,10 @@ async function setup() {
   });
   const run = (...argv: string[]) => cli.run(argv, {});
   return { h, run, meta };
+}
+
+function runCli(h: Awaited<ReturnType<typeof serviceHarness>>, argv: string[]) {
+  return createCli({ service: h.service, pins: h.pins, threadExists: async () => true, setThreadMetadata: async () => undefined }).run(argv, {});
 }
 
 test("envs lists one line per environment, with --json", async () => {
@@ -70,4 +74,16 @@ test("activity lists recent commands for a target", async () => {
   await h.activity.onThreadEvents("thr_a");
   const r = await run("activity", "homelab/pve1/150");
   assert.match(r.stdout!, /thr_a .*ssh pve1 'pct exec 150 -- ls'/);
+});
+
+test("audit lists human actions newest first and rejects unknown targets", async () => {
+  const h = await serviceHarness([{ slug: "homelab", actionsEnabled: true, conns: { pve1: fakeProvider([inv([host("pve1")], [guest("pve1", 201, { name: "proxy" })])], {}, fakeActions()) } }]);
+  const prep = await h.actions.prepare({ target: "homelab/pve1/201", action: "stop", params: {}, source: { surface: "page", threadId: null } });
+  assert.ok(prep.allowed);
+  await h.actions.execute({ token: prep.token });
+  const out = await runCli(h, ["audit", "homelab/pve1/201"]);
+  assert.equal(out.exitCode, 0);
+  assert.match(out.stdout!, /stop homelab\/pve1\/201 proxy · running · page/);
+  const bad = await runCli(h, ["audit", "homelab/pve1/999", "--json"]);
+  assert.notEqual(bad.exitCode, 0);
 });

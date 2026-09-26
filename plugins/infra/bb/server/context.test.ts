@@ -77,3 +77,11 @@ test("registry markdown has host and guest tables", () => {
   assert.match(md, /^\| 201 \| proxy \| lxc \| pve1 \| running \| 192\.0\.2\.201 \| edge \|$/m);
   assert.match(md, /^\| pve1 \| 192\.0\.2\.10 \| online \|/m);
 });
+
+test("guest card shows protection and a running action", () => {
+  const s = snapshotOf(envRow("lab"), [host("pve1")], [guest("pve1", 201, { name: "proxy" })]);
+  const card = guestCard(s, "pve1", 201, null, [], { budget: 60, ips: new Map(), now: 0, protected: true, action: "stop running (started 5s ago)" })!;
+  assert.match(card.split("\n")[0]!, / · protected$/);
+  assert.match(card, /^action: stop running \(started 5s ago\)$/m);
+  assert.doesNotMatch(guestCard(s, "pve1", 201, null, [], { budget: 60, ips: new Map(), now: 0 })!, /protected|action:/);
+});

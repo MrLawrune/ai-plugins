@@ -21,7 +21,7 @@ export function createCli(d: CliDeps) {
   return defineCli({
     name: "infra",
     summary: "Read-only context about infrastructure environments (Proxmox hosts, VMs, LXCs)",
-    description: "Targets: <env>, <env>/<node>, <env>/<node>/<vmid>. This command never changes infrastructure; operate through your usual tools.",
+    description: "Targets: <env>, <env>/<node>, <env>/<node>/<vmid>. This command never changes infrastructure; operate through your usual tools. Humans can run guest actions from the Infra page; `bb infra audit` shows them.",
     commands: {
       envs: cliCommand({
         summary: "One line per environment: kind, hosts up, guests running, health",
@@ -76,6 +76,22 @@ export function createCli(d: CliDeps) {
           if (options.json) return asJson({ items: rows });
           const now = Date.now();
           return ok(rows.length ? rows.map((a) => `${age(now - a.at)} ago ${a.threadId} ${a.target} $ ${a.command}`).join("\n") : "(no agent activity)");
+        },
+      }),
+      audit: cliCommand({
+        summary: "Guest actions humans ran from BB (start, stop, snapshots, protection), newest first",
+        positionals: [{ name: "target", description: "Optional <env>, <env>/<node>, or <env>/<node>/<vmid>" }],
+        options: {
+          since: { type: "duration", defaultUnit: "h", default: 86_400_000, min: 60_000, max: 90 * 86_400_000, description: "How far back (e.g. 6h, 7d; max 90d)" },
+          limit: { type: "integer", min: 1, max: 200, default: 20, description: "Maximum rows (1-200)" },
+          json,
+        },
+        run: ({ positionals, options }) => {
+          const rows = s.auditText(positionals.target ?? null, options.since, options.limit);
+          if (rows === null) throw notFound(positionals.target!);
+          if (options.json) return asJson({ actions: rows });
+          const now = Date.now();
+          return ok(rows.length ? rows.map((a) => `${age(now - a.requestedAt)} ago ${a.action}${a.params.snapname ? ` ${a.params.snapname}` : ""} ${a.target} ${a.guestName} · ${a.status} · ${a.sourceSurface}${a.sourceThreadId ? ` ${a.sourceThreadId}` : ""}${a.error ? ` · ${a.error.split("\n")[0]}` : ""}`).join("\n") : "(no actions)");
         },
       }),
       attach: cliCommand({
