@@ -218,6 +218,7 @@ def play_queue_interruptible(q: "queue.Queue[np.ndarray | None]", sr: int, cance
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))) / "kokoro-tts"
 BB_CLAIM_FILE = STATE_DIR / "bb-plugin-claim"
 REPEAT_WINDOW_S = 10
+ENGINE_KEYS = ("provider", "remote_url", "fallback_to_cpu", "idle_unload_minutes", "intra_op_threads", "gpu_mem_limit_mb")
 LAST_TURN_MAX = 500
 
 
@@ -346,8 +347,9 @@ class KokoroServer:
         self.last_turn: OrderedDict[str, str] = OrderedDict()
         self.recent_turns: deque[tuple[float, str, str]] = deque(maxlen=20)
         self._audio_executor = None
-        self.engine: LocalEngine | RemoteEngine = self._make_engine(self.config.get())
+        self._config_lock = asyncio.Lock()
         try:
+            self.engine: LocalEngine | RemoteEngine = self._make_engine(self.config.get())
             self._local_engine().ensure_loaded()
         except EngineError as e:
             log.error("Configured provider failed (%s); falling back to cpu", e)
@@ -636,21 +638,25 @@ class KokoroServer:
             return web.json_response({"error": "invalid json"}, status=400)
         if not isinstance(data, dict):
             return web.json_response({"error": "body must be an object"}, status=400)
-        before = self.config.get()
-        try:
-            after = self.config.patch(data)
-        except ConfigError as e:
-            return web.json_response({"error": "invalid config", "fields": e.errors}, status=400)
-        engine_keys = ("provider", "remote_url", "fallback_to_cpu", "idle_unload_minutes", "intra_op_threads", "gpu_mem_limit_mb")
-        if any(after[k] != before[k] for k in engine_keys):
+        # One change at a time: an engine swap awaits, and a second PATCH landing
+        # meanwhile would otherwise leave the saved config and live engine apart.
+        async with self._config_lock:
+            before = self.config.get()
             try:
-                await self._swap_engine(after)
-            except (EngineError, Exception) as e:
-                log.warning("Engine change rejected: %s", e)
-                self.config.patch({k: before[k] for k in engine_keys})
-                return web.json_response({"error": "engine change failed", "fields": {"provider": str(e)}}, status=400)
-        if not HEADLESS and after["output_device"] != before["output_device"]:
-            self._apply_output_device(after["output_device"])
+                after = self.config.patch(data)
+            except ConfigError as e:
+                return web.json_response({"error": "invalid config", "fields": e.errors}, status=400)
+            except OSError as e:
+                return web.json_response({"error": f"could not save config: {e}"}, status=500)
+            if any(after[k] != before[k] for k in ENGINE_KEYS):
+                try:
+                    await self._swap_engine(after)
+                except Exception as e:
+                    log.warning("Engine change rejected: %s", e)
+                    self.config.patch({k: before[k] for k in after if after[k] != before[k]})
+                    return web.json_response({"error": "engine change failed", "fields": {"provider": str(e)}}, status=400)
+            if not HEADLESS and after["output_device"] != before["output_device"]:
+                self._apply_output_device(after["output_device"])
         log.info("Config updated: %s", sorted(data))
         return web.json_response(self._config_response())
 

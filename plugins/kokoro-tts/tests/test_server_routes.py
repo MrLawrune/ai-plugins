@@ -43,6 +43,9 @@ def make_server(tmp_path):
     srv.last_first_audio_ms = None
     srv.engine = types.SimpleNamespace(info=lambda: {"kind": "local"})
     srv.calls = []
+    srv.voices_path = "voices-v1.0.bin"
+    srv.port = 6789
+    srv._config_lock = asyncio.Lock()
 
     async def fake_speech(text, data, session_id):
         srv.calls.append(("speech", text, session_id, data))
@@ -412,3 +415,44 @@ def test_turn_sound_respects_the_working_tick_switch(tmp_path):
     srv.config.patch({"working_sound": False})
     _, body = request(srv, "POST", "/turn", {"text": '<!-- TTS_RESPONSE weight="sound:working" -->'})
     assert body["action"] == "silent" and srv.calls == []
+
+
+def test_concurrent_engine_patches_leave_config_and_engine_in_agreement(tmp_path):
+    srv = make_server(tmp_path)
+    built = []
+
+    async def slow_swap(cfg):
+        await asyncio.sleep(0.05 if cfg["intra_op_threads"] == 1 else 0)
+        built.append(cfg["intra_op_threads"])
+
+    srv._swap_engine = slow_swap
+
+    async def go():
+        async with TestClient(TestServer(ks.build_app(srv))) as c:
+            first = asyncio.create_task(c.patch("/config", json={"intra_op_threads": 1}))
+            await asyncio.sleep(0.01)
+            second = asyncio.create_task(c.patch("/config", json={"intra_op_threads": 2}))
+            await asyncio.gather(first, second)
+
+    asyncio.run(go())
+    assert built[-1] == srv.config.get()["intra_op_threads"] == 2
+
+
+def test_failed_engine_change_rolls_back_every_key_of_that_patch(tmp_path):
+    srv = make_server(tmp_path)
+
+    async def failing_swap(cfg):
+        raise ks.EngineError("no such device")
+
+    srv._swap_engine = failing_swap
+    status, body = request(srv, "PATCH", "/config", {"intra_op_threads": 3, "speed": 1.4})
+    assert status == 400
+    cfg = srv.config.get()
+    assert cfg["intra_op_threads"] == 0 and cfg["speed"] == 1.0
+
+
+def test_remote_without_url_is_rejected(tmp_path):
+    srv = make_server(tmp_path)
+    status, body = request(srv, "PATCH", "/config", {"provider": "remote"})
+    assert status == 400 and "remote_url" in body["fields"]
+    assert srv.config.get()["provider"] == "cpu"

@@ -185,6 +185,12 @@ def validate_patch(patch: dict[str, Any], voices: list[str]) -> dict[str, Any]:
     return out
 
 
+def check_invariants(cfg: dict[str, Any]) -> None:
+    """Rules that span keys, checked on the merged config before it is kept."""
+    if cfg.get("provider") == "remote" and not cfg.get("remote_url"):
+        raise ConfigError({"remote_url": "required when provider is remote"})
+
+
 class ConfigStore:
     """Loads, validates, patches, and persists the config file."""
 
@@ -216,8 +222,15 @@ class ConfigStore:
 
     def patch(self, patch: dict[str, Any]) -> dict[str, Any]:
         clean = validate_patch(patch, self.voices)
-        self._cfg.update(clean)
-        self._save()
+        merged = {**self._cfg, **clean}
+        check_invariants(merged)
+        previous = self._cfg
+        self._cfg = merged
+        try:
+            self._save()
+        except Exception:
+            self._cfg = previous
+            raise
         return self.get()
 
     def _save(self) -> None:

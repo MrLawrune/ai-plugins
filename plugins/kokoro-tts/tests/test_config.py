@@ -174,3 +174,26 @@ def test_speech_log_persists_and_reloads(tmp_path):
     assert entries[0]["status"] == "done" and entries[0]["first_audio_ms"] == 400
     assert entries[1]["status"] == "interrupted"
     assert reloaded.add("Third", "s2")["id"] == e2["id"] + 1
+
+
+def test_patch_that_cannot_be_saved_changes_nothing(tmp_path, monkeypatch):
+    store = ConfigStore(tmp_path / "c.json", VOICES)
+
+    def disk_full():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "_save", disk_full)
+    with pytest.raises(OSError):
+        store.patch({"speed": 1.5})
+    assert store.get()["speed"] == 1.0
+
+
+def test_remote_provider_requires_a_url(tmp_path):
+    store = ConfigStore(tmp_path / "c.json", VOICES)
+    with pytest.raises(ConfigError) as e:
+        store.patch({"provider": "remote"})
+    assert "remote_url" in e.value.errors
+    assert store.get()["provider"] == "cpu"
+    store.patch({"provider": "remote", "remote_url": "http://192.0.2.10:6789"})
+    with pytest.raises(ConfigError):
+        store.patch({"remote_url": None})  # clearing the URL of a remote setup
