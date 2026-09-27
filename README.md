@@ -29,3 +29,11 @@ See your infrastructure and what your agents are doing to it: Proxmox environmen
     bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.1.0 --plugin infra --tag-prefix infra/
 
 Setup and surfaces: [plugins/infra/README.md](plugins/infra/README.md).
+
+## playbooks
+
+Build, run, and watch Ansible playbooks with your agents: plain-language cards, live runs, and targeted debugging inside bb.
+
+    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.1.0 --plugin playbooks --tag-prefix playbooks/
+
+Requirements, setup, and surfaces: [plugins/playbooks/README.md](plugins/playbooks/README.md).

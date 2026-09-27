@@ -1,0 +1,22 @@
+---
+- name: Base configuration
+  hosts: all
+  become: true
+  pre_tasks:
+    - name: Refresh package cache
+      ansible.builtin.apt:
+        update_cache: true
+  roles:
+    - role: common
+    - role: monitoring
+      when: monitoring_enabled | default(false)
+  tasks:
+    - name: Include hardening tasks
+      ansible.builtin.include_tasks: tasks/hardening.yml
+    - name: Import the firewall role
+      ansible.builtin.import_role:
+        name: firewall
+  post_tasks:
+    - name: Report configured hosts
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} configured"

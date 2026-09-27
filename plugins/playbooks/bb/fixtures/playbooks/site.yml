@@ -1,0 +1,51 @@
+---
+- name: Web servers
+  hosts: webservers
+  become: true
+  vars:
+    nginx_conf_path: /etc/nginx
+    site_domain: www.example.com
+  vars_files:
+    - vars/web.yml
+  roles:
+    - common
+  tasks:
+    - name: Install packages
+      ansible.builtin.apt:
+        name: [nginx, certbot]
+        state: present
+    - name: Write nginx site config
+      ansible.builtin.template:
+        src: templates/site.conf.j2
+        dest: "{{ nginx_conf_path }}/sites-enabled/{{ site_domain }}"
+      notify: reload nginx
+      tags: [config]
+    - name: Enable and start nginx
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+    - ansible.builtin.command: ufw allow 80,443/tcp
+      when: ufw_installed.rc == 0
+  handlers:
+    - name: reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+- name: Database
+  hosts: dbservers
+  serial: 1
+  tasks:
+    - name: Install postgresql
+      ansible.builtin.apt:
+        name: postgresql
+        state: present
+    - name: Create app database and user
+      community.postgresql.postgresql_db:
+        name: app
+      register: db
+    - name: Restart service
+      ansible.builtin.service:
+        name: postgresql
+        state: restarted

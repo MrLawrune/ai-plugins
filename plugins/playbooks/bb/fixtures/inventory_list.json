@@ -1,0 +1,37 @@
+{
+  "_meta": {
+    "hostvars": {
+      "db-01": {
+        "ansible_host": "192.0.2.12",
+        "ansible_user": "deploy"
+      },
+      "web-01": {
+        "ansible_host": "192.0.2.11",
+        "ansible_user": "deploy"
+      },
+      "web-02": {
+        "ansible_host": "192.0.2.10",
+        "ansible_user": "deploy"
+      }
+    },
+    "profile": "inventory_legacy"
+  },
+  "all": {
+    "children": [
+      "ungrouped",
+      "webservers",
+      "dbservers"
+    ]
+  },
+  "dbservers": {
+    "hosts": [
+      "db-01"
+    ]
+  },
+  "webservers": {
+    "hosts": [
+      "web-01",
+      "web-02"
+    ]
+  }
+}

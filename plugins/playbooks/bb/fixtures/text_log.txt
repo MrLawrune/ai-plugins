@@ -1,0 +1,133 @@
+
+PLAY [Web servers] *************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'web-02' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.19/reference_appendices/interpreter_discovery.html for more information.
+[WARNING]: Host 'web-01' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.19/reference_appendices/interpreter_discovery.html for more information.
+ok: [web-02]
+ok: [web-01]
+
+TASK [common : Common baseline] ************************************************
+ok: [web-01] => {
+    "msg": "common role on web-01"
+}
+ok: [web-02] => {
+    "msg": "common role on web-02"
+}
+
+TASK [Install packages] ********************************************************
+The following additional packages will be installed:
+  nginx-common python3-acme python3-certbot python3-configargparse
+  python3-configobj python3-distro python3-icu python3-josepy python3-openssl
+  python3-parsedatetime python3-pytz python3-rfc3339
+Suggested packages:
+  python-certbot-doc python3-certbot-apache python3-certbot-nginx fcgiwrap
+  nginx-doc ssl-cert python-acme-doc python-configobj-doc python-openssl-doc
+The following NEW packages will be installed:
+  certbot nginx nginx-common python3-acme python3-certbot
+  python3-configargparse python3-configobj python3-distro python3-icu
+  python3-josepy python3-openssl python3-parsedatetime python3-pytz
+  python3-rfc3339
+0 upgraded, 14 newly installed, 0 to remove and 0 not upgraded.
+changed: [web-02]
+The following additional packages will be installed:
+  nginx-common python3-acme python3-certbot python3-configargparse
+  python3-configobj python3-distro python3-icu python3-josepy python3-openssl
+  python3-parsedatetime python3-pytz python3-rfc3339
+Suggested packages:
+  python-certbot-doc python3-certbot-apache python3-certbot-nginx fcgiwrap
+  nginx-doc ssl-cert python-acme-doc python-configobj-doc python-openssl-doc
+The following NEW packages will be installed:
+  certbot nginx nginx-common python3-acme python3-certbot
+  python3-configargparse python3-configobj python3-distro python3-icu
+  python3-josepy python3-openssl python3-parsedatetime python3-pytz
+  python3-rfc3339
+0 upgraded, 14 newly installed, 0 to remove and 0 not upgraded.
+changed: [web-01]
+
+TASK [Write nginx site config] *************************************************
+--- before
++++ after: /home/deploy/.ansible/tmp/ansible-local-8601qhb6e89f/tmp90m8sxka/site.conf.j2
+@@ -0,0 +1 @@
++server_name www.example.com;
+
+changed: [web-02]
+--- before
++++ after: /home/deploy/.ansible/tmp/ansible-local-8601qhb6e89f/tmp3xxwheiq/site.conf.j2
+@@ -0,0 +1 @@
++server_name www.example.com;
+
+changed: [web-01]
+
+TASK [Enable and start nginx] **************************************************
+[ERROR]: Task failed: Module failed: Could not find the requested service nginx: host
+Origin: /srv/example/site.yml:23:7
+
+21       notify: reload nginx
+22       tags: [config]
+23     - name: Enable and start nginx
+         ^ column 7
+
+fatal: [web-02]: FAILED! => {"changed": false, "msg": "Could not find the requested service nginx: host"}
+...ignoring
+fatal: [web-01]: FAILED! => {"changed": false, "msg": "Could not find the requested service nginx: host"}
+...ignoring
+
+TASK [ansible.builtin.command] *************************************************
+skipping: [web-01]
+skipping: [web-02]
+
+RUNNING HANDLER [reload nginx] *************************************************
+[ERROR]: Task failed: Module failed: Could not find the requested service nginx: host
+Origin: /srv/example/site.yml:32:7
+
+30       when: ufw_installed.rc == 0
+31   handlers:
+32     - name: reload nginx
+         ^ column 7
+
+fatal: [web-01]: FAILED! => {"changed": false, "msg": "Could not find the requested service nginx: host"}
+...ignoring
+fatal: [web-02]: FAILED! => {"changed": false, "msg": "Could not find the requested service nginx: host"}
+...ignoring
+
+PLAY [Database] ****************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'db-01' is using the discovered Python interpreter at '/usr/bin/python3.13', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.19/reference_appendices/interpreter_discovery.html for more information.
+ok: [db-01]
+
+TASK [Install postgresql] ******************************************************
+The following additional packages will be installed:
+  libcommon-sense-perl libgcrypt20 libgpg-error-l10n libgpg-error0
+  libio-pty-perl libipc-run-perl libjson-perl libjson-xs-perl libllvm19 libpq5
+  libsensors-config libsensors5 libtypes-serialiser-perl libxslt1.1 libz3-4
+  postgresql-17 postgresql-client-17 postgresql-client-common
+  postgresql-common postgresql-common-dev ssl-cert sysstat
+Suggested packages:
+  rng-tools lm-sensors postgresql-doc postgresql-doc-17 isag
+The following NEW packages will be installed:
+  libcommon-sense-perl libgcrypt20 libgpg-error-l10n libgpg-error0
+  libio-pty-perl libipc-run-perl libjson-perl libjson-xs-perl libllvm19 libpq5
+  libsensors-config libsensors5 libtypes-serialiser-perl libxslt1.1 libz3-4
+  postgresql postgresql-17 postgresql-client-17 postgresql-client-common
+  postgresql-common postgresql-common-dev ssl-cert sysstat
+0 upgraded, 23 newly installed, 0 to remove and 0 not upgraded.
+changed: [db-01]
+
+TASK [Create app database and user] ********************************************
+[ERROR]: Task failed: Module failed: Failed to import the required Python library (psycopg2) on web-01's Python /usr/bin/python3.13. Please read the module documentation and install it in the appropriate location. If the required library is installed, but Ansible is using the wrong Python interpreter, please consult the documentation on ansible_python_interpreter
+Origin: /srv/example/site.yml:46:7
+
+44         name: postgresql
+45         state: present
+46     - name: Create app database and user
+         ^ column 7
+
+fatal: [db-01]: FAILED! => {"changed": false, "msg": "Failed to import the required Python library (psycopg2) on web-01's Python /usr/bin/python3.13. Please read the module documentation and install it in the appropriate location. If the required library is installed, but Ansible is using the wrong Python interpreter, please consult the documentation on ansible_python_interpreter"}
+
+PLAY RECAP *********************************************************************
+db-01                      : ok=2    changed=1    unreachable=0    failed=1    skipped=0    rescued=0    ignored=0   
+web-01                     : ok=6    changed=2    unreachable=0    failed=0    skipped=1    rescued=0    ignored=2   
+web-02                     : ok=6    changed=2    unreachable=0    failed=0    skipped=1    rescued=0    ignored=2   
+

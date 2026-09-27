@@ -1,0 +1,7 @@
+---
+- name: Broken play
+  hosts: all
+	tasks:
+    - name: Never parsed
+      ansible.builtin.debug:
+        msg: hello

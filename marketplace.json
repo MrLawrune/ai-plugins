@@ -81,6 +81,32 @@
           "tagPrefix": "infra/"
         }
       }
+    },
+    {
+      "id": "playbooks",
+      "displayName": "Playbooks",
+      "description": "Build, run, and watch Ansible playbooks with your agents: plain-language cards, live runs, and targeted debugging inside BB.",
+      "icon": {
+        "url": "./plugins/playbooks/assets/icon.svg"
+      },
+      "tags": [
+        "ansible",
+        "automation",
+        "infrastructure",
+        "devops"
+      ],
+      "author": {
+        "name": "MrLawrune",
+        "github": "MrLawrune"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/MrLawrune/ai-plugins.git",
+          "subdir": "plugins/playbooks",
+          "range": "^0.1.0",
+          "tagPrefix": "playbooks/"
+        }
+      }
     }
   ]
 }

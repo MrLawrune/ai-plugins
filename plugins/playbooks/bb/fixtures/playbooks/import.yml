@@ -1,0 +1,10 @@
+---
+- import_playbook: site.yml
+
+- name: Smoke test
+  hosts: webservers
+  tasks:
+    - name: Check the site responds
+      ansible.builtin.uri:
+        url: "https://{{ site_domain }}/"
+        status_code: 200

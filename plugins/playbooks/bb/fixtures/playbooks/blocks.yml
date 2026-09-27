@@ -1,0 +1,44 @@
+---
+- name: Application deploy
+  hosts: webservers
+  become: true
+  tasks:
+    - name: Deploy release
+      block:
+        - name: Create release directories
+          ansible.builtin.file:
+            path: "/srv/example/releases/{{ item }}"
+            state: directory
+          loop:
+            - current
+            - previous
+        - name: Sync application code
+          ansible.builtin.synchronize:
+            src: /srv/example/build/
+            dest: /srv/example/releases/current/
+        - name: Restart service
+          ansible.builtin.service:
+            name: app
+            state: restarted
+      rescue:
+        - name: Roll back to previous release
+          ansible.builtin.file:
+            src: /srv/example/releases/previous
+            dest: /srv/example/current
+            state: link
+        - name: Restart service
+          ansible.builtin.service:
+            name: app
+            state: restarted
+      always:
+        - name: Record deploy result on the bastion
+          ansible.builtin.lineinfile:
+            path: /srv/example/deploys.log
+            line: "{{ inventory_hostname }} {{ ansible_date_time.iso8601 }}"
+          delegate_to: localhost
+          ignore_errors: true
+    - name: Notify each member of the pool
+      ansible.builtin.uri:
+        url: "http://{{ item }}/deployed"
+      loop: "{{ groups['webservers'] }}"
+      delegate_to: localhost
