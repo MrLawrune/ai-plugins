@@ -79,6 +79,7 @@ export type ConfigResponse = z.infer<typeof configResponseSchema>;
 const healthSchema = z.object({
   status: z.string(),
   version: z.string().nullable().optional(),
+  features: z.array(z.string()).optional(),
   model: z.string(),
   active_sessions: z.number(),
   provider: z.string().optional(),
@@ -129,6 +130,7 @@ const speechLogEntrySchema = z.object({
   text: z.string(),
   status: z.enum(["queued", "playing", "done", "interrupted", "error", "muted", "empty"]),
   first_audio_ms: z.number().optional(),
+  voice: z.string().optional(),
   error: z.string().optional(),
 });
 export type SpeechLogEntry = z.infer<typeof speechLogEntrySchema>;
@@ -197,6 +199,10 @@ export const rpcContract = defineRpcContract({
     input: z.object({ sound: z.enum(["working", "done", "attention", "error"]) }).strict(),
     output: z.object({ status: z.string() }),
   },
+  replay: {
+    input: z.object({ threadId: z.string().min(1).max(128), text: z.string().min(1).max(2000) }).strict(),
+    output: z.object({ status: z.string() }),
+  },
   setMuted: { input: z.object({ muted: z.boolean() }).strict(), output: z.object({ muted: z.boolean() }) },
   interruptAll: { input: z.null(), output: z.object({ sessions_cancelled: z.number() }) },
   engine: { input: z.null(), output: engineSchema },
@@ -205,6 +211,14 @@ export const rpcContract = defineRpcContract({
   getPrefs: { input: z.null(), output: prefsSchema },
   setPrefs: { input: prefsSchema.partial().strict(), output: prefsSchema },
   listClients: { input: z.null(), output: z.object({ clients: z.array(clientInfoSchema) }) },
+});
+
+/** What POST /replay returns: a browser-playback entry to play, or the server's status. */
+export const replayResultSchema = z.object({
+  status: z.string().optional(),
+  entry_id: z.number().optional(),
+  text: z.string().optional(),
+  speech_gain: z.number().optional(),
 });
 
 export const turnResultSchema = z.object({

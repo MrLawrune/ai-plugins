@@ -1,9 +1,12 @@
 // Typed HTTP client for the Kokoro Python server.
 export class ServerError extends Error {
   readonly fields: Record<string, string> | undefined;
-  constructor(message: string, fields?: Record<string, string>) {
+  /** HTTP status when the server answered; undefined when it could not be reached. */
+  readonly status: number | undefined;
+  constructor(message: string, fields?: Record<string, string>, status?: number) {
     super(message);
     this.fields = fields;
+    this.status = status;
   }
 }
 
@@ -63,12 +66,12 @@ export function createKokoroClient(
     try {
       data = text === "" ? null : JSON.parse(text);
     } catch {
-      throw new ServerError(`Kokoro server returned non-JSON (${response.status})`);
+      throw new ServerError(`Kokoro server returned non-JSON (${response.status})`, undefined, response.status);
     }
     if (!response.ok) {
       const err = (data ?? {}) as { error?: string; fields?: Record<string, string> };
       const detail = err.fields ? Object.entries(err.fields).map(([k, v]) => `${k}: ${v}`).join("; ") : "";
-      throw new ServerError(`${err.error ?? `HTTP ${response.status}`}${detail ? ` — ${detail}` : ""}`, err.fields);
+      throw new ServerError(`${err.error ?? `HTTP ${response.status}`}${detail ? ` — ${detail}` : ""}`, err.fields, response.status);
     }
     return data as T;
   }

@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import type { KokoroClient } from "./kokoro-client.ts";
+import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
 import { installerFailure, registerRpc } from "./rpc.ts";
 import type { KokoroStatus } from "./schemas.ts";
 import { CONFIG_RESPONSE, HEALTH } from "./page/fixtures.ts";
 
-function harness(playback: "client" | "server" = "server", ready = true) {
+function harness(playback: "client" | "server" = "server", ready = true, replies: Record<string, (body: unknown) => unknown> = {}) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   const stops: (string | null)[] = [];
   const spoken: unknown[][] = [];
@@ -17,6 +17,7 @@ function harness(playback: "client" | "server" = "server", ready = true) {
     baseUrl: "http://127.0.0.1:6789",
     async call<T>(method: string, path: string, body?: unknown) {
       calls.push({ method, path, body });
+      if (replies[path]) return replies[path]!(body) as T;
       if (path === "/mute") return { muted: (body as { muted: boolean }).muted } as T;
       if (path === "/health") return HEALTH as T;
       if (method === "PATCH" && path === "/config") return { ...CONFIG_RESPONSE, config: { ...CONFIG_RESPONSE.config, ...(body as object) } } as T;
@@ -117,4 +118,44 @@ test("a config change is published to every window", async () => {
   const [channel, payload] = h.published.at(-1)!;
   assert.equal(channel, "kokoro-config");
   assert.equal((payload as typeof CONFIG_RESPONSE).config.speed, 1.2);
+});
+
+test("replay in browser playback speaks the new log entry in that thread", async () => {
+  const h = harness("client", true, {
+    "/replay": () => ({ status: "queued", entry_id: 9, text: "Again.", speech_gain: 0.7 }),
+  });
+  await h.ready;
+  assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "playing" });
+  assert.deepEqual(h.calls.at(-1), {
+    method: "POST", path: "/replay", body: { text: "Again.", session_id: "t1", playback: "client" },
+  });
+  assert.deepEqual(h.spoken, [[9, "Again.", "t1", 0.7]]);
+});
+
+test("replay reports no_window when no browser can play", async () => {
+  const h = harness("client", false);
+  await h.ready;
+  assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "no_window" });
+  assert.equal(h.calls.some((c) => c.path === "/replay"), false);
+});
+
+test("replay on server playback lets the server play", async () => {
+  const h = harness("server", true, { "/replay": () => ({ status: "playing", session_id: "t1" }) });
+  await h.ready;
+  assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "playing" });
+  assert.equal((h.calls.at(-1)?.body as { playback: string }).playback, "server");
+  assert.deepEqual(h.spoken, []);
+});
+
+test("replay passes on a browser-side empty result without speaking", async () => {
+  const h = harness("client", true, { "/replay": () => ({ status: "empty_after_strip" }) });
+  await h.ready;
+  assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "**" }), { status: "empty_after_strip" });
+  assert.deepEqual(h.spoken, []);
+});
+
+test("replay against a server without the endpoint reports unsupported", async () => {
+  const h = harness("server", true, { "/replay": () => { throw new ServerError("Kokoro server returned non-JSON (404)", undefined, 404); } });
+  await h.ready;
+  assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "unsupported" });
 });

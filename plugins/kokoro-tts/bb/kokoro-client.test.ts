@@ -39,6 +39,24 @@ test("call maps a JSON error body with fields into ServerError", async () => {
   });
 });
 
+test("call keeps the HTTP status of a non-JSON error body", async () => {
+  const fake = (async () => new Response("404: Not Found", { status: 404 })) as typeof fetch;
+  await assert.rejects(createKokoroClient("http://127.0.0.1:6789", fake).call("POST", "/replay", {}), (e: unknown) => {
+    assert.ok(e instanceof ServerError);
+    assert.equal(e.status, 404);
+    return true;
+  });
+});
+
+test("call keeps the HTTP status of a JSON error body", async () => {
+  const fake = (async () => new Response(JSON.stringify({ error: "bad request" }), { status: 400 })) as typeof fetch;
+  await assert.rejects(createKokoroClient("http://127.0.0.1:6789", fake).call("POST", "/replay", {}), (e: unknown) => {
+    assert.ok(e instanceof ServerError);
+    assert.equal(e.status, 400);
+    return true;
+  });
+});
+
 test("call reports an unreachable server", async () => {
   const fake = (async () => { throw new TypeError("fetch failed"); }) as typeof fetch;
   await assert.rejects(createKokoroClient("http://127.0.0.1:1", fake).call("GET", "/health"), /unreachable/);

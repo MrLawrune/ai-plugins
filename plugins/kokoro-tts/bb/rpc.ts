@@ -1,9 +1,9 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { KokoroClient } from "./kokoro-client.ts";
+import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import type { PlayerHub } from "./hub.ts";
 import { PREVIEW_ID_BASE } from "./protocol.ts";
 import type { PrefsStore } from "./prefs.ts";
-import { rpcContract, type ConfigResponse, type Health } from "./schemas.ts";
+import { replayResultSchema, rpcContract, type ConfigResponse, type Health } from "./schemas.ts";
 import { installUv } from "./setup/uv.ts";
 import type { Supervisor } from "./supervisor.ts";
 
@@ -83,6 +83,24 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         return { status: "playing" };
       }
       return call("POST", "/play-sound", { sound, session_id: "bb-preview" });
+    },
+    // Replay plays where replies play, like previews, and is logged under the
+    // thread so the chat card follows it.
+    replay: async ({ threadId, text }) => {
+      const browser = deps.prefs.get().playback === "client";
+      if (browser && !deps.hub.hasReadyClient()) return { status: "no_window" };
+      let raw: unknown;
+      try {
+        raw = await call("POST", "/replay", { text, session_id: threadId, playback: browser ? "client" : "server" });
+      } catch (cause) {
+        if (cause instanceof ServerError && cause.status === 404) return { status: "unsupported" };
+        throw cause;
+      }
+      const r = replayResultSchema.parse(raw);
+      if (!browser) return { status: r.status ?? "playing" };
+      if (r.entry_id === undefined || !r.text) return { status: r.status ?? "empty_after_strip" };
+      deps.hub.speak(r.entry_id, r.text, threadId, r.speech_gain ?? 1);
+      return { status: "playing" };
     },
     setMuted: async ({ muted }) => {
       // Muting silences browser playback too, not just the server's speaker.
