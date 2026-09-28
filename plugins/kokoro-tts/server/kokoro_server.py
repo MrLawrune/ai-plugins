@@ -50,6 +50,10 @@ from kokoro_engine import FRAME_END, FRAME_ERROR, SAMPLE_RATE, EngineError, Loca
 from kokoro_turn import MODE_CEILING, apply_cue_prefs, route_cue, route_turn
 
 SERVER_VERSION = "0.1.3"
+# What this server understands beyond the base protocol; the bb plugin reads
+# it to decide which voice contract to give agents.
+FEATURES = ["directive", "replay"]
+MAX_REPLAY_CHARS = 2000
 PREVIEW_TEXT = "This is how I will sound when reading your updates."
 from mistune.plugins.formatting import strikethrough as strikethrough_plugin
 
@@ -317,7 +321,7 @@ class SpeechLog:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
         os.replace(tmp, self.path)
 
-    def add(self, text: str, session_id: str) -> dict:
+    def add(self, text: str, session_id: str, voice: str | None = None) -> dict:
         entry = {
             "id": self._next_id,
             "ts": time.time(),
@@ -325,6 +329,8 @@ class SpeechLog:
             "text": _norm_text(text)[:2000],
             "status": "queued",
         }
+        if voice:
+            entry["voice"] = voice
         self._next_id += 1
         self.entries.append(entry)
         self._append(entry)
@@ -608,6 +614,8 @@ class KokoroServer:
                 self.speech_log.update(entry, "error", error="invalid parameters")
             return {"error": "invalid parameters", "fields": e.errors}, 400
         cfg.update(overrides)
+        if entry:
+            entry["voice"] = cfg["voice"]
 
         if cfg["strip_markdown"]:
             text = strip_markdown(text)
@@ -647,6 +655,29 @@ class KokoroServer:
         text = text.strip()
         # Preview must be audible even while muted, without unmuting anything else.
         body, status = await self._start_speech(text, data, "preview", allow_muted=True)
+        return web.json_response(body, status=status)
+
+    async def handle_replay(self, request: web.Request) -> web.Response:
+        """Speak a reply again because the user asked: no repeat check, no mode ceiling, plays while muted."""
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _bad("text must be a non-empty string")
+        text = text.strip()[:MAX_REPLAY_CHARS]
+        session_id = session_of(data)
+        if session_id is None:
+            return _bad("session_id must be a short string")
+        if data.get("playback") == "client":
+            cfg = self.config.get()
+            spoken = strip_markdown(text) if cfg["strip_markdown"] else text
+            if not spoken:
+                return web.json_response({"status": "empty_after_strip"})
+            entry = self.speech_log.add(text, session_id, voice=cfg["voice"])
+            return web.json_response({"status": "queued", "entry_id": entry["id"], "text": spoken,
+                                      "speech_gain": cfg["speech_gain"]})
+        body, status = await self._start_speech(text, {}, session_id, allow_muted=True)
         return web.json_response(body, status=status)
 
     # --- config endpoints ---
@@ -922,7 +953,8 @@ class KokoroServer:
             if not spoken:
                 result = {"action": "sound", "sound": "done"}
             else:
-                entry = self.speech_log.add(spoken, session_id)
+                # Log what the agent wrote (as the server path does), so the chat card matches it.
+                entry = self.speech_log.add(result["text"], session_id, voice=cfg["voice"])
                 result = {"action": "speech", "text": spoken, "entry_id": entry["id"],
                           "speech_gain": cfg["speech_gain"]}
         if result["action"] == "sound":
@@ -1014,6 +1046,7 @@ class KokoroServer:
         return web.json_response({
             "status": "ok",
             "version": SERVER_VERSION,
+            "features": FEATURES,
             "model": os.path.basename(self.model_path),
             "voices": self.config.voices,
             "active_sessions": sum(1 for v in active.values() if v),
@@ -1081,6 +1114,7 @@ def build_app(server: "KokoroServer", host: str | None = None) -> web.Applicatio
     app.router.add_get("/health", server.handle_health)
     app.router.add_post("/play-sound", server.handle_play_sound)
     app.router.add_post("/preview", server.handle_preview)
+    app.router.add_post("/replay", server.handle_replay)
     app.router.add_get("/config", server.handle_get_config)
     app.router.add_patch("/config", server.handle_patch_config)
     app.router.add_get("/voices", server.handle_voices)

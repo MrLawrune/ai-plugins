@@ -516,3 +516,75 @@ def test_health_reports_who_started_the_server(tmp_path, monkeypatch):
     monkeypatch.setenv("KOKORO_STARTED_BY", "bb")
     _, health = request(make_server(tmp_path), "GET", "/health")
     assert health["started_by"] == "bb"
+
+
+def test_health_lists_features(tmp_path):
+    srv = make_server(tmp_path)
+    status, body = request(srv, "GET", "/health")
+    assert status == 200 and {"directive", "replay"} <= set(body["features"])
+
+
+def test_replay_server_playback_plays_even_when_muted(tmp_path):
+    srv = make_server(tmp_path)
+    srv.muted = True
+    status, body = request(srv, "POST", "/replay", {"text": "Again.", "session_id": "t1"})
+    assert status == 200 and body["status"] == "playing"
+    assert srv.calls == [("speech", "Again.", "t1", {})]
+    assert srv.allow_muted_seen is True
+
+
+def test_replay_client_logs_an_entry_for_the_browser(tmp_path):
+    srv = make_server(tmp_path)
+    status, body = request(srv, "POST", "/replay",
+                           {"text": "**Again** now.", "session_id": "t1", "playback": "client"})
+    assert status == 200 and body["status"] == "queued"
+    assert body["text"] == "Again now." and body["speech_gain"] == 1.0
+    entry = srv.speech_log.get(body["entry_id"])
+    assert entry["text"] == "**Again** now." and entry["session_id"] == "t1"
+    assert entry["voice"] == "af_sky" and entry["status"] == "queued"
+    assert srv.calls == []
+
+
+def test_replay_ignores_repeat_suppression(tmp_path):
+    srv = make_server(tmp_path)
+    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "t1", "source": "bb"})
+    request(srv, "POST", "/replay", {"text": "All done.", "session_id": "t1"})
+    assert [c[1] for c in srv.calls] == ["All done.", "All done."]
+
+
+def test_replay_caps_text_length(tmp_path):
+    srv = make_server(tmp_path)
+    _, body = request(srv, "POST", "/replay", {"text": "a" * 5000, "session_id": "t1", "playback": "client"})
+    assert len(srv.speech_log.get(body["entry_id"])["text"]) == 2000
+
+
+@pytest.mark.parametrize("body", [
+    {"session_id": "t1"},
+    {"text": "", "session_id": "t1"},
+    {"text": "   ", "session_id": "t1"},
+    {"text": 5, "session_id": "t1"},
+    {"text": "Hi.", "session_id": ""},
+    {"text": "Hi.", "session_id": "x" * 200},
+    ["not", "an", "object"],
+])
+def test_replay_rejects_bad_input(tmp_path, body):
+    srv = make_server(tmp_path)
+    status, reply = request(srv, "POST", "/replay", body)
+    assert status == 400 and "error" in reply
+    assert srv.calls == []
+
+
+def test_turn_client_logs_the_text_before_markdown_strip(tmp_path):
+    srv = make_server(tmp_path)
+    turn = '<!-- TTS_RESPONSE weight="speech"\n**Bold** done.\nTTS_RESPONSE -->'
+    _, body = request(srv, "POST", "/turn", {"text": turn, "session_id": "t1", "playback": "client"})
+    assert body["text"] == "Bold done."
+    entry = srv.speech_log.get(body["entry_id"])
+    assert entry["text"] == "**Bold** done." and entry["voice"] == "af_sky"
+
+
+def test_speech_log_keeps_voice_across_reload(tmp_path):
+    log = ks.SpeechLog(tmp_path / "log.jsonl")
+    entry = log.add("Hello.", "t1", voice="af_bella")
+    assert entry["voice"] == "af_bella"
+    assert ks.SpeechLog(tmp_path / "log.jsonl").get(entry["id"])["voice"] == "af_bella"
