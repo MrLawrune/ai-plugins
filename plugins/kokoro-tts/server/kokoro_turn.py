@@ -1,9 +1,10 @@
-"""Turn routing for kokoro-tts: TTS block parsing, mode ceiling, fallback.
+"""Turn routing for kokoro-tts: TTS block and directive parsing, mode ceiling, fallback.
 
 Shared by POST /turn (BB plugin, Claude Code Stop hook) and POST /cue.
 Pure functions; no I/O.
 """
 
+import html
 import re
 
 MAX_FALLBACK_CHARS = 240
@@ -21,6 +22,11 @@ BLOCK_MULTILINE = re.compile(
 BLOCK_SELF_CLOSING = re.compile(r'<!--\s*TTS_RESPONSE\s+weight="([^"]+)"\s*-->')
 BLOCK_LEGACY = re.compile(r"<!--\s*TTS_SUMMARY\s*\n([\s\S]*?)\nTTS_SUMMARY\s*-->")
 ANY_BLOCK = re.compile(r"<!--\s*TTS_(?:RESPONSE|SUMMARY)[\s\S]*?-->")
+# bb's message card: a leaf directive alone on its line, e.g.
+# ::kokoro-tts{weight="speech" say="Tests pass."}. Values are HTML-entity
+# decoded, as bb's directive parser does.
+DIRECTIVE = re.compile(r"^::kokoro-tts\{(.*)\}[ \t\r]*$", re.MULTILINE)
+DIRECTIVE_ATTR = re.compile(r"""([A-Za-z][\w-]*)(?:=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`}]+)))?""")
 CODE_FENCE = re.compile(r"```[\s\S]*?```")
 SENTENCE = re.compile(r"(.+?[.!?])(?:\s|$)")
 TABLE = re.compile(r"(?:^[ \t]*\|.*\|[ \t]*(?:\n|$))+", re.MULTILINE)
@@ -28,12 +34,31 @@ INLINE_CODE = re.compile(r"`([^`\n]+)`")
 MAX_INLINE_CODE = 60
 
 
+def parse_directive_attrs(raw):
+    """Attributes of a directive's {...} body: key="v", key='v', key=v, or a bare key."""
+    attrs = {}
+    for m in DIRECTIVE_ATTR.finditer(raw):
+        value = next((g for g in m.group(2, 3, 4) if g is not None), "")
+        attrs[m.group(1)] = html.unescape(value)
+    return attrs
+
+
+def _fence_spans(text):
+    return [(m.start(), m.end()) for m in CODE_FENCE.finditer(text)]
+
+
+def _strip_blocks(text):
+    """Remove comment blocks and directive lines (for fallback and full mode)."""
+    return DIRECTIVE.sub("", ANY_BLOCK.sub("", text))
+
+
 def extract_block(text):
     """Return (weight, content) from the last TTS block, or (None, None).
 
-    Candidates from all three block forms (multiline TTS_RESPONSE,
-    self-closing TTS_RESPONSE, legacy TTS_SUMMARY) are collected and the one
-    whose match ends furthest to the right (i.e. textually last) wins. On a
+    Candidates from all four block forms (multiline TTS_RESPONSE,
+    self-closing TTS_RESPONSE, legacy TTS_SUMMARY, and the kokoro-tts
+    directive outside code fences) are collected and the one whose match
+    ends furthest to the right (i.e. textually last) wins. On a
     tie in end position, the multiline interpretation wins -- both because
     self-closing candidates whose span is nested inside a multiline match are
     dropped outright, and because ties are broken by priority.
@@ -55,6 +80,14 @@ def extract_block(text):
         if content:
             candidates.append((m.end(), 0, "speech", content))
 
+    fences = _fence_spans(text)
+    for m in DIRECTIVE.finditer(text):
+        if any(s <= m.start() < e for s, e in fences):
+            continue  # an example in a code block, not the reply's directive
+        attrs = parse_directive_attrs(m.group(1))
+        say = attrs.get("say", "").strip() or None
+        candidates.append((m.end(), 0, attrs.get("weight", ""), say))
+
     if not candidates:
         return None, None
 
@@ -65,7 +98,7 @@ def extract_block(text):
 
 def first_sentence(text):
     """First speakable sentence of the turn, blocks and fences stripped."""
-    text = ANY_BLOCK.sub("", text)
+    text = _strip_blocks(text)
     text = CODE_FENCE.sub("", text)
     text = re.sub(r"^#+\s*", "", text.strip(), flags=re.MULTILINE)
     text = re.sub(r"\s+", " ", text).strip()
@@ -92,7 +125,7 @@ def full_text(text):
     short inline code is read as written, a path as its file name.
     Replies over FULL_MAX_CHARS are cut at a sentence or line end.
     """
-    text = ANY_BLOCK.sub("", text)
+    text = _strip_blocks(text)
     text = CODE_FENCE.sub("\n\nCode block skipped.\n\n", text)
     text = TABLE.sub("\nTable skipped.\n\n", text)
     text = INLINE_CODE.sub(lambda m: _speak_inline_code(m.group(1)), text)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
-from kokoro_turn import extract_block, first_sentence, route_cue, route_turn  # noqa: E402
+from kokoro_turn import extract_block, first_sentence, full_text, parse_directive_attrs, route_cue, route_turn  # noqa: E402
 
 CFG = {"attention_sound": True, "working_sound": True}
 
@@ -152,3 +152,74 @@ def test_cue_prefs_leave_speech_and_enabled_sounds_alone():
     cfg = {"working_sound": True, "attention_sound": True}
     for r in ({"action": "speech", "text": "Hi."}, {"action": "sound", "sound": "working"}, {"action": "silent"}):
         assert apply_cue_prefs(dict(r), cfg) == r
+
+
+def directive(attrs):
+    return f"::kokoro-tts{{{attrs}}}"
+
+
+def test_directive_speech_is_spoken():
+    text = "Done.\n\n" + directive('weight="speech" say="All tests pass."')
+    assert route_turn(text, "brief") == {"action": "speech", "text": "All tests pass."}
+
+
+def test_directive_sound_and_silent():
+    assert route_turn("x\n\n" + directive('weight="sound:done"'), "brief") == {"action": "sound", "sound": "done"}
+    assert route_turn("x\n\n" + directive('weight="silent"'), "brief") == {"action": "silent"}
+
+
+def test_directive_attribute_quoting_forms():
+    assert parse_directive_attrs("weight='speech' say=\"Hi there.\" flag") == {
+        "weight": "speech", "say": "Hi there.", "flag": ""}
+    assert parse_directive_attrs("weight=speech") == {"weight": "speech"}
+
+
+def test_directive_decodes_entities():
+    text = directive('weight="speech" say="He said &quot;hi&quot; &amp; left."')
+    assert extract_block(text) == ("speech", 'He said "hi" & left.')
+
+
+def test_directive_say_may_contain_braces():
+    assert extract_block(directive('weight="speech" say="Use {name} here."')) == ("speech", "Use {name} here.")
+
+
+def test_directive_with_crlf_line_ending():
+    text = "Done.\r\n\r\n" + directive('weight="speech" say="Windows line."') + "\r\n"
+    assert extract_block(text) == ("speech", "Windows line.")
+
+
+def test_directive_inside_code_fence_is_ignored():
+    text = "Real first sentence.\n\n```markdown\n" + directive('weight="speech" say="Example."') + "\n```\n"
+    assert route_turn(text, "brief") == {"action": "speech", "text": "Real first sentence."}
+
+
+def test_inline_directive_text_is_not_a_directive():
+    text = "Write " + directive('weight="speech" say="No."') + " at the end."
+    assert extract_block(text) == (None, None)
+
+
+def test_last_block_wins_across_forms():
+    comment_then_directive = block("speech", "Old.") + "\n\n" + directive('weight="speech" say="New."')
+    assert extract_block(comment_then_directive) == ("speech", "New.")
+    directive_then_comment = directive('weight="speech" say="Old."') + "\n\n" + block("speech", "New.")
+    assert extract_block(directive_then_comment) == ("speech", "New.")
+
+
+def test_last_of_two_directives_wins():
+    text = directive('weight="sound:done"') + "\n\n" + directive('weight="speech" say="Final."')
+    assert extract_block(text) == ("speech", "Final.")
+
+
+def test_directive_speech_without_say_plays_done():
+    assert route_turn(directive('weight="speech"'), "brief") == {"action": "sound", "sound": "done"}
+    assert route_turn(directive('weight="speech" say="   "'), "brief") == {"action": "sound", "sound": "done"}
+
+
+def test_directive_without_weight_is_silent():
+    assert route_turn(directive('say="Nothing."'), "brief") == {"action": "silent"}
+
+
+def test_first_sentence_and_full_text_skip_directives():
+    text = directive('weight="sound:done"') + "\n\nReal words here. More.\n\n" + directive('weight="silent"')
+    assert first_sentence(text) == "Real words here."
+    assert "kokoro-tts" not in full_text(text)
