@@ -174,6 +174,15 @@ def session_of(data: dict) -> str | None:
     return sid
 
 
+def voice_label(voice) -> str | None:
+    """A voice setting as a speech-log string: a name as is, a blend as its names joined by " + "."""
+    if isinstance(voice, str):
+        return voice
+    if isinstance(voice, dict) and voice:
+        return " + ".join(voice)
+    return None
+
+
 def _bad(message: str) -> web.Response:
     return web.json_response({"error": message}, status=400)
 
@@ -615,7 +624,9 @@ class KokoroServer:
             return {"error": "invalid parameters", "fields": e.errors}, 400
         cfg.update(overrides)
         if entry:
-            entry["voice"] = cfg["voice"]
+            label = voice_label(cfg["voice"])
+            if label:
+                entry["voice"] = label
 
         if cfg["strip_markdown"]:
             text = strip_markdown(text)
@@ -674,7 +685,7 @@ class KokoroServer:
             spoken = strip_markdown(text) if cfg["strip_markdown"] else text
             if not spoken:
                 return web.json_response({"status": "empty_after_strip"})
-            entry = self.speech_log.add(text, session_id, voice=cfg["voice"])
+            entry = self.speech_log.add(text, session_id, voice=voice_label(cfg["voice"]))
             return web.json_response({"status": "queued", "entry_id": entry["id"], "text": spoken,
                                       "speech_gain": cfg["speech_gain"]})
         body, status = await self._start_speech(text, {}, session_id, allow_muted=True)
@@ -954,7 +965,7 @@ class KokoroServer:
                 result = {"action": "sound", "sound": "done"}
             else:
                 # Log what the agent wrote (as the server path does), so the chat card matches it.
-                entry = self.speech_log.add(result["text"], session_id, voice=cfg["voice"])
+                entry = self.speech_log.add(result["text"], session_id, voice=voice_label(cfg["voice"]))
                 result = {"action": "speech", "text": spoken, "entry_id": entry["id"],
                           "speech_gain": cfg["speech_gain"]}
         if result["action"] == "sound":

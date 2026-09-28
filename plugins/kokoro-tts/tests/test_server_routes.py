@@ -588,3 +588,21 @@ def test_speech_log_keeps_voice_across_reload(tmp_path):
     entry = log.add("Hello.", "t1", voice="af_bella")
     assert entry["voice"] == "af_bella"
     assert ks.SpeechLog(tmp_path / "log.jsonl").get(entry["id"])["voice"] == "af_bella"
+
+
+def test_replay_client_logs_a_blended_voice_as_a_label(tmp_path):
+    srv = make_server(tmp_path)
+    srv.config.patch({"voice": {"af_sky": 0.6, "af_bella": 0.4}})
+    _, body = request(srv, "POST", "/replay", {"text": "Again.", "session_id": "t1", "playback": "client"})
+    assert srv.speech_log.get(body["entry_id"])["voice"] == "af_sky + af_bella"
+
+
+@pytest.mark.parametrize("voice, label", [
+    ("af_sky", "af_sky"),
+    ({"af_sky": 0.6, "af_bella": 0.4}, "af_sky + af_bella"),
+    ({}, None),
+    (None, None),
+    (5, None),
+])
+def test_voice_label(voice, label):
+    assert ks.voice_label(voice) == label
