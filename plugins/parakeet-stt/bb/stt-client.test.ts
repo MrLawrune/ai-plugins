@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { aiFailure, createSttClient, SttError } from "./stt-client.ts";
+import { createSttClient, SttError } from "./stt-client.ts";
 
 const cfg = { serverUrl: "https://stt.example/", apiKey: "k" };
 const opts = { customWords: ["tmux"], removeFillers: true, correctionThreshold: 0.18, timeoutMs: 1000 };
@@ -65,12 +65,4 @@ test("health hits /health", async () => {
   const h = await createSttClient(cfg, f).health();
   assert.equal(h.ready, true);
   assert.equal(calls[0].url, "https://stt.example/health");
-});
-
-test("aiFailure maps codes", () => {
-  const cases: [string, string][] = [["not_configured", "auth_required"], ["unauthorized", "auth_required"], ["unreachable", "service_unavailable"], ["unavailable", "service_unavailable"], ["server_error", "service_unavailable"], ["timeout", "timeout"], ["bad_request", "request_failed"], ["invalid_response", "invalid_response"]];
-  for (const [from, to] of cases) {
-    assert.equal(aiFailure(new SttError(from as never, "x", null)).code, to);
-  }
-  assert.equal(aiFailure(new Error("boom")).code, "service_unavailable");
 });

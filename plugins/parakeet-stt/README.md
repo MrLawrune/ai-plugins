@@ -5,7 +5,7 @@ Handy-style dictation for bb, backed by a self-hosted, OpenAI-compatible Parakee
 ## Layout
 
 - `server/` — Python aiohttp server: PyAV decodes any browser recording (webm/opus, ogg, mp4/aac, wav, mp3) to 16 kHz mono; onnx-asr runs `nemo-parakeet-tdt-0.6b-v2` int8 on CPU. Clips over 90 s are split with Silero VAD.
-- `bb/` — the bb plugin: composer mic action, `+` menu item, recording banner, Ctrl+Space shortcut, settings page, a websocket relay for continuous dictation, and an AI service (`parakeet`) whose host entry serves bb's built-in voice button.
+- `bb/` — the bb plugin: composer mic action, `+` menu item, recording banner, Ctrl+Space shortcut, settings page, a websocket relay for continuous dictation, and an AI service (`parakeet`) that serves bb's built-in voice button.
 
 ## Dictation modes
 

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HistoryStore } from "./history.ts";
-import { DEFAULT_PREFS, PrefsStore } from "./prefs.ts";
-import { createRpcHandlers, hostConfigFrom } from "./rpc.ts";
+import { PrefsStore } from "./prefs.ts";
+import { createRpcHandlers } from "./rpc.ts";
 import { SttError, type SttClient } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
 
@@ -51,9 +51,4 @@ test("health reports server errors as down", async () => {
   const { handlers } = await setup({ async health() { throw new SttError("unreachable", "unreachable at x", null); } });
   const h = await handlers.health();
   assert.deepEqual([h.configured, h.up, h.error], [true, false, "unreachable at x"]);
-});
-
-test("hostConfigFrom merges settings and prefs", () => {
-  const cfg = hostConfigFrom({ serverUrl: "u", apiKey: "k" }, { ...DEFAULT_PREFS, customWords: ["a"], removeFillers: false, correctionThreshold: 0.2 });
-  assert.deepEqual(cfg, { serverUrl: "u", apiKey: "k", customWords: ["a"], removeFillers: false, correctionThreshold: 0.2 });
 });

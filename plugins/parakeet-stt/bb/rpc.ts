@@ -1,4 +1,3 @@
-import type { HostConfig } from "./configure-contract.ts";
 import type { HistoryStore } from "./history.ts";
 import type { PrefsStore } from "./prefs.ts";
 import type { DeviceKind, HealthResult, Prefs } from "./schemas.ts";
@@ -15,16 +14,6 @@ export interface RpcDeps {
 }
 
 const message = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
-
-export function hostConfigFrom(settings: { serverUrl: string; apiKey: string }, prefs: Prefs): HostConfig {
-  return {
-    serverUrl: settings.serverUrl,
-    apiKey: settings.apiKey,
-    customWords: prefs.customWords,
-    removeFillers: prefs.removeFillers,
-    correctionThreshold: prefs.correctionThreshold,
-  };
-}
 
 export function createRpcHandlers(deps: RpcDeps) {
   let lastLatencyMs: number | null = null;

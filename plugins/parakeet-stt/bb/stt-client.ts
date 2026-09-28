@@ -1,4 +1,4 @@
-// Typed client for the Parakeet STT server. Shared by the server entry and the host entry.
+// Typed client for the Parakeet STT server.
 export const MODEL_ID = "parakeet-tdt-0.6b-v2";
 
 export type SttErrorCode =
@@ -86,22 +86,4 @@ export function createSttClient(config: SttConfig, fetchImpl: typeof fetch = fet
       return text;
     },
   };
-}
-
-export type AiFailureCode = "timeout" | "rate_limited" | "service_unavailable" | "auth_required" | "request_failed" | "invalid_response";
-
-const AI_CODE: Record<SttErrorCode, AiFailureCode> = {
-  not_configured: "auth_required",
-  unauthorized: "auth_required",
-  unreachable: "service_unavailable",
-  unavailable: "service_unavailable",
-  server_error: "service_unavailable",
-  timeout: "timeout",
-  bad_request: "request_failed",
-  invalid_response: "invalid_response",
-};
-
-export function aiFailure(err: unknown): { ok: false; code: AiFailureCode; message: string } {
-  if (err instanceof SttError) return { ok: false, code: AI_CODE[err.code], message: err.message || err.code };
-  return { ok: false, code: "service_unavailable", message: err instanceof Error && err.message ? err.message : "Parakeet STT failed" };
 }

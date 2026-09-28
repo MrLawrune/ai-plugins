@@ -3,10 +3,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { configureContract } from "./configure-contract.ts";
+import { createAiService } from "./ai-service.ts";
 import { HistoryStore } from "./history.ts";
 import { PrefsStore } from "./prefs.ts";
-import { createRpcHandlers, hostConfigFrom } from "./rpc.ts";
+import { createRpcHandlers } from "./rpc.ts";
 import { rpcContract, SOUNDS } from "./schemas.ts";
 import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
@@ -46,35 +46,15 @@ export default async function plugin(bb: BbPluginApi) {
   }));
   bb.http.route("GET", "/prefs", (c) => Response.json(prefs.forDevice(c.req.query("device"))));
 
-  bb.experimental_aiServices.register({ id: "parakeet", displayName: "Parakeet STT (self-hosted)", kinds: ["voice"] });
-  const host = bb.hosts.experimental_client({ contract: configureContract });
-
-  const pushHostConfig = async (signal?: AbortSignal) => {
-    try {
-      const hostId = (await bb.sdk.system.config()).primaryHostId;
-      if (!hostId) return;
-      await host.call("stt.configure", hostConfigFrom({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" }, prefs.get()), { hostId, signal });
-    } catch (e) {
-      bb.log.warn(`could not push config to host: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
+  bb.experimental_aiServices.register(createAiService({
+    client: () => client,
+    configured: () => current.serverUrl.trim() !== "",
+    prefs,
+  }));
 
   settings.onChange((next) => {
     current = next;
     client = createSttClient({ serverUrl: next.serverUrl, apiKey: next.apiKey ?? "" });
-    void pushHostConfig();
-  });
-  prefs.onChange((next, prev) => {
-    if (next.customWords !== prev.customWords || next.removeFillers !== prev.removeFillers || next.correctionThreshold !== prev.correctionThreshold) {
-      void pushHostConfig();
-    }
-  });
-  host.experimental_onWorkerExit(() => void pushHostConfig());
-  bb.background.service("host-config", {
-    start: async (signal) => {
-      await pushHostConfig(signal);
-      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-    },
   });
 
   const assets = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets");
