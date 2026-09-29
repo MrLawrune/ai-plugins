@@ -13,8 +13,8 @@ interface Options {
   ready?: boolean;
   /** The cached server config; null when none has been fetched yet. */
   config?: (Partial<KokoroConfig> & { muted?: boolean }) | null;
-  /** Holds /turn's reply until released. */
-  gate?: Promise<void>;
+  /** Hold each /turn's reply until released, in call order. */
+  gates?: Promise<void>[];
 }
 
 function harness(o: Options = {}) {
@@ -24,7 +24,7 @@ function harness(o: Options = {}) {
     baseUrl: "http://127.0.0.1:6789",
     async call<T>(method: string, path: string, body?: unknown) {
       calls.push({ method, path, body });
-      if (path === "/turn" && o.gate) await o.gate;
+      if (path === "/turn") await o.gates?.shift();
       return (o.replies?.[path] ?? { action: "silent" }) as T;
     },
     async *synthesize() {},
@@ -85,7 +85,7 @@ test("thread.idle tells cards a turn is out, then what it logged", async () => {
 });
 
 test("a turn that logs nothing still settles the cards' pending state", async () => {
-  const { host, calls } = harness({ replies: { "/turn": { action: "silent", muted: true } } });
+  const { host, calls } = harness({ replies: { "/turn": { action: "silent" } } });
   await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "x" });
   assert.deepEqual(calls.at(-1), { method: "PUBLISH", path: "kokoro-turn", body: { threadId: "t1", action: "silent" } });
 });
@@ -163,7 +163,7 @@ test("thread.active, archive and delete ignore child threads", async () => {
 async function activeDuringTurn(playback: "client" | "server") {
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
-  const h = harness({ prefs: { playback }, gate, replies: {
+  const h = harness({ prefs: { playback }, gates: [gate], replies: {
     "/turn": { action: "speech", text: "Done.", entry_id: 5, logged_text: "Done." },
   } });
   const idle = h.host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
@@ -186,6 +186,39 @@ test("a thread going active while its /turn is out interrupts the server again",
   assert.deepEqual(calls.filter((c) => c.path === "/interrupt").length, 2);
   const turn = calls.findIndex((c) => c.path === "/turn");
   assert.ok(calls.map((c) => c.path).lastIndexOf("/interrupt") > turn);
+});
+
+function gated() {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  return { gate, release };
+}
+
+test("a cancelled turn that returns after a newer one leaves the newer server playback alone", async () => {
+  for (const newerDone of [true, false]) {
+    const first = gated();
+    const second = gated();
+    if (newerDone) second.release();
+    const { host, calls } = harness({ prefs: { playback: "server" }, gates: [first.gate, second.gate], replies: {
+      "/turn": { action: "speech", logged_text: "Done." },
+    } });
+    const idle1 = host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "First." });
+    await tick();
+    await host.harness.emitThreadEvent("thread.active", { thread: root() });
+    const idle2 = host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Second." });
+    await tick();
+    first.release();
+    await idle1;
+    second.release();
+    await idle2;
+    assert.equal(calls.filter((c) => c.path === "/interrupt").length, 1, `only thread.active's (newer done: ${newerDone})`);
+  }
+});
+
+test("a turn the server did not speak tells cards its say and whether mute silenced it", async () => {
+  const { host, calls } = harness({ replies: { "/turn": { action: "silent", muted: true, say_text: "All done." } } });
+  await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "x" });
+  assert.deepEqual(calls.at(-1)?.body, { threadId: "t1", action: "silent", say: "All done.", muted: true });
 });
 
 test("a later turn in the thread is not affected by an earlier cancelled one", async () => {

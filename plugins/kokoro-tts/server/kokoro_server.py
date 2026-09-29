@@ -46,7 +46,7 @@ from kokoro_config import (
 )
 from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import FRAME_END, FRAME_ERROR, SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
-from kokoro_turn import MODE_CEILING, SOUNDS, apply_cue_prefs, route_cue, route_turn
+from kokoro_turn import MODE_CEILING, SOUNDS, apply_cue_prefs, extract_directive, route_cue, route_turn
 
 SERVER_VERSION = "0.2.0"
 MAX_REPLAY_CHARS = 2000
@@ -891,16 +891,24 @@ class KokoroServer:
         text = text.strip()
         if not text:
             return web.json_response({"action": "silent"})
+        # say_text: the reply's directive say, on every outcome, so its chat card
+        # can tell it was muted or not spoken. logged_text: the speech-log text
+        # of the entry this turn made, so the card can follow that entry.
+        say = extract_directive(text)[1]
+
+        def reply(body: dict) -> web.Response:
+            if say:
+                body["say_text"] = say
+            return web.json_response(body)
+
         if self.muted:
-            return web.json_response({"action": "silent", "muted": True})
+            return reply({"action": "silent", "muted": True})
         if self._is_repeat_turn(session_id, text):
-            return web.json_response({"action": "silent", "repeat": True})
+            return reply({"action": "silent", "repeat": True})
         playback = "client" if data.get("playback") == "client" else "server"
         cfg = self.config.get()
         result = apply_cue_prefs(route_turn(text, self._mode_of(data, cfg)), cfg)
 
-        # logged_text: the speech-log text of the entry this turn made, so chat
-        # cards can tell which reply the turn was.
         if playback == "server":
             if result["action"] == "speech":
                 logged = result["text"]
@@ -914,20 +922,21 @@ class KokoroServer:
                     return web.json_response(body, status=status)
             elif result["action"] == "sound":
                 await self._start_sound(result["sound"], session_id)
-            return web.json_response(result)
+            return reply(result)
 
         if result["action"] == "speech":
             spoken = strip_markdown(result["text"]) if cfg["strip_markdown"] else result["text"]
+            # Log what the agent wrote (as the server path does), so the chat card matches it.
+            entry = self.speech_log.add(result["text"], session_id, voice=voice_label(cfg["voice"]))
             if not spoken:
-                result = {"action": "sound", "sound": "done"}
+                self.speech_log.update(entry, "empty")
+                result = {"action": "sound", "sound": "done", "logged_text": result["text"]}
             else:
-                # Log what the agent wrote (as the server path does), so the chat card matches it.
-                entry = self.speech_log.add(result["text"], session_id, voice=voice_label(cfg["voice"]))
                 result = {"action": "speech", "text": spoken, "entry_id": entry["id"],
                           "speech_gain": cfg["speech_gain"], "logged_text": result["text"]}
         if result["action"] == "sound":
             result["sound_volume"] = cfg["sound_volume"]
-        return web.json_response(result)
+        return reply(result)
 
     async def handle_cue(self, request: web.Request) -> web.Response:
         data = await read_object(request)

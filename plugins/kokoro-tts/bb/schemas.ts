@@ -230,5 +230,7 @@ export const turnResultSchema = z.object({
   muted: z.boolean().optional(),
   /** The speech-log text of the entry this turn made. */
   logged_text: z.string().optional(),
+  /** The reply's directive say, on every outcome. */
+  say_text: z.string().optional(),
 });
 export type TurnResult = z.infer<typeof turnResultSchema>;

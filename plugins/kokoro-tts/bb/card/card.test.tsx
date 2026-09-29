@@ -14,10 +14,10 @@ const done = (o: Partial<SpeechLogEntry> = {}): SpeechLogEntry => ({
 
 afterEach(() => vi.useRealTimers());
 
-async function mount(attributes: Record<string, string>, overrides = {}) {
+async function mount(attributes: Record<string, string>, overrides = {}, message = MESSAGE) {
   const app = await loadPluginApp(() => import("../app.tsx"));
   const reg = app.messageDirectives.find((d) => d.id === "kokoro-tts")!;
-  return renderSlot(reg, { attributes, source: "::kokoro-tts{}", message: MESSAGE, openWorkspaceFile: null },
+  return renderSlot(reg, { attributes, source: "::kokoro-tts{}", message, openWorkspaceFile: null },
     { rpc: rpcStubs(overrides) });
 }
 
@@ -78,6 +78,42 @@ test("a turn that logged nothing returns the newest card to No record", async ()
   await screen.findByText("Queued");
   await slot.emitRealtime("kokoro-turn", { threadId: "t1", action: "silent" });
   expect(await screen.findByText("No record")).toBeTruthy();
+});
+
+test("a reply mute silenced reads Muted right away", async () => {
+  const slot = await card(SPEECH);
+  await slot.emitRealtime("kokoro-turn", turnOut);
+  await screen.findByText("Queued");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t1", action: "silent", say: "All tests pass.", muted: true });
+  expect(await screen.findByText("Muted")).toBeTruthy();
+});
+
+test("a reply the mode or a repeat kept quiet reads Not spoken right away", async () => {
+  const slot = await card(SPEECH);
+  await screen.findByText("No record");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t1", action: "sound", say: "All  tests pass." });
+  expect(await screen.findByText("Not spoken")).toBeTruthy();
+  expect(slot.container.querySelector(".text-destructive")).toBeNull();
+});
+
+test("another reply's say leaves the card alone", async () => {
+  const slot = await card(SPEECH);
+  await screen.findByText("No record");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t1", action: "silent", say: "Something else.", muted: true });
+  expect(screen.getByText("No record")).toBeTruthy();
+});
+
+test("tab focus refetches only threads that still have a card on the page", async () => {
+  const t1 = await card(SPEECH, { speechLog: () => ({ entries: [done()] }) });
+  await screen.findByText(/^Spoken/);
+  const t2 = await mount(SPEECH, { speechLog: () => ({ entries: [] }) }, { ...MESSAGE, id: "m2", threadId: "t2" });
+  await waitFor(() => expect(speechLogCalls(t2)).toBe(1));
+  t1.unmount();
+  const before = speechLogCalls(t1);
+  document.dispatchEvent(new Event("visibilitychange"));
+  await waitFor(() => expect(speechLogCalls(t2)).toBe(2));
+  expect(speechLogCalls(t1)).toBe(before);
+  expect(t2.inspection.rpcCalls.filter((c) => c.method === "speechLog").map((c) => c.input)).toEqual([{ threadId: "t2" }, { threadId: "t2" }]);
 });
 
 test("a turn in another thread leaves the card at No record", async () => {

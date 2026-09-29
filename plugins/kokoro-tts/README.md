@@ -38,10 +38,12 @@ bb renders it as a card showing the spoken text and what the server's speech
 log says happened to it: Queued (also shown by the thread's newest card while
 its turn is on its way to the server), Playing, Spoken (with the voice and
 time to first audio), Interrupted (also for an entry left queued or playing
-for over 20 minutes), Muted, Not spoken (a turn logged the card's text but
-its log entry did not show up within 25 s), Error, or No record (no log entry
-and no turn for this reply since the card appeared, as for older messages
-and sub-thread replies, which are not voiced). Replay speaks the reply again
+for over 20 minutes), Muted (also when mute kept its turn from being
+voiced), Not spoken (the verbosity mode or a repeated reply kept it quiet, or
+a turn logged its text but the log entry did not show up within 25 s),
+Error, or No record (no log entry and no turn for this reply since the card
+appeared, as for older messages and sub-thread replies, which are not
+voiced). Replay speaks the reply again
 through `POST /replay`, in the window where replies play and logged under the
 thread; Stop appears while it plays and stops that thread's speech only.
 Sound weights show a one-line chip with the sound name; `silent` renders

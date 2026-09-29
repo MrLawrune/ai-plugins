@@ -40,10 +40,12 @@ export function findEntry(entries: SpeechLogEntry[], threadId: string, say: stri
 /**
  * turnAt: when a turn in this card's thread logged this card's text.
  * pendingAt: when a turn went out for the thread while this was its newest card.
+ * skipped: a turn for this card's reply made no log entry, because mute silenced
+ * it ("muted") or the mode or a repeat did ("unspoken").
  */
 export function cardState(
   entry: SpeechLogEntry | undefined,
-  t: { turnAt: number | null; pendingAt?: number | null; now: number },
+  t: { turnAt: number | null; pendingAt?: number | null; skipped?: "muted" | "unspoken" | null; now: number },
 ): CardState {
   if (entry) {
     const stale = t.now - entry.ts * 1000 > STALE_ENTRY_MS;
@@ -57,6 +59,7 @@ export function cardState(
       case "empty": return { kind: "error", detail: "nothing left to speak after stripping markup" };
     }
   }
+  if (t.skipped) return { kind: t.skipped };
   if (t.turnAt !== null) return t.now - t.turnAt < PENDING_GRACE_MS ? { kind: "queued" } : { kind: "unspoken" };
   if (t.pendingAt != null && t.now - t.pendingAt < PENDING_GRACE_MS) return { kind: "queued" };
   // No turn for this card since it mounted (history, a sub-thread): a missing entry means "no record".

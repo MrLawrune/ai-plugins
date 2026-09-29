@@ -28,7 +28,7 @@ const REPLAY_WAIT_MS = 10_000;
 const newestCard = new Map<string, symbol>();
 
 /** What voice.ts publishes on "kokoro-turn". */
-type TurnSignal = { threadId?: unknown; pending?: unknown; text?: unknown };
+type TurnSignal = { threadId?: unknown; pending?: unknown; text?: unknown; say?: unknown; muted?: unknown };
 
 const ICON: Record<CardState["kind"], IconSvgElement> = {
   queued: SpeechIcon,
@@ -84,6 +84,8 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const [turnAt, setTurnAt] = useState<number | null>(null);
   /** When a turn went out for this thread while this card was its newest; cleared by the turn's outcome. */
   const [pendingAt, setPendingAt] = useState<number | null>(null);
+  /** A turn for this card's reply that made no log entry: muted, or not spoken (mode, repeat). */
+  const [skipped, setSkipped] = useState<"muted" | "unspoken" | null>(null);
   useRealtime("kokoro-turn", (payload) => {
     const turn = payload as TurnSignal | null;
     if (turn?.threadId !== threadId) return;
@@ -92,9 +94,13 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
       return;
     }
     setPendingAt(null);
-    if (typeof turn.text === "string" && normalizeSpoken(turn.text) === normalizeSpoken(say)) {
+    const mine = (text: unknown) => typeof text === "string" && normalizeSpoken(text) === normalizeSpoken(say);
+    if (mine(turn.text)) {
       setTurnAt(Date.now());
+      setSkipped(null);
       refreshSpeechLog(threadId);
+    } else if (mine(turn.say)) {
+      setSkipped(turn.muted === true ? "muted" : "unspoken");
     }
   });
   /** Entry id at the moment Replay was pressed; the card polls until a newer entry shows up. */
@@ -103,7 +109,7 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const [pending, setPending] = useState(true);
   const entries = useSpeechLog(threadId, pending);
   const entry = entries ? findEntry(entries, threadId, say) : undefined;
-  const state = cardState(entry, { turnAt, pendingAt, now: Date.now() });
+  const state = cardState(entry, { turnAt, pendingAt, skipped, now: Date.now() });
   const polling = needsPolling(state) || replayAfter !== null;
   useEffect(() => setPending(polling), [polling]);
   useEffect(() => {

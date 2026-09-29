@@ -64,6 +64,12 @@ test("cardState reads a queued or playing entry older than the stale bound as in
   assert.deepEqual(cardState(entry({ status: "done", ts: old }), { turnAt: null, now }).kind, "spoken");
 });
 
+test("cardState for a turn that made no entry: muted or not spoken, with no grace period", () => {
+  assert.deepEqual(cardState(undefined, { turnAt: null, skipped: "muted", now: 10_000 }), { kind: "muted" });
+  assert.deepEqual(cardState(undefined, { turnAt: null, pendingAt: 10_000, skipped: "unspoken", now: 10_000 }), { kind: "unspoken" });
+  assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: null, skipped: "muted", now: 10_000 }).kind, "spoken");
+});
+
 test("cardState prefers the log entry over the turn signal", () => {
   assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: 10_000, now: 10_000 }), { kind: "spoken", voice: undefined, firstAudioMs: undefined });
 });

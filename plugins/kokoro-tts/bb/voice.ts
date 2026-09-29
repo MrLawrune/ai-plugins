@@ -15,7 +15,8 @@ export interface VoiceDeps {
   /**
    * bb.realtime.publish. "kokoro-turn" tells chat cards a thread's turn is on
    * its way to the server ({ threadId, pending: true }) and then what became of
-   * it ({ threadId, action, text? }, text being the speech-log text it made).
+   * it ({ threadId, action, text?, say?, muted? }: text is the speech-log text
+   * it made, say the reply's directive say, muted whether mute silenced it).
    */
   publish: (channel: string, payload: unknown) => void;
   /** The reply ends with a ::kokoro-tts directive that bb renders as a card. */
@@ -64,7 +65,8 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
     const { playback } = deps.prefs.get();
     const turn = { cancelled: false };
     inflight.set(threadId, turn);
-    let outcome: { threadId: string; action: string; text?: string } = { threadId, action: "silent" };
+    let outcome: { threadId: string; action: string; text?: string; say?: string; muted?: boolean } =
+      { threadId, action: "silent" };
     try {
       deps.publish("kokoro-turn", { threadId, pending: true });
       const parsed = turnResultSchema.safeParse(
@@ -72,12 +74,22 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
       );
       if (!parsed.success) return;
       const r = parsed.data;
-      outcome = { threadId, action: r.action, ...(r.logged_text ? { text: r.logged_text } : {}) };
+      outcome = {
+        threadId, action: r.action,
+        ...(r.logged_text ? { text: r.logged_text } : {}),
+        ...(r.say_text ? { say: r.say_text } : {}),
+        ...(r.muted ? { muted: true } : {}),
+      };
       if (turn.cancelled) {
-        // The thread moved on while /turn was out: drop the reply.
-        if (playback === "server") await deps.client().call("POST", "/interrupt", { session_id: threadId });
-        else if (r.entry_id !== undefined) {
-          await deps.client().call("POST", "/speech-log/status", { id: r.entry_id, status: "interrupted" });
+        // The thread moved on while /turn was out: drop the reply. When a newer
+        // turn owns the thread, the server already replaced this playback with
+        // that one's, and interrupting now would cut the newer reply off.
+        if (playback === "client") {
+          if (r.entry_id !== undefined) {
+            await deps.client().call("POST", "/speech-log/status", { id: r.entry_id, status: "interrupted" });
+          }
+        } else if (inflight.get(threadId) === turn) {
+          await deps.client().call("POST", "/interrupt", { session_id: threadId });
         }
         return;
       }

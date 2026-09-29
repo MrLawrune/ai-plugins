@@ -97,18 +97,36 @@ def test_turn_client_playback_logs_without_playing(tmp_path):
     assert srv.speech_log.get(body["entry_id"])["status"] == "queued"
 
 
-def test_turn_client_strip_to_empty_becomes_done(tmp_path):
+def test_turn_client_strip_to_empty_becomes_done_and_logs_empty(tmp_path):
     srv = make_server(tmp_path)
     blk = '::kokoro-tts{weight="speech" say="https://example.com"}'
     _, body = request(srv, "POST", "/turn", {"text": blk, "session_id": "t1", "playback": "client"})
     assert body["action"] == "sound" and body["sound"] == "done"
+    assert body["logged_text"] == body["say_text"] == "https://example.com"
+    [entry] = srv.speech_log.recent(10)
+    assert entry["status"] == "empty" and entry["text"] == "https://example.com"
+
+
+def test_turn_reports_the_directive_say_on_every_outcome(tmp_path):
+    srv = make_server(tmp_path)
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "playback": "client"})
+    assert body["say_text"] == "All done."
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
+    assert body == {"action": "silent", "repeat": True, "say_text": "All done."}
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s2", "mode": "quiet"})
+    assert body == {"action": "silent", "say_text": "All done."}
+    srv.muted = True
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s3"})
+    assert body == {"action": "silent", "muted": True, "say_text": "All done."}
+    _, body = request(srv, "POST", "/turn", {"text": "No directive here.", "session_id": "s4"})
+    assert "say_text" not in body
 
 
 def test_turn_muted_is_silent(tmp_path):
     srv = make_server(tmp_path)
     srv.muted = True
     _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
-    assert body == {"action": "silent", "muted": True} and srv.calls == []
+    assert body == {"action": "silent", "muted": True, "say_text": "All done."} and srv.calls == []
 
 
 def test_turn_per_request_mode_overrides_the_configured_mode(tmp_path):
@@ -218,7 +236,7 @@ def test_turn_server_playback_empty_after_strip_plays_done(tmp_path):
     srv._start_speech = fake_speech
     status, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
     assert status == 200
-    assert body == {"action": "sound", "sound": "done", "logged_text": "All done."}
+    assert body == {"action": "sound", "sound": "done", "logged_text": "All done.", "say_text": "All done."}
     assert ("sound", "done", "s1") in srv.calls
 
 
@@ -344,7 +362,8 @@ def test_turn_repeat_for_the_same_session_is_silent(tmp_path):
     srv = make_server(tmp_path)
     assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "s1"})[1]["action"] == "speech"
     # stopping the thread re-reports the previous reply
-    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "s1"})[1] == {"action": "silent", "repeat": True}
+    assert request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "s1"})[1] == {
+        "action": "silent", "repeat": True, "say_text": "All done."}
     assert len(srv.calls) == 1
 
 

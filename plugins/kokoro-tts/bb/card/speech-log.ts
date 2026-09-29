@@ -83,15 +83,18 @@ export function refreshSpeechLog(threadId: string): void {
 }
 
 const onVisible = () => {
-  if (document.visibilityState === "visible") for (const log of logs.values()) log.refresh();
+  if (document.visibilityState !== "visible") return;
+  for (const log of logs.values()) if (log.listeners.size > 0) log.refresh();
 };
 
 export function useSpeechLog(threadId: string, pending: boolean): SpeechLogEntry[] | null {
   const rpc = useRpc<typeof rpcContract>();
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const token = useMemo(() => Symbol("kokoro-card"), []);
-  const log = logFor(threadId);
+  // A thread's log lives while one of its cards is mounted, so effects look it
+  // up rather than holding the one this render saw.
   useEffect(() => {
+    const log = logFor(threadId);
     log.rpc = rpc;
     if (mounted++ === 0) document.addEventListener("visibilitychange", onVisible);
     log.listeners.add(rerender);
@@ -99,19 +102,23 @@ export function useSpeechLog(threadId: string, pending: boolean): SpeechLogEntry
     return () => {
       log.listeners.delete(rerender);
       log.waiting.delete(token);
-      if (log.listeners.size === 0) log.stop();
+      if (log.listeners.size === 0) {
+        log.stop();
+        if (logs.get(threadId) === log) logs.delete(threadId);
+      }
       if (--mounted === 0) document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [rpc, token, log]);
+  }, [rpc, token, threadId]);
   useEffect(() => {
+    const log = logFor(threadId);
     if (pending) {
       log.waiting.add(token);
       log.schedule();
     } else {
       log.waiting.delete(token);
     }
-  }, [pending, token, log]);
-  return log.entries;
+  }, [pending, token, threadId, rpc]);
+  return logs.get(threadId)?.entries ?? null;
 }
 
 /** Tests only: forget the shared polls between renders. */
