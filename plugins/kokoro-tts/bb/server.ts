@@ -114,6 +114,8 @@ export default async function plugin(bb: BbPluginApi) {
   bb.log.info(`proxying to ${client.baseUrl}`);
   registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, config, hub, log: bb.log,
     publish: (channel, payload) => bb.realtime.publish(channel, payload),
+    scopes,
+    threadParent: async (threadId) => (await bb.sdk.threads.get({ threadId })).parentThreadId,
   });
 
   const root = locatePluginRoot(path.dirname(fileURLToPath(import.meta.url)));

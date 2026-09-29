@@ -172,6 +172,33 @@ export const statusSchema = z.object({
 });
 export type KokoroStatus = z.infer<typeof statusSchema>;
 
+export const resolvedVoiceSchema = z.object({
+  mode: modeSchema,
+  voiced: z.boolean(),
+  modeFrom: z.enum(["thread", "parent", "project", "global"]),
+  isChild: z.boolean(),
+  childrenFrom: z.enum(["parent", "project"]).nullable(),
+});
+
+/** One thread's own and project voice settings, and what they resolve to. */
+export const voiceScopeSchema = z.object({
+  thread: scopeSettingSchema,
+  project: scopeSettingSchema,
+  globalMode: modeSchema,
+  effective: resolvedVoiceSchema,
+  /** The resolution without this thread's own setting: what "Default" gives. */
+  inherited: resolvedVoiceSchema,
+  parentThreadId: z.string().nullable(),
+});
+export type VoiceScopeState = z.infer<typeof voiceScopeSchema>;
+
+const scopePatchSchema = z
+  .object({ mode: modeSchema.nullable().optional(), voiceChildren: z.boolean().nullable().optional() })
+  .strict();
+export type ScopePatchInput = z.infer<typeof scopePatchSchema>;
+
+const threadIdSchema = z.string().min(1).max(128);
+
 export const rpcContract = defineRpcContract({
   status: { input: z.null(), output: statusSchema },
   /** One thread's recent speech-log entries, oldest first. */
@@ -213,6 +240,22 @@ export const rpcContract = defineRpcContract({
   installUv: { input: z.null(), output: z.object({ started: z.boolean() }) },
   getPrefs: { input: z.null(), output: prefsSchema },
   setPrefs: { input: prefsSchema.partial().strict(), output: prefsSchema },
+  getVoiceScope: {
+    input: z.object({ threadId: threadIdSchema, projectId: threadIdSchema }).strict(),
+    output: voiceScopeSchema,
+  },
+  /** A null in the patch clears that field of the thread's or project's setting. */
+  setVoiceScope: {
+    input: z
+      .object({
+        threadId: threadIdSchema,
+        projectId: threadIdSchema,
+        scope: z.enum(["thread", "project"]),
+        patch: scopePatchSchema,
+      })
+      .strict(),
+    output: voiceScopeSchema,
+  },
 });
 
 /** What POST /replay returns: a browser-playback entry to play, or the server's status. */

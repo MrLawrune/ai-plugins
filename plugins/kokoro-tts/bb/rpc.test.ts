@@ -5,10 +5,20 @@ import { ConfigCache } from "./config-cache.ts";
 import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
 import { installerFailure, registerRpc } from "./rpc.ts";
-import type { ConfigResponse, KokoroStatus } from "./schemas.ts";
+import type { ConfigResponse, KokoroStatus, VoiceScopeState } from "./schemas.ts";
+import { VoiceScopes } from "./scopes.ts";
 import { CONFIG_RESPONSE, HEALTH } from "./page/fixtures.ts";
 
-function harness(playback: "client" | "server" = "server", ready = true, replies: Record<string, (body: unknown) => unknown> = {}) {
+interface HarnessExtra {
+  threadParent?: (threadId: string) => Promise<string | null | undefined>;
+}
+
+async function harness(
+  playback: "client" | "server" = "server",
+  ready = true,
+  replies: Record<string, (body: unknown) => unknown> = {},
+  extra: HarnessExtra = {},
+) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   const stops: (string | null)[] = [];
   const spoken: unknown[][] = [];
@@ -30,6 +40,9 @@ function harness(playback: "client" | "server" = "server", ready = true, replies
   const host = createFakePluginHost();
   const prefs = new PrefsStore(host.bb.storage.kv);
   const config = new ConfigCache(() => client.call<ConfigResponse>("GET", "/config"));
+  const scopes = new VoiceScopes(host.bb.storage.kv);
+  await scopes.load();
+  scopes.onChange((kind) => { if (kind === "settings") published.push(["kokoro-scopes", { changed: true }]); });
   registerRpc(host.bb, {
     client: () => client,
     supervisor: () => null,
@@ -44,26 +57,28 @@ function harness(playback: "client" | "server" = "server", ready = true, replies
     },
     log: host.bb.log,
     publish: (c, p) => { published.push([c, p]); },
+    scopes,
+    threadParent: extra.threadParent ?? (async () => null),
   });
-  return { host, calls, stops, spoken, sounds, published, config, ready: prefs.update({ playback }) };
+  return { host, calls, stops, spoken, sounds, published, config, scopes, ready: prefs.update({ playback }) };
 }
 
 test("Stop all also stops browser playback", async () => {
-  const { host, calls, stops } = harness();
+  const { host, calls, stops } = await harness();
   await host.harness.callRpc("interruptAll", null);
   assert.deepEqual(stops, [null]);
   assert.deepEqual(calls.map((c) => c.path), ["/interrupt-all"]);
 });
 
 test("Stop on a card stops only that thread, in the browser and on the server", async () => {
-  const { host, calls, stops } = harness();
+  const { host, calls, stops } = await harness();
   await host.harness.callRpc("stop", { threadId: "t1" });
   assert.deepEqual(stops, ["t1"]);
   assert.deepEqual(calls, [{ method: "POST", path: "/interrupt", body: { session_id: "t1" } }]);
 });
 
 test("Mute also stops browser playback; unmute does not", async () => {
-  const { host, stops, config } = harness();
+  const { host, stops, config } = await harness();
   config.set(CONFIG_RESPONSE);
   assert.deepEqual(await host.harness.callRpc("setMuted", { muted: true }), { muted: true });
   assert.deepEqual(stops, [null]);
@@ -73,7 +88,7 @@ test("Mute also stops browser playback; unmute does not", async () => {
 });
 
 test("the speech log is fetched for one thread", async () => {
-  const { host, calls } = harness("server", true, { "/speech-log?session_id=t%201": () => ({ entries: [] }) });
+  const { host, calls } = await harness("server", true, { "/speech-log?session_id=t%201": () => ({ entries: [] }) });
   assert.deepEqual(await host.harness.callRpc("speechLog", { threadId: "t 1" }), { entries: [] });
   assert.deepEqual(calls.map((c) => c.path), ["/speech-log?session_id=t%201"]);
 });
@@ -89,7 +104,7 @@ test("installerFailure keeps the last lines of the installer output", () => {
 });
 
 test("preview plays in the browser when browser playback is selected", async () => {
-  const h = harness("client");
+  const h = await harness("client");
   await h.ready;
   assert.deepEqual(await h.host.harness.callRpc("preview", { voice: "af_bella", speed: 1.2 }), { status: "playing" });
   assert.equal(h.calls.some((c) => c.path === "/preview"), false);
@@ -104,28 +119,28 @@ test("preview plays in the browser when browser playback is selected", async () 
 });
 
 test("preview reports no_window when no browser can play", async () => {
-  const h = harness("client", false);
+  const h = await harness("client", false);
   await h.ready;
   assert.deepEqual(await h.host.harness.callRpc("preview", {}), { status: "no_window" });
   assert.equal(h.spoken.length, 0);
 });
 
 test("preview uses the server speakers when server playback is selected", async () => {
-  const h = harness("server");
+  const h = await harness("server");
   await h.ready;
   await h.host.harness.callRpc("preview", { text: "Hello" });
   assert.deepEqual(h.calls.at(-1), { method: "POST", path: "/preview", body: { text: "Hello", session_id: "preview" } });
 });
 
 test("sound tests follow browser playback at the configured cue volume", async () => {
-  const h = harness("client");
+  const h = await harness("client");
   await h.ready;
   await h.host.harness.callRpc("playSound", { sound: "done" });
   assert.deepEqual(h.sounds, [["done", 0.6, "bb-preview"]]);
 });
 
 test("status bundles health, setup and clients", async () => {
-  const h = harness();
+  const h = await harness();
   const s = (await h.host.harness.callRpc("status", null)) as KokoroStatus;
   assert.equal(s.health.up, true);
   assert.equal(s.setup.state, "error"); // no supervisor in this harness
@@ -133,7 +148,7 @@ test("status bundles health, setup and clients", async () => {
 });
 
 test("a config change is published to every window and cached", async () => {
-  const h = harness();
+  const h = await harness();
   await h.host.harness.callRpc("patchConfig", { speed: 1.2 });
   const [channel, payload] = h.published.at(-1)!;
   assert.equal(channel, "kokoro-config");
@@ -142,7 +157,7 @@ test("a config change is published to every window and cached", async () => {
 });
 
 test("sound tests use the cached cue volume after a config change", async () => {
-  const h = harness("client");
+  const h = await harness("client");
   await h.ready;
   await h.host.harness.callRpc("patchConfig", { sound_volume: 0.3 });
   await h.host.harness.callRpc("playSound", { sound: "done" });
@@ -151,7 +166,7 @@ test("sound tests use the cached cue volume after a config change", async () => 
 });
 
 test("replay in browser playback speaks the new log entry in that thread", async () => {
-  const h = harness("client", true, {
+  const h = await harness("client", true, {
     "/replay": () => ({ status: "queued", entry_id: 9, text: "Again.", speech_gain: 0.7 }),
   });
   await h.ready;
@@ -163,14 +178,14 @@ test("replay in browser playback speaks the new log entry in that thread", async
 });
 
 test("replay reports no_window when no browser can play", async () => {
-  const h = harness("client", false);
+  const h = await harness("client", false);
   await h.ready;
   assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "no_window" });
   assert.equal(h.calls.some((c) => c.path === "/replay"), false);
 });
 
 test("replay on server playback lets the server play", async () => {
-  const h = harness("server", true, { "/replay": () => ({ status: "playing", session_id: "t1" }) });
+  const h = await harness("server", true, { "/replay": () => ({ status: "playing", session_id: "t1" }) });
   await h.ready;
   assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "playing" });
   assert.equal((h.calls.at(-1)?.body as { playback: string }).playback, "server");
@@ -178,14 +193,66 @@ test("replay on server playback lets the server play", async () => {
 });
 
 test("replay passes on a browser-side empty result without speaking", async () => {
-  const h = harness("client", true, { "/replay": () => ({ status: "empty_after_strip" }) });
+  const h = await harness("client", true, { "/replay": () => ({ status: "empty_after_strip" }) });
   await h.ready;
   assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "**" }), { status: "empty_after_strip" });
   assert.deepEqual(h.spoken, []);
 });
 
 test("replay against a server without the endpoint reports unsupported", async () => {
-  const h = harness("server", true, { "/replay": () => { throw new ServerError("Kokoro server returned non-JSON (404)", undefined, 404); } });
+  const h = await harness("server", true, { "/replay": () => { throw new ServerError("Kokoro server returned non-JSON (404)", undefined, 404); } });
   await h.ready;
   assert.deepEqual(await h.host.harness.callRpc("replay", { threadId: "t1", text: "Again." }), { status: "unsupported" });
+});
+
+// callRpc returns Promise<unknown>; tsc checks test files.
+const scopeRpc = (h: { host: ReturnType<typeof createFakePluginHost> }, name: "getVoiceScope" | "setVoiceScope", input: unknown) =>
+  h.host.harness.callRpc(name, input) as Promise<VoiceScopeState>;
+
+test("getVoiceScope looks an unknown parent up once and reports inherited and effective voice", async () => {
+  const parentCalls: string[] = [];
+  const h = await harness("server", true, {}, { threadParent: async (id) => { parentCalls.push(id); return "t0"; } });
+  await h.scopes.set("thread", "t0", { mode: "verbose", voiceChildren: true });
+  const r = await scopeRpc(h, "getVoiceScope", { threadId: "c1", projectId: "p1" });
+  assert.equal(r.parentThreadId, "t0");
+  assert.deepEqual([r.effective.mode, r.effective.voiced, r.effective.modeFrom], ["verbose", true, "parent"]);
+  await scopeRpc(h, "getVoiceScope", { threadId: "c1", projectId: "p1" });
+  assert.deepEqual(parentCalls, ["c1"]);
+});
+
+test("a failed parent lookup resolves as a root and is retried next time", async () => {
+  let n = 0;
+  const h = await harness("server", true, {}, { threadParent: async () => { n++; throw new Error("down"); } });
+  const r = await scopeRpc(h, "getVoiceScope", { threadId: "c1", projectId: "p1" });
+  assert.deepEqual([r.parentThreadId, r.effective.isChild], [null, false]);
+  await scopeRpc(h, "getVoiceScope", { threadId: "c1", projectId: "p1" });
+  assert.equal(n, 2);
+});
+
+test("a root is looked up once", async () => {
+  let n = 0;
+  const h = await harness("server", true, {}, { threadParent: async () => { n++; return null; } });
+  await scopeRpc(h, "getVoiceScope", { threadId: "t1", projectId: "p1" });
+  await scopeRpc(h, "getVoiceScope", { threadId: "t1", projectId: "p1" });
+  assert.equal(n, 1);
+});
+
+test("setVoiceScope writes the right scope, null clears, inherited ignores the thread's own mode, and publishes", async () => {
+  const h = await harness();
+  h.config.set(CONFIG_RESPONSE);
+  let r = await scopeRpc(h, "setVoiceScope", { threadId: "t1", projectId: "p1", scope: "project", patch: { mode: "quiet" } });
+  assert.deepEqual([r.project, r.effective.voiced], [{ mode: "quiet" }, false]);
+  r = await scopeRpc(h, "setVoiceScope", { threadId: "t1", projectId: "p1", scope: "thread", patch: { mode: "brief" } });
+  assert.deepEqual([r.thread, r.effective.voiced, r.effective.modeFrom, r.inherited.mode, r.inherited.modeFrom],
+    [{ mode: "brief" }, true, "thread", "quiet", "project"]);
+  r = await scopeRpc(h, "setVoiceScope", { threadId: "t1", projectId: "p1", scope: "thread", patch: { mode: null } });
+  assert.deepEqual(r.thread, {});
+  assert.ok(h.published.some(([c]) => c === "kokoro-scopes"));
+});
+
+test("getVoiceScope never calls the server: an empty config cache reads as brief", async () => {
+  const h = await harness();
+  const r = await scopeRpc(h, "getVoiceScope", { threadId: "t1", projectId: "p1" });
+  assert.equal(r.globalMode, "brief");
+  assert.equal(h.calls.some((c) => c.path === "/config"), false);
 });
