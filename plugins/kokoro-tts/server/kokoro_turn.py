@@ -53,12 +53,12 @@ def _fence_spans(text):
     return [(m.start(), m.end()) for m in CODE_FENCE.finditer(text)]
 
 
-def _strip_blocks(text):
+def _strip_directives(text):
     """Remove HTML comments and directive lines (for fallback and full mode)."""
     return DIRECTIVE.sub("", HTML_COMMENT.sub("", text))
 
 
-def extract_block(text):
+def extract_directive(text):
     """Return (weight, say) from the reply's last kokoro-tts directive, or (None, None).
 
     Directives inside code fences are examples, not the reply's directive,
@@ -77,7 +77,7 @@ def extract_block(text):
 
 def first_sentence(text):
     """First speakable sentence of the turn, directives, comments, and fences stripped."""
-    text = _strip_blocks(text)
+    text = _strip_directives(text)
     text = CODE_FENCE.sub("", text)
     text = re.sub(r"^#+\s*", "", text.strip(), flags=re.MULTILINE)
     text = re.sub(r"\s+", " ", text).strip()
@@ -104,7 +104,7 @@ def full_text(text):
     short inline code is read as written, a path as its file name.
     Replies over FULL_MAX_CHARS are cut at a sentence or line end.
     """
-    text = _strip_blocks(text)
+    text = _strip_directives(text)
     text = CODE_FENCE.sub("\n\nCode block skipped.\n\n", text)
     text = TABLE.sub("\nTable skipped.\n\n", text)
     text = INLINE_CODE.sub(lambda m: _speak_inline_code(m.group(1)), text)
@@ -126,7 +126,7 @@ def route_turn(text: str, mode: str) -> dict:
         # The reply itself is the speech; directives and weights are ignored.
         content = full_text(text)
         return {"action": "speech", "text": content} if content else {"action": "silent"}
-    weight, content = extract_block(text)
+    weight, content = extract_directive(text)
     if weight is None:
         fallback = first_sentence(text)
         if fallback is None:
@@ -147,12 +147,10 @@ def route_turn(text: str, mode: str) -> dict:
 
 
 def route_cue(sound: str, mode: str, cfg: dict) -> dict:
-    """Gate a standalone sound (attention ping, working tick)."""
-    if sound not in SOUNDS or MODE_CEILING.get(mode, 4) == 0:
+    """Gate the standalone attention ping an agent's pending prompt plays."""
+    if sound != "attention" or MODE_CEILING.get(mode, 4) == 0:
         return {"action": "silent"}
-    if sound == "attention" and not cfg.get("attention_sound", True):
-        return {"action": "silent"}
-    if sound == "working" and not cfg.get("working_sound", True):
+    if not cfg.get("attention_sound", True):
         return {"action": "silent"}
     return {"action": "sound", "sound": sound}
 

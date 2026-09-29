@@ -1,4 +1,4 @@
-Every bb agent gets a voice. When a thread finishes, you hear a short spoken summary; when an agent needs your permission, you hear a ping; when you start typing, it stops talking.
+Every bb agent gets a voice. When a thread finishes, you hear a short spoken summary; when an agent needs your permission, you hear a ping; when you send a message, it stops talking.
 
 ## What you get
 

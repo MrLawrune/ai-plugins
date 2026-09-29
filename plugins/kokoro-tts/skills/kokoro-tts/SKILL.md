@@ -88,9 +88,10 @@ Kokoro TTS page or with `PATCH /config`.
 
 - **Routing**: the server's `POST /turn` parses the directive, applies the mode
   ceiling, and falls back to the first sentence (`server/kokoro_turn.py`).
-  `POST /cue` gates attention and working sounds.
+  `POST /cue` gates the attention ping. Both take a per-request `mode` that
+  overrides the configured one for that request.
 - **In bb** (any agent provider): the plugin voices root threads on turn end,
-  stops speech when you type, pings on permission prompts, and injects this
+  stops speech when you send a message, pings on permission prompts, and injects this
   contract as agent instructions. Audio plays in the bb window you used last
   (`playback=client`, default) or on the server host's speakers
   (`playback=server`). The Playback devices card picks the window: follow,
@@ -119,10 +120,12 @@ Kokoro TTS page or with `PATCH /config`.
 - **Data dir**: `~/.local/share/kokoro-tts` (models, `venv-cpu`, `venv-gpu`).
   Config: `~/.config/kokoro-tts/config.json`. Speech log:
   `~/.local/state/kokoro-tts/speech-log.jsonl`.
-- **Endpoints**: `/turn`, `/cue`, `/speak`, `/play-sound`, `/preview`,
-  `/interrupt`, `/interrupt-all`, `/cleanup`, `/mute`, `/config`, `/voices`,
-  `/devices`, `/engine`, `/synthesize`, `/speech-log`, `/speech-log/status`,
-  `/replay`, `/health` (`output_device_ok`, latency, `features`).
+- **Endpoints**: `/turn`, `/cue`, `/play-sound`, `/preview`, `/replay`,
+  `/interrupt`, `/interrupt-all`, `/cleanup`, `/mute` (`{"muted": bool}`),
+  `/config`, `/voices`, `/devices`, `/engine`, `/synthesize`, `/speech-log`
+  (`?session_id=` for one thread), `/speech-log/status`, `/other-audio`,
+  `/health` (version, engine, latency, `started_by`). Every playback route
+  takes a `session_id` (the bb thread id).
 - **Remote node**: `KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0` serves
   `/synthesize`; point another server at it with provider=remote.
   Warning: the server has no authentication. Binding beyond loopback lets
@@ -149,6 +152,6 @@ No audio:
 1. Server health: `curl http://127.0.0.1:6789/health`
 2. Muted? `curl http://127.0.0.1:6789/health | jq .muted`
 3. Server log: the plugin's log in bb (lines tagged `[server]`)
-4. Direct test: `curl -X POST http://127.0.0.1:6789/speak -H "Content-Type: application/json" -d '{"text":"test","session_id":"t1"}'`
+4. Direct test (plays on the server host's speakers, even while muted): `curl -X POST http://127.0.0.1:6789/preview -H "Content-Type: application/json" -d '{"text":"test"}'`
 
 Garbled audio: non-ASCII characters in speech content -- check the log.

@@ -61,8 +61,7 @@ by `GET /speech-log`. Cards match log entries by thread and normalized spoken te
 A headless node (`KOKORO_HOST=0.0.0.0`) can serve speech to other machines.
 Nodes and clients negotiate terminated frames with `X-Kokoro-Frames: 2`;
 older nodes keep working. `/health` lists `started_by`, naming the launcher
-that started the server, and `features`, the optional capabilities this
-server supports (`directive`, `replay`).
+that started the server.
 
 ## Server security
 

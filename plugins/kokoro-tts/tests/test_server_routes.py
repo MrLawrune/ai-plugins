@@ -45,7 +45,7 @@ def make_server(tmp_path):
         srv.allow_muted_seen = allow_muted
         return {"status": "playing", "session_id": session_id}, 200
 
-    async def fake_sound(sound, session_id, volume=None):
+    async def fake_sound(sound, session_id):
         srv.calls.append(("sound", sound, session_id))
         return {"status": "playing", "sound": sound, "session_id": session_id}, 200
 
@@ -68,21 +68,30 @@ BLOCK = '::kokoro-tts{weight="speech" say="All done."}'
 def test_turn_server_playback_speaks(tmp_path):
     srv = make_server(tmp_path)
     status, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "s1"})
-    assert status == 200 and body["action"] == "speech"
+    assert status == 200 and body["action"] == "speech" and body["logged_text"] == "All done."
     assert srv.calls == [("speech", "All done.", "s1", {})]
 
 
-def test_turn_forwards_env_overrides(tmp_path):
+def test_turn_ignores_voice_speed_and_lang_in_the_body(tmp_path):
     srv = make_server(tmp_path)
     request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "voice": "af_bella", "speed": 1.2})
-    assert srv.calls[0][3] == {"voice": "af_bella", "speed": 1.2}
+    assert srv.calls[0][3] == {}
+
+
+@pytest.mark.parametrize("path", ["/turn", "/cue"])
+@pytest.mark.parametrize("body", [{"text": BLOCK, "sound": "attention"}, {"text": BLOCK, "sound": "attention", "session_id": ""}])
+def test_turn_and_cue_require_a_session_id(tmp_path, path, body):
+    srv = make_server(tmp_path)
+    status, reply = request(srv, "POST", path, body)
+    assert status == 400 and "session_id" in reply["error"]
+    assert srv.calls == []
 
 
 def test_turn_client_playback_logs_without_playing(tmp_path):
     srv = make_server(tmp_path)
     status, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "t1", "playback": "client"})
     assert status == 200
-    assert body["action"] == "speech" and body["text"] == "All done."
+    assert body["action"] == "speech" and body["text"] == "All done." and body["logged_text"] == "All done."
     assert isinstance(body["entry_id"], int) and body["speech_gain"] == 1.0
     assert srv.calls == []
     assert srv.speech_log.get(body["entry_id"])["status"] == "queued"
@@ -91,34 +100,34 @@ def test_turn_client_playback_logs_without_playing(tmp_path):
 def test_turn_client_strip_to_empty_becomes_done(tmp_path):
     srv = make_server(tmp_path)
     blk = '::kokoro-tts{weight="speech" say="https://example.com"}'
-    _, body = request(srv, "POST", "/turn", {"text": blk, "playback": "client"})
+    _, body = request(srv, "POST", "/turn", {"text": blk, "session_id": "t1", "playback": "client"})
     assert body["action"] == "sound" and body["sound"] == "done"
 
 
 def test_turn_muted_is_silent(tmp_path):
     srv = make_server(tmp_path)
     srv.muted = True
-    _, body = request(srv, "POST", "/turn", {"text": BLOCK})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
     assert body == {"action": "silent", "muted": True} and srv.calls == []
 
 
-def test_turn_mode_override(tmp_path):
+def test_turn_per_request_mode_overrides_the_configured_mode(tmp_path):
     srv = make_server(tmp_path)
-    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "mode": "quiet"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "mode": "quiet"})
     assert body["action"] == "silent"
 
 
 def test_turn_config_mode(tmp_path):
     srv = make_server(tmp_path)
     srv.config.patch({"mode": "ambient"})
-    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "playback": "client"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "playback": "client"})
     assert body["action"] == "sound" and body["sound"] == "attention"
     assert body["sound_volume"] == 1.0
 
 
 def test_turn_empty_text_is_silent(tmp_path):
     srv = make_server(tmp_path)
-    _, body = request(srv, "POST", "/turn", {"text": "   "})
+    _, body = request(srv, "POST", "/turn", {"text": "   ", "session_id": "s1"})
     assert body == {"action": "silent"}
 
 
@@ -141,7 +150,7 @@ def test_cue_server_plays(tmp_path):
 def test_cue_client_returns_volume(tmp_path):
     srv = make_server(tmp_path)
     srv.config.patch({"sound_volume": 0.5})
-    _, body = request(srv, "POST", "/cue", {"sound": "attention", "playback": "client"})
+    _, body = request(srv, "POST", "/cue", {"sound": "attention", "session_id": "s1", "playback": "client"})
     assert body == {"action": "sound", "sound": "attention", "sound_volume": 0.5}
     assert srv.calls == []
 
@@ -149,13 +158,22 @@ def test_cue_client_returns_volume(tmp_path):
 def test_cue_toggle_off_is_silent(tmp_path):
     srv = make_server(tmp_path)
     srv.config.patch({"attention_sound": False})
-    _, body = request(srv, "POST", "/cue", {"sound": "attention"})
+    _, body = request(srv, "POST", "/cue", {"sound": "attention", "session_id": "s1"})
     assert body == {"action": "silent"}
+
+
+def test_cue_per_request_mode_overrides_the_configured_mode(tmp_path):
+    srv = make_server(tmp_path)
+    _, body = request(srv, "POST", "/cue", {"sound": "attention", "session_id": "s1", "mode": "quiet"})
+    assert body == {"action": "silent"} and srv.calls == []
+    srv.config.patch({"mode": "quiet"})
+    _, body = request(srv, "POST", "/cue", {"sound": "attention", "session_id": "s1", "mode": "brief"})
+    assert body["action"] == "sound"
 
 
 def test_speech_log_status_updates_entry(tmp_path):
     srv = make_server(tmp_path)
-    _, turn = request(srv, "POST", "/turn", {"text": BLOCK, "playback": "client"})
+    _, turn = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "t1", "playback": "client"})
     status, _ = request(srv, "POST", "/speech-log/status",
                         {"id": turn["entry_id"], "status": "playing", "first_audio_ms": 420})
     assert status == 200
@@ -169,10 +187,25 @@ def test_speech_log_status_rejects_bad_input(tmp_path):
     assert request(srv, "POST", "/speech-log/status", {"id": 1, "status": "exploded"})[0] == 400
 
 
-def test_health_reports_no_output_device_when_headless(tmp_path):
+def test_speech_log_filters_by_session(tmp_path):
     srv = make_server(tmp_path)
-    _, health = request(srv, "GET", "/health")
-    assert health["output_device_ok"] is False
+    for i in range(60):
+        srv.speech_log.add(f"Reply {i}.", "t1" if i % 2 else "t2")
+    _, body = request(srv, "GET", "/speech-log?session_id=t1")
+    assert len(body["entries"]) == 30 and {e["session_id"] for e in body["entries"]} == {"t1"}
+    assert body["entries"][-1]["text"] == "Reply 59."
+    _, body = request(srv, "GET", "/speech-log?session_id=t1&limit=5")
+    assert [e["text"] for e in body["entries"]] == [f"Reply {i}." for i in (51, 53, 55, 57, 59)]
+    _, body = request(srv, "GET", "/speech-log")
+    assert len(body["entries"]) == 60
+
+
+def test_speech_log_filtered_default_limit_is_50(tmp_path):
+    srv = make_server(tmp_path)
+    for i in range(80):
+        srv.speech_log.add(f"Reply {i}.", "t1")
+    _, body = request(srv, "GET", "/speech-log?session_id=t1")
+    assert len(body["entries"]) == 50
 
 
 def test_turn_server_playback_empty_after_strip_plays_done(tmp_path):
@@ -185,15 +218,15 @@ def test_turn_server_playback_empty_after_strip_plays_done(tmp_path):
     srv._start_speech = fake_speech
     status, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
     assert status == 200
-    assert body == {"action": "sound", "sound": "done"}
+    assert body == {"action": "sound", "sound": "done", "logged_text": "All done."}
     assert ("sound", "done", "s1") in srv.calls
 
 
-@pytest.mark.parametrize("path", ["/cue", "/speech-log/status"])
+@pytest.mark.parametrize("path", ["/turn", "/cue", "/speech-log/status"])
 def test_non_object_body_is_400(tmp_path, path):
     srv = make_server(tmp_path)
     status, body = request(srv, "POST", path, [1, 2])
-    assert status == 400 and body == {"error": "body must be an object"}
+    assert status == 400 and body == {"error": "body must be a JSON object"}
 
 
 def test_synthesize_409_when_hop_reaches_remote_backed_node(tmp_path):
@@ -217,28 +250,28 @@ def request_with(srv, method, path, body=None, headers=None, host=None):
 
 def test_request_with_origin_header_is_403(tmp_path):
     srv = make_server(tmp_path)
-    status, body = request_with(srv, "POST", "/turn", {"text": ""}, {"Origin": "https://evil.example"})
+    status, body = request_with(srv, "POST", "/turn", {"text": "", "session_id": "s1"}, {"Origin": "https://evil.example"})
     assert status == 403 and "cross-origin" in body["error"]
 
 
 def test_rebound_host_header_is_403_on_loopback(tmp_path):
     srv = make_server(tmp_path)
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": "evil.example:6789"})
+    status, _ = request_with(srv, "POST", "/turn", {"text": "", "session_id": "s1"}, {"Host": "evil.example:6789"})
     assert status == 403
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1:6789", "localhost:6789", "[::1]:6789", "LOCALHOST"])
 def test_loopback_host_headers_are_allowed(tmp_path, host):
     srv = make_server(tmp_path)
-    status, body = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": host})
+    status, body = request_with(srv, "POST", "/turn", {"text": "", "session_id": "s1"}, {"Host": host})
     assert status == 200 and body == {"action": "silent"}
 
 
 def test_lan_bind_accepts_any_host_but_still_refuses_origin(tmp_path):
     srv = make_server(tmp_path)
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Host": "desk.example:6789"}, host="0.0.0.0")
+    status, _ = request_with(srv, "POST", "/turn", {"text": "", "session_id": "s1"}, {"Host": "desk.example:6789"}, host="0.0.0.0")
     assert status == 200
-    status, _ = request_with(srv, "POST", "/turn", {"text": ""}, {"Origin": "http://desk.example"}, host="0.0.0.0")
+    status, _ = request_with(srv, "POST", "/turn", {"text": "", "session_id": "s1"}, {"Origin": "http://desk.example"}, host="0.0.0.0")
     assert status == 403
 
 
@@ -249,22 +282,25 @@ def test_lan_bind_accepts_any_host_but_still_refuses_origin(tmp_path):
 ])
 def test_turn_non_string_text_is_silent(tmp_path, body):
     srv = make_server(tmp_path)
-    status, resp = request(srv, "POST", "/turn", body)
+    status, resp = request(srv, "POST", "/turn", {**body, "session_id": "s1"})
     assert status == 200 and resp == {"action": "silent"}
     assert srv.calls == []
 
 
-def test_turn_non_string_mode_falls_back_to_config(tmp_path):
+@pytest.mark.parametrize("mode", [["quiet"], "loud"])
+def test_turn_invalid_per_request_mode_falls_back_to_the_configured_mode(tmp_path, mode):
     srv = make_server(tmp_path)
-    status, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "mode": ["verbose"], "session_id": "s1"})
-    assert status == 200 and body["action"] == "speech"
+    srv.config.patch({"mode": "quiet"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "mode": mode})
+    assert body["action"] == "silent"
 
 
 def test_turn_full_mode_reads_the_cleaned_reply_to_the_client(tmp_path):
     srv = make_server(tmp_path)
     reply = ("## Result\n\nThe **build** passed; see [the log](https://ci.example/run/1) "
              "and `dist/app.js`.\n\n```sh\nnpm test\n```\n\n- One fix\n- Two tests\n" + BLOCK)
-    status, body = request(srv, "POST", "/turn", {"text": reply, "mode": "full", "playback": "client", "session_id": "s1"})
+    srv.config.patch({"mode": "full"})
+    status, body = request(srv, "POST", "/turn", {"text": reply, "playback": "client", "session_id": "s1"})
     assert status == 200 and body["action"] == "speech"
     text = body["text"]
     assert text.startswith("Result. The build passed; see the log and app.js.")
@@ -348,24 +384,22 @@ def test_release_keeps_a_replacement_playback(tmp_path):
     assert "s1" not in srv.cancel_events and "s1" not in srv.active_playbacks
 
 
-def test_sound_cleanup_after_replacement_keeps_the_new_sound(tmp_path):
-    """Sound replacing sound: the first sound's cleanup runs after the second registered."""
+def test_cue_wav_is_decoded_once(tmp_path, monkeypatch):
     srv = make_server(tmp_path)
-    first, second = threading.Event(), threading.Event()
-    srv.cancel_events["s1"] = first
-    srv.active_playbacks["s1"] = "first"
-    # _start_sound for the second sound registers its own entry...
-    srv.cancel_events["s1"] = second
-    srv.active_playbacks["s1"] = "second"
-    # ...then the first sound's finally block runs.
-    srv._release_playback("s1", first)
-    assert srv.active_playbacks["s1"] == "second"
+    srv._sounds = {}
+    opened = []
+    real_open = ks.wave.open
+    monkeypatch.setattr(ks.wave, "open", lambda *a: opened.append(a) or real_open(*a))
+    first = srv._sound_samples("done")
+    assert first is not None and srv._sound_samples("done") is first
+    assert len(opened) == 1
+    assert srv._sound_samples("klaxon") is None
 
 
 def test_turn_sound_respects_the_working_tick_switch(tmp_path):
     srv = make_server(tmp_path)
     srv.config.patch({"working_sound": False})
-    _, body = request(srv, "POST", "/turn", {"text": '::kokoro-tts{weight="sound:working"}'})
+    _, body = request(srv, "POST", "/turn", {"text": '::kokoro-tts{weight="sound:working"}', "session_id": "s1"})
     assert body["action"] == "silent" and srv.calls == []
 
 
@@ -411,29 +445,21 @@ def test_remote_without_url_is_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("path,body", [
-    ("/speak", {"text": 5}),
-    ("/speak", ["hello"]),
     ("/preview", ["x"]),
     ("/preview", {"text": 7}),
     ("/synthesize", {"text": ["a"]}),
     ("/mute", ["x"]),
+    ("/mute", {}),
+    ("/mute", {"muted": "yes"}),
     ("/interrupt", {"session_id": ["a"]}),
     ("/cleanup", [1]),
     ("/play-sound", {"sound": 3}),
-    ("/play-sound", {"sound": "done", "volume": "loud"}),
-    ("/play-sound", {"sound": "done", "volume": 9}),
+    ("/play-sound", {"sound": "done"}),
 ])
 def test_malformed_bodies_are_rejected_not_crashed(tmp_path, path, body):
     srv = make_server(tmp_path)
     status, _ = request(srv, "POST", path, body)
     assert status == 400
-
-
-def test_unknown_mode_falls_back_to_the_configured_mode(tmp_path):
-    srv = make_server(tmp_path)
-    srv.config.patch({"mode": "quiet"})
-    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "mode": "loud"})
-    assert body["action"] == "silent"
 
 
 def test_synthesize_marks_a_mid_stream_failure(tmp_path):
@@ -466,12 +492,6 @@ def test_health_reports_who_started_the_server(tmp_path, monkeypatch):
     monkeypatch.setenv("KOKORO_STARTED_BY", "bb")
     _, health = request(make_server(tmp_path), "GET", "/health")
     assert health["started_by"] == "bb"
-
-
-def test_health_lists_features(tmp_path):
-    srv = make_server(tmp_path)
-    status, body = request(srv, "GET", "/health")
-    assert status == 200 and {"directive", "replay"} <= set(body["features"])
 
 
 def test_replay_server_playback_plays_even_when_muted(tmp_path):
