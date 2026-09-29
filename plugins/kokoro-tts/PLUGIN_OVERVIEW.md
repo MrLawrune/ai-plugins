@@ -4,6 +4,7 @@ Every bb agent gets a voice. When a thread finishes, you hear a short spoken sum
 
 - Spoken turn summaries for every thread, whichever agent provider runs it, written by the agent to be heard, with a one-sentence default.
 - Sounds instead of speech when you prefer: ambient and quiet modes. Or full mode, which reads the whole reply aloud and skips code.
+- Turn voice off, or pick a mode, for one thread or a whole project from the thread header, and let a thread's sub-agents speak too.
 - Audio in the bb window you used last, so it follows you from desktop to laptop to phone. Pin a device or play everywhere instead.
 - Replies from different threads play one at a time, and replies for a device that drops off wait for it instead of playing at home.
 - Each spoken reply shows in chat as a card with what was said, whether it played, and Replay and Stop buttons.

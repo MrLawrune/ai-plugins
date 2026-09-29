@@ -28,6 +28,15 @@ pick (CPU or GPU), and the synthesis engine (local or a remote node).
 
 Changes PATCH `/config` immediately and apply on the next spoken turn.
 
+The thread header's Voice control sets a mode, or Off, for the thread and
+for its project. A thread's own setting wins, then its nearest parent
+thread's, then its project's, then the global mode. Child threads speak only
+when "Child threads: Voice" is set on an ancestor or the project, or when the
+child has its own mode. Off means no speech, no sounds, and no voice
+instructions. Mode changes reach an agent's instructions when its session
+restarts; Off and the mode's limit apply to the next reply. These settings
+live in the plugin's storage and go when a thread is deleted.
+
 ## Chat card
 
 Agents end a reply with a directive line:
@@ -39,11 +48,12 @@ log says happened to it: Queued (also shown by the thread's newest card while
 its turn is on its way to the server), Playing, Spoken (with the voice and
 time to first audio), Interrupted (also for an entry left queued or playing
 for over 20 minutes), Muted (also when mute kept its turn from being
-voiced), Not spoken (the verbosity mode or a repeated reply kept it quiet, or
-a turn logged its text but the log entry did not show up within 25 s),
-Error, or No record (no log entry and no turn for this reply since the card
-appeared, as for older messages and sub-thread replies, which are not
-voiced). Replay speaks the reply again
+voiced), Voice off, Not spoken (the verbosity mode or a repeated reply kept
+it quiet, or a turn logged its text but the log entry did not show up
+within 25 s), Error, or No record (no log entry and no turn for this reply
+since the card appeared, as for older messages). Cards in a thread whose
+voice is off, including sub-threads that are not voiced, read Voice off.
+Replay speaks the reply again
 through `POST /replay`, in the window where replies play and logged under the
 thread; Stop appears while it plays and stops that thread's speech only.
 Sound weights show a one-line chip with the sound name; `silent` renders
