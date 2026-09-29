@@ -27,30 +27,35 @@ pick (CPU or GPU), and the synthesis engine (local or a remote node).
 
 Changes PATCH `/config` immediately and apply on the next spoken turn.
 
-## Chat chips
+## Chat card
 
-A content script replaces raw `TTS_RESPONSE` blocks in BB chat with a small chip
-showing the spoken sentence (or the sound name). The icon reflects what the
-server's speech log says happened to that block:
+Inside bb, once the Kokoro server reports the `directive` feature in
+`GET /health` (`features`), agents end a reply with a directive line:
 
-| Icon | State |
-|------|-------|
-| Speaking head, accent color | Spoken. Hover shows time to first audio |
-| Speaking head, pulsing | Speaking now |
-| Speaking head, dimmed | Waiting for the Stop hook, or a message older than the log |
-| Stop circle, amber | Interrupted |
-| X circle, red | Not spoken within 25 s, or playback error |
-| Speaker | Sound cue |
-| Muted speaker | Silent turn, or muted when sent |
+    ::kokoro-tts{weight="speech" say="All tests pass."}
+
+bb renders it as a card showing the spoken text and what the server's speech
+log says happened to it: Queued, Playing, Spoken (with the voice and time to
+first audio), Interrupted, Muted, Not spoken (the thread's turn went to the
+server but no log entry appeared within 25 s), Error, or No record (no log
+entry and no turn in its thread since the card appeared, as for older
+messages and sub-thread replies, which are not voiced). Replay speaks the
+reply again through `POST /replay`, in the window where replies play and
+logged under the thread; Stop appears while it plays. Sound weights show a
+one-line chip with the sound name; `silent` renders nothing.
+
+Outside bb (plain Claude Code) replies end with the
+`<!-- TTS_RESPONSE ... -->` comment block instead. Both forms are parsed
+everywhere.
 
 The speech log lives at `~/.local/state/kokoro-tts/speech-log.jsonl` and is served
-by `GET /speech-log`. Chips match log entries by normalized spoken text.
+by `GET /speech-log`. Cards match log entries by thread and normalized spoken text.
 
 ## Layout
 
-- `bb/` -- BB plugin: backend (`server.ts` composes `supervisor.ts`, `voice.ts`, `hub.ts`, `rpc.ts`), sidebar page, plugin settings, player and chip content scripts (`player/`, `chips/`).
+- `bb/` -- BB plugin: backend (`server.ts` composes `supervisor.ts`, `voice.ts`, `hub.ts`, `rpc.ts`), sidebar page, plugin settings, the player content script (`player/`), and the chat card (`card/`).
 - `server/` -- Python Kokoro server (`uv` project; `models.json` pins model files).
-- `hooks/` -- Claude Code hooks; `skills/` -- shared skill; `.claude-plugin/` -- Claude Code manifest.
+- `hooks/` -- Claude Code hooks; `hooks/context/` -- the voice contracts agents get (`tts-contract.md`, `tts-contract-full.md`, and `tts-contract-bb.md` for bb agents on a server with the `directive` feature); `skills/` -- shared skill; `.claude-plugin/` -- Claude Code manifest.
 
 ## Claude Code without bb
 
@@ -72,7 +77,8 @@ responding" notice appears once per session and never inside bb.
 A headless node (`KOKORO_HOST=0.0.0.0`) can serve speech to other machines.
 Nodes and clients negotiate terminated frames with `X-Kokoro-Frames: 2`;
 older nodes keep working. `/health` lists `started_by`, naming the launcher
-that started the server.
+that started the server, and `features`, the optional capabilities this
+server supports (`directive`, `replay`).
 
 ## Server security
 

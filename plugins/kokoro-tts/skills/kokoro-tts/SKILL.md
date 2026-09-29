@@ -40,6 +40,27 @@ Sound or silence (self-closing):
 
 Weights: `silent` | `sound:working` | `sound:done` | `sound:attention` | `speech`
 
+## Directive Form (bb)
+
+Inside bb, when the Kokoro server reports the `directive` feature, the
+injected contract asks for a directive instead of the comment block. It is
+the last line of the reply, on its own line after a blank line, never in a
+code block:
+
+    ::kokoro-tts{weight="speech" say="Spoken content here."}
+    ::kokoro-tts{weight="sound:done"}
+    ::kokoro-tts{weight="silent"}
+
+The `say` value is one line in double quotes; write a double quote inside
+it as `&quot;`. bb renders the directive as a card with the spoken text,
+its status (Queued, Playing, Spoken, Interrupted, Muted, Not spoken, Error,
+No record), Replay, and Stop while playing.
+
+Which form to use: the one the injected contract shows. Plain Claude Code
+and bb on a server without the `directive` feature use the comment block.
+Both forms are parsed everywhere, with the same weights and the same
+first-sentence fallback.
+
 ## Weight Selection
 
 - `speech` (default): reporting results, answering, asking, errors,
@@ -132,7 +153,8 @@ Claude Code sessions outside BB.
 - **Endpoints**: `/turn`, `/cue`, `/speak`, `/play-sound`, `/preview`,
   `/interrupt`, `/interrupt-all`, `/cleanup`, `/mute`, `/config`, `/voices`,
   `/devices`, `/engine`, `/synthesize`, `/speech-log`, `/speech-log/status`,
-  `/runtime`, `/health` (`bb_plugin_active`, `output_device_ok`, latency).
+  `/replay`, `/runtime`, `/health` (`bb_plugin_active`, `output_device_ok`,
+  latency, `features`).
 - **Remote node**: `KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0` serves
   `/synthesize`; point another server at it with provider=remote.
   Warning: the server has no authentication. Binding beyond loopback lets

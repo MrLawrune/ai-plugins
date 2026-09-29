@@ -21,6 +21,7 @@ function harness(prefs: Partial<Prefs> = {}, replies: Record<string, unknown> = 
   const host = createFakePluginHost();
   registerVoice(host.bb, {
     client: () => client,
+    publish: (channel, payload) => { calls.push({ method: "PUBLISH", path: channel, body: payload }); },
     hub: {
       speak: (...a) => { hubCalls.push(["speak", ...a]); },
       sound: (...a) => { hubCalls.push(["sound", ...a]); },
@@ -31,6 +32,7 @@ function harness(prefs: Partial<Prefs> = {}, replies: Record<string, unknown> = 
     prefs: { get: () => ({ ...DEFAULT_PREFS, ...prefs }) },
     contract: "Mode: {{MODE}}.",
     contractFull: "Full: {{MODE}}, no blocks.",
+    contractBb: "Directive: {{MODE}}.",
   });
   return { host, calls, hubCalls, readyListeners, setReady: (r: boolean) => { ready = r; } };
 }
@@ -46,6 +48,27 @@ test("thread.idle in client mode routes speech to the hub", async () => {
     method: "POST", path: "/turn", body: { text: "Done.", session_id: "t1", playback: "client", source: "bb" },
   });
   assert.deepEqual(hubCalls, [["speak", 5, "Done.", "t1", 0.8]]);
+});
+
+test("thread.idle announces the turn to cards right before sending it", async () => {
+  const { host, calls } = harness();
+  await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
+  assert.deepEqual(calls.slice(-2).map((c) => [c.method, c.path, c.body]), [
+    ["PUBLISH", "kokoro-turn", { threadId: "t1" }],
+    ["POST", "/turn", { text: "Done.", session_id: "t1", playback: "client", source: "bb" }],
+  ]);
+});
+
+test("thread.idle that is not voiced announces nothing", async () => {
+  const { host, calls } = harness({}, {}, false);
+  await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
+  const child = harness();
+  await child.host.harness.emitThreadEvent("thread.idle", {
+    thread: makeThreadResponse({ id: "c1", parentThreadId: "t1" }), lastAssistantText: "Child done.",
+  });
+  const empty = harness();
+  await empty.host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "  " });
+  assert.deepEqual([...calls, ...child.calls, ...empty.calls].filter((c) => c.method === "PUBLISH"), []);
 });
 
 test("thread.idle in server mode lets the server play", async () => {
@@ -180,4 +203,28 @@ test("a player socket is local when its browser's address is this computer's", (
   assert.equal(isLocalRequest(url, h({ "x-forwarded-for": "::ffff:192.0.2.10, 198.51.100.1" }), ours), true);
   assert.equal(isLocalRequest(url, h({ "x-forwarded-for": "192.0.2.77" }), ours), false, "a phone via the proxy");
   assert.equal(isLocalRequest(new URL("https://bb.example.com/x"), h(), ours), false);
+});
+
+async function heartbeatOnce(replies: Record<string, unknown>) {
+  const h = harness({}, replies);
+  const { controller, done } = h.host.harness.runService("voice-heartbeat");
+  await new Promise((r) => setImmediate(r));
+  controller.abort();
+  await done;
+  return h.host.harness.registrations.instructionProvider?.({ threadId: "t1", projectId: "p1" });
+}
+
+test("a server that understands directives gets the directive contract", async () => {
+  const out = await heartbeatOnce({ "/config": { config: { mode: "brief" } }, "/health": { features: ["directive", "replay"] } });
+  assert.equal(out, "Directive: brief.");
+});
+
+test("an older server keeps the comment contract", async () => {
+  const out = await heartbeatOnce({ "/config": { config: { mode: "brief" } }, "/health": { status: "ok" } });
+  assert.equal(out, "Mode: brief.");
+});
+
+test("full mode wins over the directive contract", async () => {
+  const out = await heartbeatOnce({ "/config": { config: { mode: "full" } }, "/health": { features: ["directive"] } });
+  assert.equal(out, "Full: full, no blocks.");
 });

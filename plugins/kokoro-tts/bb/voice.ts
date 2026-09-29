@@ -11,13 +11,19 @@ export interface VoiceDeps {
   client: () => KokoroClient;
   hub: Pick<PlayerHub, "speak" | "sound" | "stop" | "hasReadyClient" | "onReadyChange">;
   prefs: Pick<PrefsStore, "get">;
+  /** bb.realtime.publish; tells chat cards a thread's turn is on its way to the server. */
+  publish: (channel: string, payload: unknown) => void;
   contract: string | null;
   /** Short contract for full mode, which reads the whole reply and ignores blocks. */
   contractFull?: string | null;
+  /** Contract for bb threads: the reply ends with a ::kokoro-tts directive that bb renders as a card. */
+  contractBb?: string | null;
 }
 
 export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
   let mode = "brief";
+  /** Whether the server parses ::kokoro-tts directives; unknown (false) until the first heartbeat. */
+  let directive = false;
   /** Server playback always works; client playback needs a window to play in. */
   const canVoice = () => deps.prefs.get().playback === "server" || deps.hub.hasReadyClient();
   const warn = (name: string, cause: unknown) =>
@@ -40,6 +46,8 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
         try {
           const client = deps.client();
           mode = (await client.call<ConfigResponse>("GET", "/config")).config.mode;
+          const health = await client.call<{ features?: unknown }>("GET", "/health");
+          directive = Array.isArray(health.features) && health.features.includes("directive");
           await client.call("POST", "/runtime", { bb_plugin: canVoice() });
         } catch {
           // Server down or (re)starting: keep the last known mode and retry
@@ -53,9 +61,12 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
   });
 
   // Full mode reads the whole reply and ignores blocks, so it gets a short
-  // contract that tells the agent not to write them.
+  // contract that tells the agent not to write them. Otherwise bb threads get
+  // the directive (rendered as a card) once the server can parse it.
   bb.agents.contributeInstructions(() => {
-    const contract = mode === "full" && deps.contractFull ? deps.contractFull : deps.contract;
+    const contract = mode === "full" && deps.contractFull
+      ? deps.contractFull
+      : directive && deps.contractBb ? deps.contractBb : deps.contract;
     return contract ? contract.replaceAll("{{MODE}}", mode) : null;
   });
 
@@ -76,6 +87,7 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
       const text = lastAssistantText?.trim();
       if (!text) return;
       const { playback } = deps.prefs.get();
+      deps.publish("kokoro-turn", { threadId: thread.id });
       const reply = await deps.client().call<unknown>("POST", "/turn", {
         text, session_id: thread.id, playback, source: "bb",
       });

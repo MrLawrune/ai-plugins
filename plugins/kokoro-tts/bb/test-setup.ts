@@ -10,6 +10,9 @@ afterEach(() => cleanup());
 afterEach(async () => {
   (await import("./page/state.ts")).resetStatusForTests();
 });
+afterEach(async () => {
+  (await import("./card/speech-log.ts")).resetSpeechLogForTests();
+});
 
 // jsdom lacks the layout APIs Radix controls call on mount.
 class NoopResizeObserver {

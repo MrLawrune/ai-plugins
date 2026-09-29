@@ -158,8 +158,10 @@ export default async function plugin(bb: BbPluginApi) {
     client: () => client,
     hub,
     prefs,
+    publish: (channel, payload) => bb.realtime.publish(channel, payload),
     contract: readText(path.join(root, "hooks", "context", "tts-contract.md")),
     contractFull: readText(path.join(root, "hooks", "context", "tts-contract-full.md")),
+    contractBb: readText(path.join(root, "hooks", "context", "tts-contract-bb.md")),
   });
 }
 
