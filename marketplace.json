@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "name": "mrlawrune-ai-plugins",
   "displayName": "MrLawrune AI Plugins",
-  "description": "Plugins for bb and Claude Code.",
+  "description": "Plugins for bb.",
   "plugins": [
     {
       "id": "kokoro-tts",

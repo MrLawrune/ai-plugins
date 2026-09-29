@@ -45,5 +45,4 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/plugins.schema.json" https://getbb.app/schemas/plugins.schema.json
           npx --yes ajv-cli@5 validate --spec=draft2020 --strict=false -s "$RUNNER_TEMP/marketplace.schema.json" -d marketplace.json
           npx --yes ajv-cli@5 validate --spec=draft2020 --strict=false -s "$RUNNER_TEMP/plugins.schema.json" -d .bb/plugins.json
-          jq -e '.plugins | length > 0' .claude-plugin/marketplace.json
         shell: bash

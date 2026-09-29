@@ -12,7 +12,6 @@ cd "$root"
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null && { echo "tag $tag already exists" >&2; exit 1; }
 
 jq --arg v "$version" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
-jq --arg v "$version" '.version = $v' .claude-plugin/plugin.json > p.tmp && mv p.tmp .claude-plugin/plugin.json
 # Only the [project] table's version -- the first unindented `version =`
 # line. A plain global `s///` would also rewrite the
 # [[tool.uv.dependency-metadata]] kokoro-onnx version pin further down,
@@ -33,7 +32,7 @@ npm test
 npx tsc --noEmit
 bb plugin build .
 
-git add package.json package-lock.json .claude-plugin/plugin.json server/pyproject.toml server/uv.lock server/kokoro_server.py
+git add package.json package-lock.json server/pyproject.toml server/uv.lock server/kokoro_server.py
 git commit -m "chore(kokoro-tts): release $version"
 git tag -a "$tag" -m "kokoro-tts $version"
 git push origin HEAD "$tag"
