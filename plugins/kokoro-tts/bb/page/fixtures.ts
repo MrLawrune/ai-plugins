@@ -1,4 +1,4 @@
-import type { ConfigResponse, KokoroStatus, Prefs } from "../schemas.ts";
+import type { ConfigResponse, KokoroStatus, Prefs, VoiceScopeState } from "../schemas.ts";
 
 export const CONFIG_RESPONSE: ConfigResponse = {
   config: {
@@ -29,6 +29,11 @@ export const READY: KokoroStatus = {
   clients: [],
 };
 
+const BRIEF_GLOBAL = { mode: "brief", voiced: true, modeFrom: "global", isChild: false, childrenFrom: null } as const;
+export const VOICE_SCOPE: VoiceScopeState = {
+  thread: {}, project: {}, globalMode: "brief", effective: BRIEF_GLOBAL, inherited: BRIEF_GLOBAL, parentThreadId: null,
+};
+
 type Handler = (input: unknown) => unknown;
 
 /** RPC handlers for renderSlot: a working, idle server unless overridden. */
@@ -52,6 +57,8 @@ export function rpcStubs(overrides: Record<string, Handler> = {}): Record<string
     installUv: () => ({ started: true }),
     speechLog: () => ({ entries: [] }),
     replay: () => ({ status: "playing" }),
+    getVoiceScope: () => VOICE_SCOPE,
+    setVoiceScope: () => VOICE_SCOPE,
     ...overrides,
   };
 }

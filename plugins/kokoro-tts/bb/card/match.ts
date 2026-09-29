@@ -18,6 +18,7 @@ export type CardState =
   | { kind: "spoken"; voice?: string; firstAudioMs?: number }
   | { kind: "interrupted" }
   | { kind: "muted" }
+  | { kind: "off" }
   | { kind: "error"; detail: string }
   | { kind: "unspoken" }
   | { kind: "unknown" };
@@ -41,11 +42,11 @@ export function findEntry(entries: SpeechLogEntry[], threadId: string, say: stri
  * turnAt: when a turn in this card's thread logged this card's text.
  * pendingAt: when a turn went out for the thread while this was its newest card.
  * skipped: a turn for this card's reply made no log entry, because mute silenced
- * it ("muted") or the mode or a repeat did ("unspoken").
+ * it ("muted"), the mode or a repeat did ("unspoken"), or the thread's voice is off ("off").
  */
 export function cardState(
   entry: SpeechLogEntry | undefined,
-  t: { turnAt: number | null; pendingAt?: number | null; skipped?: "muted" | "unspoken" | null; now: number },
+  t: { turnAt: number | null; pendingAt?: number | null; skipped?: "muted" | "unspoken" | "off" | null; now: number },
 ): CardState {
   if (entry) {
     const stale = t.now - entry.ts * 1000 > STALE_ENTRY_MS;
@@ -82,6 +83,7 @@ export function statusText(state: CardState): string {
     }
     case "interrupted": return "Interrupted";
     case "muted": return "Muted";
+    case "off": return "Voice off";
     case "error": return `Error: ${state.detail}`;
     case "unspoken": return "Not spoken";
     case "unknown": return "No record";

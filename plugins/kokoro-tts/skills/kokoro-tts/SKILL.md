@@ -37,8 +37,8 @@ Weights: `silent` | `sound:working` | `sound:done` | `sound:attention` | `speech
 
 The `say` value is one line in double quotes; write a double quote inside
 it as `&quot;`. bb renders the directive as a card with the spoken text,
-its status (Queued, Playing, Spoken, Interrupted, Muted, Not spoken, Error,
-No record), Replay, and Stop while playing. HTML comments are never spoken.
+its status (Queued, Playing, Spoken, Interrupted, Muted, Voice off, Not
+spoken, Error, No record), Replay, and Stop while playing. HTML comments are never spoken.
 
 ## Weight Selection
 
@@ -57,7 +57,7 @@ length limits are the model's responsibility.
 
 | Mode | Ceiling | Speech limit |
 |------|---------|-------------|
-| `quiet` | silence only | n/a |
+| `quiet` | off: no speech, sounds, or voice instructions | n/a |
 | `ambient` | sounds only | n/a |
 | `brief` | speech | 1 sentence max **(default)** |
 | `conversational` | speech | 2-4 sentences |
@@ -72,10 +72,23 @@ are dropped. Replies over about 6000 characters stop at a sentence end with
 directive: in full mode the injected contract is a short version that says
 so, to save tokens.
 
+### Per-thread and per-project
+
+The thread header's Voice control sets a mode, or Off, for the thread and
+for its project. A thread's own setting wins, then its nearest parent
+thread's, then its project's, then the global mode. Child threads speak only
+when an ancestor or the project has Child threads set to Voice, or when the
+child has its own mode. Off means no speech, no sounds, and no voice
+instructions: an agent in an Off thread receives no contract. These
+settings live in the plugin's storage. A thread's settings go when the
+thread is deleted.
+
 Mode switching mid-session ("go quiet", "go verbose"): acknowledge and
 apply the new ceiling to your own weight/length choices for the rest of
-the session. The server reads the mode on every turn; change it on the bb
-Kokoro TTS page or with `PATCH /config`.
+the session. The mode can be set globally on the bb Kokoro TTS page (or
+with `PATCH /config`), or per thread and project from the thread header.
+The ceiling applies on the next reply; the length guidance in the
+instructions changes on the next session.
 
 ## Speech Content Rules
 
@@ -90,9 +103,10 @@ Kokoro TTS page or with `PATCH /config`.
   ceiling, and falls back to the first sentence (`server/kokoro_turn.py`).
   `POST /cue` gates the attention ping. Both take a per-request `mode` that
   overrides the configured one for that request.
-- **In bb** (any agent provider): the plugin voices root threads on turn end,
-  stops speech when you send a message, pings on permission prompts, and injects this
-  contract as agent instructions. Audio plays in the bb window you used last
+- **In bb** (any agent provider): the plugin voices root threads, and child
+  threads when enabled, on turn end, stops speech when you send a message,
+  pings on permission prompts, and injects this contract as agent
+  instructions. Audio plays in the bb window you used last
   (`playback=client`, default) or on the server host's speakers
   (`playback=server`). The Playback devices card picks the window: follow,
   pinned device, or all; a click or keypress marks a window as last used.

@@ -28,7 +28,7 @@ const REPLAY_WAIT_MS = 10_000;
 const newestCard = new Map<string, symbol>();
 
 /** What voice.ts publishes on "kokoro-turn". */
-type TurnSignal = { threadId?: unknown; pending?: unknown; text?: unknown; say?: unknown; muted?: unknown };
+type TurnSignal = { threadId?: unknown; pending?: unknown; text?: unknown; say?: unknown; muted?: unknown; action?: unknown };
 
 const ICON: Record<CardState["kind"], IconSvgElement> = {
   queued: SpeechIcon,
@@ -36,6 +36,7 @@ const ICON: Record<CardState["kind"], IconSvgElement> = {
   spoken: SpeechIcon,
   interrupted: StopCircleIcon,
   muted: VolumeMute01Icon,
+  off: VolumeMute01Icon,
   error: CancelCircleIcon,
   unspoken: SpeechIcon,
   unknown: SpeechIcon,
@@ -47,6 +48,7 @@ const TONE: Record<CardState["kind"], string> = {
   spoken: "text-primary",
   interrupted: "text-amber-500",
   muted: "text-muted-foreground",
+  off: "text-muted-foreground",
   error: "text-destructive",
   unspoken: "text-muted-foreground opacity-60",
   unknown: "text-muted-foreground opacity-60",
@@ -84,11 +86,16 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const [turnAt, setTurnAt] = useState<number | null>(null);
   /** When a turn went out for this thread while this card was its newest; cleared by the turn's outcome. */
   const [pendingAt, setPendingAt] = useState<number | null>(null);
-  /** A turn for this card's reply that made no log entry: muted, or not spoken (mode, repeat). */
-  const [skipped, setSkipped] = useState<"muted" | "unspoken" | null>(null);
+  /** A turn for this card's reply that made no log entry: muted, not spoken (mode, repeat), or voice off. */
+  const [skipped, setSkipped] = useState<"muted" | "unspoken" | "off" | null>(null);
   useRealtime("kokoro-turn", (payload) => {
     const turn = payload as TurnSignal | null;
     if (turn?.threadId !== threadId) return;
+    if (turn.action === "off") {
+      setPendingAt(null);
+      if (newestCard.get(threadId) === token) setSkipped("off");
+      return;
+    }
     if (turn.pending === true) {
       if (newestCard.get(threadId) === token) setPendingAt(Date.now());
       return;

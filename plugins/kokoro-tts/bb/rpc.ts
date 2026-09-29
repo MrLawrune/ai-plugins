@@ -4,7 +4,10 @@ import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import type { PlayerHub } from "./hub.ts";
 import { PREVIEW_ID_BASE } from "./protocol.ts";
 import type { PrefsStore } from "./prefs.ts";
-import { replayResultSchema, rpcContract, type ConfigResponse, type Health, type HealthResult } from "./schemas.ts";
+import {
+  replayResultSchema, rpcContract, type ConfigResponse, type Health, type HealthResult, type VoiceScopeState,
+} from "./schemas.ts";
+import { resolveVoice, type VoiceScopes } from "./scopes.ts";
 import { installUv } from "./setup/uv.ts";
 import type { Supervisor } from "./supervisor.ts";
 
@@ -17,6 +20,9 @@ export interface RpcDeps {
   hub: Pick<PlayerHub, "clients" | "stop" | "speak" | "sound" | "hasReadyClient">;
   log: BbPluginApi["log"];
   publish: (channel: string, payload: unknown) => void;
+  scopes: Pick<VoiceScopes, "get" | "set" | "learnParent" | "parentOf">;
+  /** A thread's parent, null for a root; rejects when the lookup fails. */
+  threadParent: (threadId: string) => Promise<string | null | undefined>;
 }
 
 /** Same sample sentence as the Python server's PREVIEW_TEXT. */
@@ -49,6 +55,34 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     } catch (cause) {
       return { up: false as const, error: cause instanceof Error ? cause.message : String(cause) };
     }
+  };
+  /** Threads looked up and found to be roots, so they are not looked up again. */
+  const roots = new Set<string>();
+  const voiceScope = async ({ threadId, projectId }: { threadId: string; projectId: string }): Promise<VoiceScopeState> => {
+    if (deps.scopes.parentOf(threadId) === undefined && !roots.has(threadId)) {
+      try {
+        const parent = await deps.threadParent(threadId);
+        if (parent) await deps.scopes.learnParent(threadId, parent);
+        else roots.add(threadId);
+      } catch (cause) {
+        // resolve as a root this time and look it up again next time
+        deps.log.warn(`voice scope: parent lookup for thread ${threadId} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+    }
+    const data = deps.scopes.get();
+    // The cache only: this never waits on the Kokoro server.
+    const cached = deps.config.get()?.config.mode ?? null;
+    const own = data.threads[threadId] ?? {};
+    const withoutOwn = { ...data, threads: { ...data.threads } };
+    delete withoutOwn.threads[threadId];
+    return {
+      thread: own,
+      project: data.projects[projectId] ?? {},
+      globalMode: cached ?? "brief",
+      effective: resolveVoice(data, cached, threadId, projectId),
+      inherited: resolveVoice(withoutOwn, cached, threadId, projectId),
+      parentThreadId: deps.scopes.parentOf(threadId) ?? null,
+    };
   };
   bb.rpc.register(rpcContract, {
     status: async () => ({
@@ -134,5 +168,10 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     },
     getPrefs: () => deps.prefs.get(),
     setPrefs: (patch) => deps.prefs.update(patch),
+    getVoiceScope: voiceScope,
+    setVoiceScope: async ({ threadId, projectId, scope, patch }) => {
+      await deps.scopes.set(scope, scope === "thread" ? threadId : projectId, patch);
+      return voiceScope({ threadId, projectId });
+    },
   });
 }

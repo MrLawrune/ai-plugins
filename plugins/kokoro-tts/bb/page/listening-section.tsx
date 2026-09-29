@@ -4,7 +4,7 @@ import { ChoiceGroup, Row, Section, SliderRow, SwitchRow } from "./ui.tsx";
 type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;
 
 export const MODES: { value: KokoroConfig["mode"]; label: string; hint: string }[] = [
-  { value: "quiet", label: "Quiet", hint: "No speech and no sounds." },
+  { value: "quiet", label: "Off (quiet)", hint: "No speech, sounds, or voice instructions." },
   { value: "ambient", label: "Ambient", hint: "Sounds only: a cue when a reply finishes or needs you." },
   { value: "brief", label: "Brief", hint: "One short spoken sentence per reply." },
   { value: "conversational", label: "Conversational", hint: "Two to four spoken sentences per reply." },

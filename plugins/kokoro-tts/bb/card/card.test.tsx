@@ -72,6 +72,31 @@ test("an older card in the thread is not relabelled by a newer reply's turn", as
   expect(older.container.textContent).toContain("No record");
 });
 
+test("an off signal marks only the thread's newest card Voice off", async () => {
+  const older = await card(SPEECH);
+  await screen.findByText("No record");
+  const newer = await mount({ weight: "speech", say: "Second reply." });
+  await waitFor(() => expect(screen.getAllByText("No record")).toHaveLength(2));
+  for (const slot of [older, newer]) await slot.emitRealtime("kokoro-turn", { threadId: "t2", action: "off" });
+  expect(screen.getAllByText("No record")).toHaveLength(2);
+  for (const slot of [older, newer]) await slot.emitRealtime("kokoro-turn", { threadId: "t1", action: "off" });
+  await waitFor(() => expect(newer.container.textContent).toContain("Voice off"));
+  expect(older.container.textContent).toContain("No record");
+  expect(screen.getAllByText("Voice off")).toHaveLength(1);
+});
+
+test("a Voice off card still replays and then follows the log", async () => {
+  let entries: SpeechLogEntry[] = [];
+  const slot = await card(SPEECH, { speechLog: () => ({ entries }) });
+  await screen.findByText("No record");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t1", action: "off" });
+  await screen.findByText("Voice off");
+  entries = [done()];
+  fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+  await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "replay")).toBe(true));
+  expect(await screen.findByText("Spoken · af_sky · 410 ms to first audio")).toBeTruthy();
+});
+
 test("a turn that logged nothing returns the newest card to No record", async () => {
   const slot = await card(SPEECH);
   await slot.emitRealtime("kokoro-turn", turnOut);

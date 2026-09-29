@@ -70,6 +70,11 @@ test("cardState for a turn that made no entry: muted or not spoken, with no grac
   assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: null, skipped: "muted", now: 10_000 }).kind, "spoken");
 });
 
+test("cardState for a turn in a thread whose voice is off reads off, unless the log has an entry", () => {
+  assert.deepEqual(cardState(undefined, { turnAt: null, skipped: "off", now: 0 }), { kind: "off" });
+  assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: null, skipped: "off", now: 0 }).kind, "spoken");
+});
+
 test("cardState prefers the log entry over the turn signal", () => {
   assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: 10_000, now: 10_000 }), { kind: "spoken", voice: undefined, firstAudioMs: undefined });
 });
@@ -77,7 +82,7 @@ test("cardState prefers the log entry over the turn signal", () => {
 test("needsPolling only while queued or playing", () => {
   assert.equal(needsPolling({ kind: "queued" }), true);
   assert.equal(needsPolling({ kind: "playing" }), true);
-  for (const kind of ["interrupted", "muted", "unspoken", "unknown"] as const) assert.equal(needsPolling({ kind }), false);
+  for (const kind of ["interrupted", "muted", "off", "unspoken", "unknown"] as const) assert.equal(needsPolling({ kind }), false);
   assert.equal(needsPolling({ kind: "spoken" }), false);
 });
 
@@ -88,6 +93,7 @@ test("statusText", () => {
   assert.equal(statusText({ kind: "playing" }), "Playing");
   assert.equal(statusText({ kind: "interrupted" }), "Interrupted");
   assert.equal(statusText({ kind: "muted" }), "Muted");
+  assert.equal(statusText({ kind: "off" }), "Voice off");
   assert.equal(statusText({ kind: "error", detail: "boom" }), "Error: boom");
   assert.equal(statusText({ kind: "unspoken" }), "Not spoken");
   assert.equal(statusText({ kind: "unknown" }), "No record");
