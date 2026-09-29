@@ -64,8 +64,9 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
         const parent = await deps.threadParent(threadId);
         if (parent) await deps.scopes.learnParent(threadId, parent);
         else roots.add(threadId);
-      } catch {
+      } catch (cause) {
         // resolve as a root this time and look it up again next time
+        deps.log.warn(`voice scope: parent lookup for thread ${threadId} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
     }
     const data = deps.scopes.get();

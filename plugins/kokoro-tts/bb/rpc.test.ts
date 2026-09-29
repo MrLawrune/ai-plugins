@@ -227,6 +227,9 @@ test("a failed parent lookup resolves as a root and is retried next time", async
   assert.deepEqual([r.parentThreadId, r.effective.isChild], [null, false]);
   await scopeRpc(h, "getVoiceScope", { threadId: "c1", projectId: "p1" });
   assert.equal(n, 2);
+  const warnings = h.host.harness.inspection.logEntries.filter((e) => e.level === "warn").map((e) => e.message);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0]!, /c1.*down/);
 });
 
 test("a root is looked up once", async () => {
