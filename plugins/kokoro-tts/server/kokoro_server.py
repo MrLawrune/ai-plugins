@@ -49,7 +49,7 @@ from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import FRAME_END, FRAME_ERROR, SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
 from kokoro_turn import MODE_CEILING, apply_cue_prefs, route_cue, route_turn
 
-SERVER_VERSION = "0.1.3"
+SERVER_VERSION = "0.2.0"
 # What this server understands beyond the base protocol; the bb plugin reads
 # it to decide which voice contract to give agents.
 FEATURES = ["directive", "replay"]
