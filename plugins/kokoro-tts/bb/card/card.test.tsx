@@ -137,3 +137,11 @@ test("a settled card does not keep polling", async () => {
   await act(() => vi.advanceTimersByTimeAsync(20_000));
   expect(speechLogCalls(slot)).toBe(before);
 });
+
+test("a card mounted right after another reuses the fresh speech log", async () => {
+  const first = await card(SPEECH, { speechLog: () => ({ entries: [done()] }) });
+  await screen.findByText(/^Spoken/);
+  const second = await mount({ weight: "speech", say: "All tests pass." }, { speechLog: () => ({ entries: [done()] }) });
+  await waitFor(() => expect(screen.getAllByText(/^Spoken/)).toHaveLength(2));
+  expect(speechLogCalls(first) + speechLogCalls(second)).toBe(1);
+});

@@ -7,6 +7,8 @@ type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
 const POLL_MS = 2_500;
 const RETRY_MS = 8_000;
+/** A card mounting within this long of the last good fetch reuses it instead of refetching. */
+const FRESH_MS = 2_000;
 
 const listeners = new Set<() => void>();
 /** Cards that are queued or playing; the poll stops when this is empty. */
@@ -16,6 +18,8 @@ let activeRpc: Rpc | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inflight = false;
 let failed = false;
+/** When the last fetch succeeded; 0 before the first. */
+let fetchedAt = 0;
 /** Bumped by resetSpeechLogForTests so an in-flight fetch from a previous mount is ignored. */
 let generation = 0;
 
@@ -38,6 +42,7 @@ async function fetchLog(): Promise<void> {
     if (gen !== generation) return;
     entries = r.entries;
     failed = false;
+    fetchedAt = Date.now();
   } catch {
     if (gen !== generation) return;
     failed = true; // keep the last entries; cards keep their last state
@@ -65,7 +70,7 @@ export function useSpeechLog(pending: boolean): SpeechLogEntry[] | null {
     activeRpc = rpc;
     if (listeners.size === 0) document.addEventListener("visibilitychange", onVisible);
     listeners.add(rerender);
-    refreshSpeechLog();
+    if (Date.now() - fetchedAt >= FRESH_MS) refreshSpeechLog();
     return () => {
       listeners.delete(rerender);
       waiting.delete(token);
@@ -95,4 +100,5 @@ export function resetSpeechLogForTests(): void {
   waiting.clear();
   listeners.clear();
   document.removeEventListener("visibilitychange", onVisible);
+  fetchedAt = 0;
 }
