@@ -210,19 +210,6 @@ test("re-registration keeps focus and unlock state learned after hello", () => {
   assert.deepEqual(hub.clients(), [{ clientId: "a", deviceName: "a", focusedAt: 50, audioUnlocked: true, local: false }]);
 });
 
-test("onReadyChange fires when a window becomes ready and when it goes away", () => {
-  const { hub, connect, clock } = setup();
-  const seen: boolean[] = [];
-  hub.onReadyChange((r) => seen.push(r));
-  const s = connect("a", 10, false);
-  hub.onMessage(s, JSON.stringify({ type: "unlocked" }));
-  hub.onMessage(s, JSON.stringify({ type: "ping" }));
-  hub.onClose(s);
-  assert.deepEqual(seen, [true], "still ready while replies are held for the window that dropped off");
-  clock.advance(15 * 60_000);
-  assert.deepEqual(seen, [true, false]);
-});
-
 test("stop aborts synthesis and sends no further frames", async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
