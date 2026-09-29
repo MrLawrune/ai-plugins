@@ -5,6 +5,7 @@ import { mountPlayer } from "./player/script.ts";
 import { KokoroPanel } from "./page/panel.tsx";
 import { KokoroHeader } from "./page/header.tsx";
 import { ServerSettings } from "./page/server-settings.tsx";
+import { VoiceScopeButton } from "./scope/voice-button.tsx";
 
 export default definePluginApp((app) => {
   app.contentScripts.register({
@@ -23,6 +24,9 @@ export default definePluginApp((app) => {
     component: KokoroPanel,
     headerContent: KokoroHeader,
   });
+
+  // Per-thread and per-project voice: mode, off, and whether child threads speak.
+  app.slots.experimental_threadHeaderAction({ id: "kokoro-voice", title: "Voice", component: VoiceScopeButton });
 
   app.slots.settingsSection({
     id: "server",
