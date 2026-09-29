@@ -1,6 +1,6 @@
-// bb-plugin-kokoro-tts — frontend entry: the "Kokoro TTS" sidebar panel and the chat chip content script.
+// bb-plugin-kokoro-tts — frontend entry: the "Kokoro TTS" sidebar panel, server settings, and the chat card.
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
-import { mountChips } from "./chips/script.ts";
+import { KokoroCard } from "./card/card.tsx";
 import { mountPlayer } from "./player/script.ts";
 import { KokoroPanel } from "./page/panel.tsx";
 import { KokoroHeader } from "./page/header.tsx";
@@ -12,10 +12,8 @@ export default definePluginApp((app) => {
     mount: ({ pluginId, signal }) => mountPlayer({ pluginId, signal }),
   });
 
-  app.contentScripts.register({
-    id: "tts-block-summary",
-    mount: ({ pluginId, signal }) => mountChips({ pluginId, signal }),
-  });
+  // A reply's last line ::kokoro-tts{weight="speech" say="..."} becomes this card.
+  app.slots.messageDirective({ id: "kokoro-tts", component: KokoroCard });
 
   app.slots.navPanel({
     id: "kokoro-tts",

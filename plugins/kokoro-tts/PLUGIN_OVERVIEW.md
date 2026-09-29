@@ -6,6 +6,7 @@ Every bb agent gets a voice. When a thread finishes, you hear a short spoken sum
 - Sounds instead of speech when you prefer: ambient and quiet modes. Or full mode, which reads the whole reply aloud and skips code.
 - Audio in the bb window you used last, so it follows you from desktop to laptop to phone. Pin a device or play everywhere instead.
 - Replies from different threads play one at a time, and replies for a device that drops off wait for it instead of playing at home.
+- Each spoken reply shows in chat as a card with what was said, whether it played, and Replay and Stop buttons.
 - A voice settings page in the sidebar, and server settings on the plugin page.
 
 ## How it works
