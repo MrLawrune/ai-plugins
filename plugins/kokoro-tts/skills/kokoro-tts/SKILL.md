@@ -77,10 +77,11 @@ so, to save tokens.
 The thread header's Voice control sets a mode, or Off, for the thread and
 for its project. A thread's own setting wins, then its nearest parent
 thread's, then its project's, then the global mode. Child threads speak only
-when "Child threads: Voice" is set on an ancestor or the project, or when the
+when an ancestor or the project has Child threads set to Voice, or when the
 child has its own mode. Off means no speech, no sounds, and no voice
 instructions: an agent in an Off thread receives no contract. These
-settings live in the plugin's storage and go when a thread is deleted.
+settings live in the plugin's storage. A thread's settings go when the
+thread is deleted.
 
 Mode switching mid-session ("go quiet", "go verbose"): acknowledge and
 apply the new ceiling to your own weight/length choices for the rest of

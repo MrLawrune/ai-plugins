@@ -52,6 +52,14 @@ test("Default clears the setting and child threads map to booleans", async () =>
   ]));
 });
 
+test("each choice group has a visible caption", async () => {
+  await button();
+  fireEvent.click(await screen.findByRole("button", { name: /^Voice:/ }));
+  await screen.findByRole("radiogroup", { name: "This thread child threads" });
+  expect(screen.getAllByText("Child threads")).toHaveLength(2);
+  expect(screen.getAllByText("Mode")).toHaveLength(2);
+});
+
 test("a failed save shows the error and keeps the selection", async () => {
   await button({ setVoiceScope: () => { throw new Error("kv full"); } });
   fireEvent.click(await screen.findByRole("button", { name: /^Voice:/ }));

@@ -163,9 +163,10 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
         await deps.client().call("POST", "/cue", { sound: "attention", session_id: thread.id, playback, ...modeField(v) });
         return;
       }
-      // The window plays the ping, so decide here what /cue would; being voiced
-      // already rules out quiet, whichever scope chose it.
+      // The window plays the ping, so decide here what /cue would. Being voiced
+      // rules out quiet, except a global quiet an empty cache could not show.
       const { config, muted } = await deps.config.current();
+      if (v.modeFrom === "global" && config.mode === "quiet") return;
       if (muted || !config.attention_sound) return;
       spoke.add(thread.id);
       deps.hub.sound("attention", config.sound_volume, thread.id);

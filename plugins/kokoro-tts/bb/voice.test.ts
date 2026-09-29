@@ -14,6 +14,8 @@ interface Options {
   ready?: boolean;
   /** The cached server config; null when none has been fetched yet. */
   config?: (Partial<KokoroConfig> & { muted?: boolean }) | null;
+  /** What a fresh fetch returns, when it differs from the cache. */
+  fetched?: Partial<KokoroConfig> & { muted?: boolean };
   /** Hold each /turn's reply until released, in call order. */
   gates?: Promise<void>[];
   /** Voice settings to seed before registering. */
@@ -43,9 +45,10 @@ async function harness(o: Options = {}) {
     },
     async *synthesize() {},
   };
-  const { muted = false, ...cfg } = o.config ?? {};
-  const config: ConfigResponse | null = o.config === null ? null
-    : { ...CONFIG_RESPONSE, muted, config: { ...CONFIG_RESPONSE.config, ...cfg } };
+  const response = ({ muted = false, ...cfg }: Partial<KokoroConfig> & { muted?: boolean }): ConfigResponse =>
+    ({ ...CONFIG_RESPONSE, muted, config: { ...CONFIG_RESPONSE.config, ...cfg } });
+  const config = o.config === null ? null : response(o.config ?? {});
+  const fetched = o.fetched ? response(o.fetched) : config;
   const kv = new Map<string, unknown>();
   let failing = false;
   const scopes = new VoiceScopes({
@@ -73,8 +76,8 @@ async function harness(o: Options = {}) {
     config: {
       get: () => config,
       current: async () => {
-        if (!config) throw new Error("server down");
-        return config;
+        if (!fetched) throw new Error("server down");
+        return fetched;
       },
     },
     contract: "Mode: {{MODE}}.",
@@ -268,6 +271,12 @@ test("interaction.pending in client playback stays quiet when muted, in quiet mo
     await host.harness.emitThreadEvent("interaction.pending", { thread: root(), interaction: {} as never });
     assert.deepEqual(hubCalls, [], JSON.stringify(config));
   }
+});
+
+test("interaction.pending in client playback stays quiet when the cache is empty and the fetch says quiet", async () => {
+  const { host, hubCalls } = await harness({ config: null, fetched: { mode: "quiet" } });
+  await host.harness.emitThreadEvent("interaction.pending", { thread: root(), interaction: {} as never });
+  assert.deepEqual(hubCalls, []);
 });
 
 test("interaction.pending in server playback cues the server", async () => {

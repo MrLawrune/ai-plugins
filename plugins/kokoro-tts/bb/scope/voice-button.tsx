@@ -55,7 +55,7 @@ export function VoiceScopeButton({ threadId, projectId }: PluginThreadHeaderActi
     setView((v) => (currentKey.current === made && v.key === made ? update(v) : v));
 
   const load = () => {
-    const made = currentKey.current;
+    const made = key;
     rpc.call("getVoiceScope", { threadId, projectId }).then(
       (state) => applyFor(made, (v) => ({ ...v, state, error: null, loadFailed: false })),
       (cause) => applyFor(made, (v) => ({ ...v, error: errorText(cause), loadFailed: true })),
@@ -71,7 +71,7 @@ export function VoiceScopeButton({ threadId, projectId }: PluginThreadHeaderActi
   useRealtime("kokoro-config", () => load());
 
   const save = (scope: Scope, patch: ScopePatchInput) => {
-    const made = currentKey.current;
+    const made = key;
     rpc.call("setVoiceScope", { threadId, projectId, scope, patch }).then(
       (state) => applyFor(made, (v) => ({ ...v, state, error: null, loadFailed: false })),
       (cause) => applyFor(made, (v) => ({ ...v, error: errorText(cause) })),
@@ -130,8 +130,10 @@ function ScopeSection({ title, setting, defaultMode, onSave }: {
   return (
     <section className="space-y-2">
       <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
+      <p className="text-xs">Mode</p>
       <ChoiceGroup<string> label={`${title} mode`} value={setting.mode ?? "default"} options={modes}
         onChange={(v) => onSave({ mode: v === "default" ? null : (v as KokoroConfig["mode"]) })} />
+      <p className="text-xs">Child threads</p>
       <ChoiceGroup<Children> label={`${title} child threads`} value={children} options={CHILDREN}
         onChange={(v) => onSave({ voiceChildren: v === "default" ? null : v === "on" })} />
     </section>
