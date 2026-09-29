@@ -223,3 +223,14 @@ def test_first_sentence_and_full_text_skip_directives():
     text = directive('weight="sound:done"') + "\n\nReal words here. More.\n\n" + directive('weight="silent"')
     assert first_sentence(text) == "Real words here."
     assert "kokoro-tts" not in full_text(text)
+
+
+def test_malformed_directive_body_falls_back_to_first_sentence():
+    text = "Build is green. More detail.\n\n" + directive('weight="speech" say="He said "hi" now."')
+    assert extract_block(text) == (None, None)
+    assert route_turn(text, "brief") == {"action": "speech", "text": "Build is green."}
+
+
+def test_malformed_directive_body_is_rejected():
+    assert parse_directive_attrs('weight="speech" say="He said "hi" now."') is None
+    assert parse_directive_attrs('weight="speech", say="x"') is None

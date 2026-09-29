@@ -26,7 +26,11 @@ ANY_BLOCK = re.compile(r"<!--\s*TTS_(?:RESPONSE|SUMMARY)[\s\S]*?-->")
 # ::kokoro-tts{weight="speech" say="Tests pass."}. Values are HTML-entity
 # decoded, as bb's directive parser does.
 DIRECTIVE = re.compile(r"^::kokoro-tts\{(.*)\}[ \t\r]*$", re.MULTILINE)
-DIRECTIVE_ATTR = re.compile(r"""([A-Za-z][\w-]*)(?:=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`}]+)))?""")
+_ATTR = r"""([A-Za-z][\w-]*)(?:=(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`}]+)))?"""
+DIRECTIVE_ATTR = re.compile(_ATTR)
+# The whole body must be whitespace-separated attributes; anything else
+# (e.g. an unescaped quote inside say) is not a directive.
+DIRECTIVE_BODY = re.compile(rf"\s*(?:{_ATTR}(?:\s+{_ATTR})*)?\s*")
 CODE_FENCE = re.compile(r"```[\s\S]*?```")
 SENTENCE = re.compile(r"(.+?[.!?])(?:\s|$)")
 TABLE = re.compile(r"(?:^[ \t]*\|.*\|[ \t]*(?:\n|$))+", re.MULTILINE)
@@ -35,7 +39,13 @@ MAX_INLINE_CODE = 60
 
 
 def parse_directive_attrs(raw):
-    """Attributes of a directive's {...} body: key="v", key='v', key=v, or a bare key."""
+    """Attributes of a directive's {...} body: key="v", key='v', key=v, or a bare key.
+
+    None when the body is malformed, so the reply falls back to its first
+    sentence just as bb shows the line as literal text.
+    """
+    if not DIRECTIVE_BODY.fullmatch(raw):
+        return None
     attrs = {}
     for m in DIRECTIVE_ATTR.finditer(raw):
         value = next((g for g in m.group(2, 3, 4) if g is not None), "")
@@ -85,6 +95,8 @@ def extract_block(text):
         if any(s <= m.start() < e for s, e in fences):
             continue  # an example in a code block, not the reply's directive
         attrs = parse_directive_attrs(m.group(1))
+        if attrs is None:
+            continue
         say = attrs.get("say", "").strip() or None
         candidates.append((m.end(), 0, attrs.get("weight", ""), say))
 
