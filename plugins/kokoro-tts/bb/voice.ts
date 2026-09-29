@@ -9,49 +9,31 @@ import { sleep } from "./util.ts";
 
 export interface VoiceDeps {
   client: () => KokoroClient;
-  hub: Pick<PlayerHub, "speak" | "sound" | "stop" | "hasReadyClient" | "onReadyChange">;
+  hub: Pick<PlayerHub, "speak" | "sound" | "stop" | "hasReadyClient">;
   prefs: Pick<PrefsStore, "get">;
   /** bb.realtime.publish; tells chat cards a thread's turn is on its way to the server. */
   publish: (channel: string, payload: unknown) => void;
+  /** The reply ends with a ::kokoro-tts directive that bb renders as a card. */
   contract: string | null;
-  /** Short contract for full mode, which reads the whole reply and ignores blocks. */
+  /** Short contract for full mode, which reads the whole reply and ignores directives. */
   contractFull?: string | null;
-  /** Contract for bb threads: the reply ends with a ::kokoro-tts directive that bb renders as a card. */
-  contractBb?: string | null;
 }
 
 export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
   let mode = "brief";
-  /** Whether the server parses ::kokoro-tts directives; unknown (false) until the first heartbeat. */
-  let directive = false;
   /** Server playback always works; client playback needs a window to play in. */
   const canVoice = () => deps.prefs.get().playback === "server" || deps.hub.hasReadyClient();
   const warn = (name: string, cause: unknown) =>
     bb.log.warn(`${name}: ${cause instanceof Error ? cause.message : String(cause)}`);
 
-  // Tell the server right away when a window becomes (or stops being) able to
-  // play, so the Claude Code hooks hand over or take back voicing without
-  // waiting for the next heartbeat; and release the claim when unloading.
-  const reportRuntime = (bbPlugin: boolean) =>
-    deps.client().call("POST", "/runtime", { bb_plugin: bbPlugin }).catch((cause: unknown) => warn("runtime", cause));
-  const unsubscribe = deps.hub.onReadyChange(() => { void reportRuntime(canVoice()); });
-  bb.onDispose(async () => {
-    unsubscribe();
-    await reportRuntime(false);
-  });
-
+  // Keeps the verbosity mode in the agent instructions current.
   bb.background.service("voice-heartbeat", {
     async start(signal) {
       while (!signal.aborted) {
         try {
-          const client = deps.client();
-          mode = (await client.call<ConfigResponse>("GET", "/config")).config.mode;
-          const health = await client.call<{ features?: unknown }>("GET", "/health");
-          directive = Array.isArray(health.features) && health.features.includes("directive");
-          await client.call("POST", "/runtime", { bb_plugin: canVoice() });
+          mode = (await deps.client().call<ConfigResponse>("GET", "/config")).config.mode;
         } catch {
-          // Server down or (re)starting: keep the last known mode and retry
-          // soon, so the new server learns bb is voicing before a hook asks.
+          // Server down or (re)starting: keep the last known mode and retry soon.
           await sleep(1_000, signal);
           continue;
         }
@@ -60,13 +42,10 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
     },
   });
 
-  // Full mode reads the whole reply and ignores blocks, so it gets a short
-  // contract that tells the agent not to write them. Otherwise bb threads get
-  // the directive (rendered as a card) once the server can parse it.
+  // Full mode reads the whole reply and ignores directives, so it gets a short
+  // contract that tells the agent not to write them.
   bb.agents.contributeInstructions(() => {
-    const contract = mode === "full" && deps.contractFull
-      ? deps.contractFull
-      : directive && deps.contractBb ? deps.contractBb : deps.contract;
+    const contract = mode === "full" && deps.contractFull ? deps.contractFull : deps.contract;
     return contract ? contract.replaceAll("{{MODE}}", mode) : null;
   });
 
@@ -89,7 +68,7 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
       const { playback } = deps.prefs.get();
       deps.publish("kokoro-turn", { threadId: thread.id });
       const reply = await deps.client().call<unknown>("POST", "/turn", {
-        text, session_id: thread.id, playback, source: "bb",
+        text, session_id: thread.id, playback,
       });
       if (playback === "client") deliver(reply, thread.id);
     } catch (cause) {

@@ -9,7 +9,6 @@ import { registerVoice } from "./voice.ts";
 function harness(prefs: Partial<Prefs> = {}, replies: Record<string, unknown> = {}, ready = true) {
   const calls: { method: string; path: string; body: unknown }[] = [];
   const hubCalls: unknown[][] = [];
-  const readyListeners: ((ready: boolean) => void)[] = [];
   const client: KokoroClient = {
     baseUrl: "http://127.0.0.1:6789",
     async call<T>(method: string, path: string, body?: unknown) {
@@ -27,14 +26,12 @@ function harness(prefs: Partial<Prefs> = {}, replies: Record<string, unknown> = 
       sound: (...a) => { hubCalls.push(["sound", ...a]); },
       stop: (...a) => { hubCalls.push(["stop", ...a]); },
       hasReadyClient: () => ready,
-      onReadyChange: (fn) => { readyListeners.push(fn); return () => undefined; },
     },
     prefs: { get: () => ({ ...DEFAULT_PREFS, ...prefs }) },
     contract: "Mode: {{MODE}}.",
     contractFull: "Full: {{MODE}}, no blocks.",
-    contractBb: "Directive: {{MODE}}.",
   });
-  return { host, calls, hubCalls, readyListeners, setReady: (r: boolean) => { ready = r; } };
+  return { host, calls, hubCalls };
 }
 
 const root = (id = "t1") => makeThreadResponse({ id, parentThreadId: null });
@@ -45,7 +42,7 @@ test("thread.idle in client mode routes speech to the hub", async () => {
   });
   await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
   assert.deepEqual(calls.at(-1), {
-    method: "POST", path: "/turn", body: { text: "Done.", session_id: "t1", playback: "client", source: "bb" },
+    method: "POST", path: "/turn", body: { text: "Done.", session_id: "t1", playback: "client" },
   });
   assert.deepEqual(hubCalls, [["speak", 5, "Done.", "t1", 0.8]]);
 });
@@ -55,7 +52,7 @@ test("thread.idle announces the turn to cards right before sending it", async ()
   await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
   assert.deepEqual(calls.slice(-2).map((c) => [c.method, c.path, c.body]), [
     ["PUBLISH", "kokoro-turn", { threadId: "t1" }],
-    ["POST", "/turn", { text: "Done.", session_id: "t1", playback: "client", source: "bb" }],
+    ["POST", "/turn", { text: "Done.", session_id: "t1", playback: "client" }],
   ]);
 });
 
@@ -86,19 +83,19 @@ test("thread.idle for a child thread is ignored", async () => {
   assert.deepEqual(calls, []);
 });
 
-test("client mode with no ready window leaves the turn to the hooks", async () => {
+test("client mode with no ready window stays quiet", async () => {
   const { host, calls } = harness({}, {}, false);
   await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
   assert.deepEqual(calls, []);
 });
 
-test("heartbeat reports whether the plugin can voice", async () => {
+test("heartbeat keeps the contract's mode current", async () => {
   const { host, calls } = harness({}, { "/config": { config: { mode: "verbose" } } }, false);
   const { controller, done } = host.harness.runService("voice-heartbeat");
   await new Promise((r) => setImmediate(r));
   controller.abort();
   await done;
-  assert.deepEqual(calls.find((c) => c.path === "/runtime")?.body, { bb_plugin: false });
+  assert.deepEqual(calls.map((c) => c.path), ["/config"]);
   assert.equal(host.harness.registrations.instructionProvider?.({ threadId: "t1", projectId: "p1" }), "Mode: verbose.");
 });
 
@@ -109,20 +106,6 @@ test("full mode swaps in the short contract without blocks", async () => {
   controller.abort();
   await done;
   assert.equal(host.harness.registrations.instructionProvider?.({ threadId: "t1", projectId: "p1" }), "Full: full, no blocks.");
-});
-
-test("a readiness change posts /runtime immediately", async () => {
-  const { calls, readyListeners, setReady } = harness({}, {}, false);
-  setReady(true);
-  for (const fn of readyListeners) fn(true);
-  await new Promise((r) => setImmediate(r));
-  assert.deepEqual(calls, [{ method: "POST", path: "/runtime", body: { bb_plugin: true } }]);
-});
-
-test("unloading the plugin releases the runtime claim", async () => {
-  const { host, calls } = harness();
-  await host.harness.dispose();
-  assert.deepEqual(calls.at(-1), { method: "POST", path: "/runtime", body: { bb_plugin: false } });
 });
 
 test("thread.idle with no text does nothing", async () => {
@@ -214,17 +197,7 @@ async function heartbeatOnce(replies: Record<string, unknown>) {
   return h.host.harness.registrations.instructionProvider?.({ threadId: "t1", projectId: "p1" });
 }
 
-test("a server that understands directives gets the directive contract", async () => {
-  const out = await heartbeatOnce({ "/config": { config: { mode: "brief" } }, "/health": { features: ["directive", "replay"] } });
-  assert.equal(out, "Directive: brief.");
-});
-
-test("an older server keeps the comment contract", async () => {
-  const out = await heartbeatOnce({ "/config": { config: { mode: "brief" } }, "/health": { status: "ok" } });
-  assert.equal(out, "Mode: brief.");
-});
-
 test("full mode wins over the directive contract", async () => {
-  const out = await heartbeatOnce({ "/config": { config: { mode: "full" } }, "/health": { features: ["directive"] } });
+  const out = await heartbeatOnce({ "/config": { config: { mode: "full" } } });
   assert.equal(out, "Full: full, no blocks.");
 });

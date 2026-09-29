@@ -12,8 +12,7 @@ import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
-import { dataDir, locatePluginRoot, pythonIn, stateDir, venvDir } from "./setup/paths.ts";
-import { writePresence } from "./setup/presence.ts";
+import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
 import { spawnServer } from "./setup/process.ts";
 import { findExecutable, findUv, probeAudio, syncRuntime } from "./setup/uv.ts";
 import { Supervisor } from "./supervisor.ts";
@@ -88,11 +87,6 @@ export default async function plugin(bb: BbPluginApi) {
     bb.log.error(`plugin files incomplete: no server/ next to ${fileURLToPath(import.meta.url)}`);
     return;
   }
-  try {
-    bb.onDispose(writePresence(stateDir()));
-  } catch (cause) {
-    bb.log.warn(`could not write the hook presence file: ${cause instanceof Error ? cause.message : String(cause)}`);
-  }
   const readText = (p: string) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
 
   const serverDir = path.join(root, "server");
@@ -159,9 +153,8 @@ export default async function plugin(bb: BbPluginApi) {
     hub,
     prefs,
     publish: (channel, payload) => bb.realtime.publish(channel, payload),
-    contract: readText(path.join(root, "hooks", "context", "tts-contract.md")),
-    contractFull: readText(path.join(root, "hooks", "context", "tts-contract-full.md")),
-    contractBb: readText(path.join(root, "hooks", "context", "tts-contract-bb.md")),
+    contract: readText(path.join(root, "contract", "tts-contract.md")),
+    contractFull: readText(path.join(root, "contract", "tts-contract-full.md")),
   });
 }
 

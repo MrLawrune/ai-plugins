@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dataDir, locatePluginRoot, pythonIn, stateDir, venvDir } from "./paths.ts";
+import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./paths.ts";
 
 test("dataDir follows XDG, then ~/.local/share, then macOS", () => {
   assert.equal(dataDir({ XDG_DATA_HOME: "/x" }, "linux", "/h/u"), "/x/kokoro-tts");
@@ -19,7 +19,3 @@ test("locatePluginRoot walks up from dist/", () => {
   assert.equal(locatePluginRoot("/elsewhere/dist", exists), null);
 });
 
-test("stateDir follows XDG_STATE_HOME, else ~/.local/state, on every platform", () => {
-  assert.equal(stateDir({ XDG_STATE_HOME: "/s" }, "/h/u"), "/s/kokoro-tts");
-  assert.equal(stateDir({}, "/Users/u"), "/Users/u/.local/state/kokoro-tts");
-});

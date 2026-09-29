@@ -253,25 +253,8 @@ def play_queue_interruptible(q: "queue.Queue[np.ndarray | None]", sr: int, cance
 # --- Speech log ---
 
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))) / "kokoro-tts"
-BB_CLAIM_FILE = STATE_DIR / "bb-plugin-claim"
-REPEAT_WINDOW_S = 10
 ENGINE_KEYS = ("provider", "remote_url", "fallback_to_cpu", "idle_unload_minutes", "intra_op_threads", "gpu_mem_limit_mb")
 LAST_TURN_MAX = 500
-
-
-def _read_bb_claim() -> float:
-    try:
-        return float(BB_CLAIM_FILE.read_text().strip())
-    except (OSError, ValueError):
-        return 0.0
-
-
-def _write_bb_claim(ts: float) -> None:
-    try:
-        BB_CLAIM_FILE.parent.mkdir(parents=True, exist_ok=True)
-        BB_CLAIM_FILE.write_text(str(ts))
-    except OSError:
-        pass
 
 
 def _norm_text(text: str) -> str:
@@ -379,12 +362,7 @@ class KokoroServer:
         self.pauser = MediaPauser()
         self.active_playbacks: dict[str, asyncio.Task] = {}
         self.cancel_events: dict[str, threading.Event] = {}
-        # The bb plugin's "I'm voicing" claim survives a server restart, so the
-        # Claude Code hooks don't speak over it in the seconds before its next
-        # heartbeat reaches the new server.
-        self.bb_plugin_seen = _read_bb_claim()
         self.last_turn: OrderedDict[str, str] = OrderedDict()
-        self.recent_turns: deque[tuple[float, str, str]] = deque(maxlen=20)
         self._audio_executor = None
         self._config_lock = asyncio.Lock()
         try:
@@ -901,20 +879,15 @@ class KokoroServer:
 
         return {"status": "playing", "sound": sound, "session_id": session_id}, 200
 
-    def _is_repeat_turn(self, session_id: str, text: str, source: str) -> bool:
+    def _is_repeat_turn(self, session_id: str, text: str) -> bool:
         """A reply already voiced: the same text again for this session (stopping a
-        thread re-reports its previous reply), or the same turn reported seconds
-        ago by the other surface (a Claude Code hook and the bb plugin both
-        reporting one turn). Two threads on one surface may say the same thing."""
+        thread re-reports its previous reply). Two threads may say the same thing."""
         key = hashlib.sha1(text.encode()).hexdigest()
-        now = time.time()
-        repeat = self.last_turn.get(session_id) == key or any(
-            k == key and s != source and now - t < REPEAT_WINDOW_S for t, k, s in self.recent_turns)
+        repeat = self.last_turn.get(session_id) == key
         self.last_turn[session_id] = key
         self.last_turn.move_to_end(session_id)
         while len(self.last_turn) > LAST_TURN_MAX:
             self.last_turn.popitem(last=False)
-        self.recent_turns.append((now, key, source))
         return repeat
 
     async def handle_turn(self, request: web.Request) -> web.Response:
@@ -925,10 +898,8 @@ class KokoroServer:
         if not isinstance(data, dict):
             return web.json_response({"error": "body must be an object"}, status=400)
         text = data.get("text")
-        final_text = data.get("final_text")
-        # Malformed turns are never an error for the caller (a hook or bb):
-        # they just stay silent.
-        if not isinstance(text, str) or not (final_text is None or isinstance(final_text, str)):
+        # Malformed turns are never an error for the caller: they just stay silent.
+        if not isinstance(text, str):
             return web.json_response({"action": "silent"})
         text = text.strip()
         if not text:
@@ -936,15 +907,14 @@ class KokoroServer:
         if self.muted:
             return web.json_response({"action": "silent", "muted": True})
         session_id = str(data.get("session_id") or "default")
-        source = str(data.get("source") or "unknown")
-        if self._is_repeat_turn(session_id, text, source):
+        if self._is_repeat_turn(session_id, text):
             return web.json_response({"action": "silent", "repeat": True})
         playback = "client" if data.get("playback") == "client" else "server"
         cfg = self.config.get()
         mode = data.get("mode")
         if not isinstance(mode, str) or mode not in MODE_CEILING:
             mode = cfg["mode"]
-        result = apply_cue_prefs(route_turn(text, mode, final_text), cfg)
+        result = apply_cue_prefs(route_turn(text, mode), cfg)
 
         if playback == "server":
             if result["action"] == "speech":
@@ -1015,17 +985,6 @@ class KokoroServer:
         self.speech_log.update(entry, status, **extra)
         return web.json_response({"status": "ok"})
 
-    async def handle_runtime(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "body must be an object"}, status=400)
-        self.bb_plugin_seen = time.time() if data.get("bb_plugin") is True else 0.0
-        _write_bb_claim(self.bb_plugin_seen)
-        return web.json_response({"status": "ok"})
-
     async def handle_other_audio(self, request: web.Request) -> web.Response:
         """Speech started or ended in a bb window on this computer (the bb plugin only calls for those)."""
         try:
@@ -1075,7 +1034,6 @@ class KokoroServer:
             },
             "uptime_s": int(time.time() - self.started_at),
             "started_by": os.environ.get("KOKORO_STARTED_BY") or None,
-            "bb_plugin_active": time.time() - self.bb_plugin_seen < 60,
             "output_device_ok": self._output_device_ok(),
         })
 
@@ -1094,9 +1052,9 @@ def _host_name(host_header: str) -> str | None:
 def local_request_guard(bind_host: str):
     """Middleware against cross-origin and DNS-rebinding requests.
 
-    Every legitimate client (the Claude Code hooks via curl, the bb plugin
-    backend via Node fetch) is a non-browser client that sends no Origin
-    header, so any request carrying one came from a web page and is refused.
+    Every legitimate client (the bb plugin backend via Node fetch, or curl) is
+    a non-browser client that sends no Origin header, so any request carrying
+    one came from a web page and is refused.
     When the server is bound to loopback, a Host header naming anything other
     than a loopback name means a rebound DNS name pointed a page at us.
     """
@@ -1137,7 +1095,6 @@ def build_app(server: "KokoroServer", host: str | None = None) -> web.Applicatio
     app.router.add_post("/turn", server.handle_turn)
     app.router.add_post("/cue", server.handle_cue)
     app.router.add_post("/speech-log/status", server.handle_speech_log_status)
-    app.router.add_post("/runtime", server.handle_runtime)
     app.router.add_post("/other-audio", server.handle_other_audio)
     return app
 

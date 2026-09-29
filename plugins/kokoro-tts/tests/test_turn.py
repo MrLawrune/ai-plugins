@@ -8,10 +8,10 @@ from kokoro_turn import extract_block, first_sentence, full_text, parse_directiv
 CFG = {"attention_sound": True, "working_sound": True}
 
 
-def block(weight, body=None):
-    if body is None:
-        return f'<!-- TTS_RESPONSE weight="{weight}" -->'
-    return f'<!-- TTS_RESPONSE weight="{weight}"\n{body}\nTTS_RESPONSE -->'
+def block(weight, say=None):
+    if say is None:
+        return f'::kokoro-tts{{weight="{weight}"}}'
+    return f'::kokoro-tts{{weight="{weight}" say="{say}"}}'
 
 
 def test_speech_block_is_spoken():
@@ -24,24 +24,9 @@ def test_last_block_wins():
     assert route_turn(text, "brief") == {"action": "speech", "text": "Final words."}
 
 
-def test_legacy_summary_block_is_speech():
-    text = "x\n<!-- TTS_SUMMARY\nLegacy words.\nTTS_SUMMARY -->"
-    assert route_turn(text, "verbose") == {"action": "speech", "text": "Legacy words."}
-
-
 def test_no_block_falls_back_to_first_sentence():
     assert route_turn("Build is green. Details follow.", "brief") == {
         "action": "speech", "text": "Build is green."}
-
-
-def test_fallback_prefers_final_text():
-    assert route_turn("Old part. New part.", "brief", final_text="New part.") == {
-        "action": "speech", "text": "New part."}
-
-
-def test_fallback_uses_full_text_when_final_has_nothing_speakable():
-    assert route_turn("Summary here. ```x```", "brief", final_text="```code```") == {
-        "action": "speech", "text": "Summary here."}
 
 
 def test_nothing_speakable_is_silent():
@@ -66,10 +51,6 @@ def test_silent_block_is_silent():
 
 def test_unknown_weight_is_silent():
     assert route_turn(block("shout"), "verbose") == {"action": "silent"}
-
-
-def test_empty_speech_block_plays_done():
-    assert route_turn('<!-- TTS_RESPONSE weight="speech" -->', "brief") == {"action": "sound", "sound": "done"}
 
 
 def test_unknown_mode_is_treated_as_speech_ceiling():
@@ -104,10 +85,6 @@ def test_cue_unknown_sound_is_silent():
 def test_full_reads_the_whole_reply_and_ignores_blocks():
     text = "First point.\n\nSecond point.\n" + block("silent")
     assert route_turn(text, "full") == {"action": "speech", "text": "First point.\n\nSecond point."}
-
-
-def test_full_prefers_the_final_message():
-    assert route_turn("Earlier text. Final text.", "full", "Final text.") == {"action": "speech", "text": "Final text."}
 
 
 def test_full_skips_code_and_tables_but_keeps_plain_inline_code():
@@ -198,11 +175,11 @@ def test_inline_directive_text_is_not_a_directive():
     assert extract_block(text) == (None, None)
 
 
-def test_last_block_wins_across_forms():
-    comment_then_directive = block("speech", "Old.") + "\n\n" + directive('weight="speech" say="New."')
-    assert extract_block(comment_then_directive) == ("speech", "New.")
-    directive_then_comment = directive('weight="speech" say="Old."') + "\n\n" + block("speech", "New.")
-    assert extract_block(directive_then_comment) == ("speech", "New.")
+def test_html_comments_are_neither_directives_nor_spoken():
+    text = '<!-- TTS_RESPONSE weight="speech"\nOld form.\nTTS_RESPONSE -->\nBuild is green. More.'
+    assert extract_block(text) == (None, None)
+    assert route_turn(text, "brief") == {"action": "speech", "text": "Build is green."}
+    assert "Old form" not in route_turn(text, "full")["text"]
 
 
 def test_last_of_two_directives_wins():

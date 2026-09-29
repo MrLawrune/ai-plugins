@@ -1,6 +1,6 @@
-"""Turn routing for kokoro-tts: TTS block and directive parsing, mode ceiling, fallback.
+"""Turn routing for kokoro-tts: directive parsing, mode ceiling, fallback.
 
-Shared by POST /turn (BB plugin, Claude Code Stop hook) and POST /cue.
+Shared by POST /turn and POST /cue.
 Pure functions; no I/O.
 """
 
@@ -16,12 +16,8 @@ WEIGHT_RANK = {"silent": 0, "sound:working": 1, "sound:done": 2, "sound:attentio
 RANK_WEIGHT = {rank: weight for weight, rank in WEIGHT_RANK.items()}
 MODE_CEILING = {"quiet": 0, "ambient": 3, "brief": 4, "conversational": 4, "verbose": 4, "full": 4}
 
-BLOCK_MULTILINE = re.compile(
-    r'<!--\s*TTS_RESPONSE\s+weight="([^"]+)"\s*\n([\s\S]*?)\nTTS_RESPONSE\s*-->'
-)
-BLOCK_SELF_CLOSING = re.compile(r'<!--\s*TTS_RESPONSE\s+weight="([^"]+)"\s*-->')
-BLOCK_LEGACY = re.compile(r"<!--\s*TTS_SUMMARY\s*\n([\s\S]*?)\nTTS_SUMMARY\s*-->")
-ANY_BLOCK = re.compile(r"<!--\s*TTS_(?:RESPONSE|SUMMARY)[\s\S]*?-->")
+# bb never shows HTML comments, so they are never spoken either.
+HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
 # bb's message card: a leaf directive alone on its line, e.g.
 # ::kokoro-tts{weight="speech" say="Tests pass."}. Values are HTML-entity
 # decoded, as bb's directive parser does.
@@ -58,58 +54,29 @@ def _fence_spans(text):
 
 
 def _strip_blocks(text):
-    """Remove comment blocks and directive lines (for fallback and full mode)."""
-    return DIRECTIVE.sub("", ANY_BLOCK.sub("", text))
+    """Remove HTML comments and directive lines (for fallback and full mode)."""
+    return DIRECTIVE.sub("", HTML_COMMENT.sub("", text))
 
 
 def extract_block(text):
-    """Return (weight, content) from the last TTS block, or (None, None).
+    """Return (weight, say) from the reply's last kokoro-tts directive, or (None, None).
 
-    Candidates from all four block forms (multiline TTS_RESPONSE,
-    self-closing TTS_RESPONSE, legacy TTS_SUMMARY, and the kokoro-tts
-    directive outside code fences) are collected and the one whose match
-    ends furthest to the right (i.e. textually last) wins. On a
-    tie in end position, the multiline interpretation wins -- both because
-    self-closing candidates whose span is nested inside a multiline match are
-    dropped outright, and because ties are broken by priority.
+    Directives inside code fences are examples, not the reply's directive,
+    and malformed ones are skipped (bb shows both as text).
     """
-    candidates = []  # (end, priority, weight, content)
-
-    multiline_spans = []
-    for m in BLOCK_MULTILINE.finditer(text):
-        multiline_spans.append((m.start(), m.end()))
-        candidates.append((m.end(), 1, m.group(1), m.group(2).strip() or None))
-
-    for m in BLOCK_SELF_CLOSING.finditer(text):
-        if any(m.start() >= s and m.end() <= e for s, e in multiline_spans):
-            continue  # nested inside a multiline block; multiline wins
-        candidates.append((m.end(), 0, m.group(1), None))
-
-    for m in BLOCK_LEGACY.finditer(text):
-        content = m.group(1).strip()
-        if content:
-            candidates.append((m.end(), 0, "speech", content))
-
     fences = _fence_spans(text)
-    for m in DIRECTIVE.finditer(text):
+    for m in reversed(list(DIRECTIVE.finditer(text))):
         if any(s <= m.start() < e for s, e in fences):
-            continue  # an example in a code block, not the reply's directive
+            continue
         attrs = parse_directive_attrs(m.group(1))
         if attrs is None:
             continue
-        say = attrs.get("say", "").strip() or None
-        candidates.append((m.end(), 0, attrs.get("weight", ""), say))
-
-    if not candidates:
-        return None, None
-
-    candidates.sort(key=lambda c: (c[0], c[1]))
-    _, _, weight, content = candidates[-1]
-    return weight, content
+        return attrs.get("weight", ""), attrs.get("say", "").strip() or None
+    return None, None
 
 
 def first_sentence(text):
-    """First speakable sentence of the turn, blocks and fences stripped."""
+    """First speakable sentence of the turn, directives, comments, and fences stripped."""
     text = _strip_blocks(text)
     text = CODE_FENCE.sub("", text)
     text = re.sub(r"^#+\s*", "", text.strip(), flags=re.MULTILINE)
@@ -133,7 +100,7 @@ def _speak_inline_code(code):
 def full_text(text):
     """The whole reply for "full" mode, ready for the server's markdown strip.
 
-    TTS blocks go; code blocks and tables become a short spoken marker;
+    Directives and comments go; code blocks and tables become a short spoken marker;
     short inline code is read as written, a path as its file name.
     Replies over FULL_MAX_CHARS are cut at a sentence or line end.
     """
@@ -153,17 +120,15 @@ def full_text(text):
     return text
 
 
-def route_turn(text: str, mode: str, final_text: str | None = None) -> dict:
+def route_turn(text: str, mode: str) -> dict:
     """Decide what a finished turn sounds like."""
     if mode == "full":
-        # The reply itself is the speech; TTS blocks and weights are ignored.
-        content = full_text(final_text or text)
+        # The reply itself is the speech; directives and weights are ignored.
+        content = full_text(text)
         return {"action": "speech", "text": content} if content else {"action": "silent"}
     weight, content = extract_block(text)
     if weight is None:
-        fallback = first_sentence(final_text) if final_text else None
-        if fallback is None:
-            fallback = first_sentence(text)
+        fallback = first_sentence(text)
         if fallback is None:
             return {"action": "silent"}
         weight, content = "speech", fallback

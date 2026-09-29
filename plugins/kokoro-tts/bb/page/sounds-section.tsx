@@ -30,7 +30,7 @@ export function SoundsSection({ config, patch }: { config: KokoroConfig; patch: 
     >
       <SliderRow id="sound_volume" label="Cue volume" value={config.sound_volume} min={0} max={2} step={0.05}
         format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => patch({ sound_volume: v }, 350)} />
-      <SwitchRow id="working_sound" label="Working tick" hint="A soft tick while an agent is still working (Claude Code)."
+      <SwitchRow id="working_sound" label="Working tick" hint="A soft tick when an agent's reply asks for one."
         checked={config.working_sound} onChange={(v) => patch({ working_sound: v })} />
       <SwitchRow id="attention_sound" label="Attention ping" hint="When an agent needs your input."
         checked={config.attention_sound} onChange={(v) => patch({ attention_sound: v })} />

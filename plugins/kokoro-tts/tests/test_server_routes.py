@@ -21,12 +21,6 @@ from kokoro_config import ConfigStore  # noqa: E402
 VOICES = ["af_sky", "af_bella"]
 
 
-@pytest.fixture(autouse=True)
-def _claim_file(tmp_path, monkeypatch):
-    """Keep /runtime from writing the real bb-plugin claim file."""
-    monkeypatch.setattr(ks, "BB_CLAIM_FILE", tmp_path / "claim")
-
-
 def make_server(tmp_path):
     srv = object.__new__(ks.KokoroServer)
     srv.config = ConfigStore(str(tmp_path / "config.json"), VOICES)
@@ -34,9 +28,7 @@ def make_server(tmp_path):
     srv.speech_log = ks.SpeechLog(tmp_path / "log.jsonl")
     srv.active_playbacks = {}
     srv.cancel_events = {}
-    srv.bb_plugin_seen = 0.0
     srv.last_turn = OrderedDict()
-    srv.recent_turns = deque(maxlen=20)
     srv.model_path = "kokoro-v1.0.onnx"
     srv.started_at = time.time()
     srv.latency_samples = deque()
@@ -70,7 +62,7 @@ def request(srv, method, path, body=None):
     return asyncio.run(go())
 
 
-BLOCK = '<!-- TTS_RESPONSE weight="speech"\nAll done.\nTTS_RESPONSE -->'
+BLOCK = '::kokoro-tts{weight="speech" say="All done."}'
 
 
 def test_turn_server_playback_speaks(tmp_path):
@@ -98,7 +90,7 @@ def test_turn_client_playback_logs_without_playing(tmp_path):
 
 def test_turn_client_strip_to_empty_becomes_done(tmp_path):
     srv = make_server(tmp_path)
-    blk = '<!-- TTS_RESPONSE weight="speech"\nhttps://example.com\nTTS_RESPONSE -->'
+    blk = '::kokoro-tts{weight="speech" say="https://example.com"}'
     _, body = request(srv, "POST", "/turn", {"text": blk, "playback": "client"})
     assert body["action"] == "sound" and body["sound"] == "done"
 
@@ -177,28 +169,6 @@ def test_speech_log_status_rejects_bad_input(tmp_path):
     assert request(srv, "POST", "/speech-log/status", {"id": 1, "status": "exploded"})[0] == 400
 
 
-def test_bb_plugin_active_after_heartbeat(tmp_path):
-    srv = make_server(tmp_path)
-    request(srv, "POST", "/runtime", {"bb_plugin": True})
-    _, health = request(srv, "GET", "/health")
-    assert health["bb_plugin_active"] is True
-
-
-def test_bb_plugin_active_expires_after_60_s(tmp_path):
-    srv = make_server(tmp_path)
-    srv.bb_plugin_seen = time.time() - 61
-    _, health = request(srv, "GET", "/health")
-    assert health["bb_plugin_active"] is False
-
-
-def test_bb_plugin_false_clears_immediately(tmp_path):
-    srv = make_server(tmp_path)
-    request(srv, "POST", "/runtime", {"bb_plugin": True})
-    request(srv, "POST", "/runtime", {"bb_plugin": False})
-    _, health = request(srv, "GET", "/health")
-    assert health["bb_plugin_active"] is False
-
-
 def test_health_reports_no_output_device_when_headless(tmp_path):
     srv = make_server(tmp_path)
     _, health = request(srv, "GET", "/health")
@@ -219,7 +189,7 @@ def test_turn_server_playback_empty_after_strip_plays_done(tmp_path):
     assert ("sound", "done", "s1") in srv.calls
 
 
-@pytest.mark.parametrize("path", ["/cue", "/speech-log/status", "/runtime"])
+@pytest.mark.parametrize("path", ["/cue", "/speech-log/status"])
 def test_non_object_body_is_400(tmp_path, path):
     srv = make_server(tmp_path)
     status, body = request(srv, "POST", path, [1, 2])
@@ -276,8 +246,6 @@ def test_lan_bind_accepts_any_host_but_still_refuses_origin(tmp_path):
     {"text": 5},
     {"text": ["a"]},
     {"text": {"a": 1}},
-    {"text": "Done. " + BLOCK, "final_text": 7},
-    {"text": "Done. " + BLOCK, "final_text": ["x"]},
 ])
 def test_turn_non_string_text_is_silent(tmp_path, body):
     srv = make_server(tmp_path)
@@ -344,46 +312,28 @@ def test_turn_repeat_for_the_same_session_is_silent(tmp_path):
     assert len(srv.calls) == 1
 
 
-def test_turn_same_text_from_the_other_surface_moments_later_is_silent(tmp_path):
-    srv = make_server(tmp_path)
-    request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "claude-session", "source": "claude-code"})
-    _, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_1", "playback": "client", "source": "bb"})
-    assert body["action"] == "silent"
-    srv.recent_turns = deque([(t - 60, k, s) for t, k, s in srv.recent_turns], maxlen=20)
-    _, body = request(srv, "POST", "/turn", {"text": "x\n" + BLOCK, "session_id": "thr_2", "source": "bb"})
-    assert body["action"] == "speech"
-
-
-def test_two_threads_on_one_surface_may_say_the_same_thing(tmp_path):
+def test_two_threads_may_say_the_same_thing(tmp_path):
     srv = make_server(tmp_path)
     for thread in ("thr_1", "thr_2"):
-        _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": thread, "source": "bb"})
+        _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": thread})
         assert body["action"] == "speech"
     assert len(srv.calls) == 2
 
 
 def test_cleanup_forgets_the_sessions_last_reply(tmp_path):
     srv = make_server(tmp_path)
-    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "source": "bb"})
+    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
     request(srv, "POST", "/cleanup", {"session_id": "s1"})
-    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1", "source": "bb"})
+    _, body = request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "s1"})
     assert body["action"] == "speech"
 
 
 def test_last_turn_memory_is_bounded(tmp_path):
     srv = make_server(tmp_path)
     for i in range(ks.LAST_TURN_MAX + 5):
-        srv._is_repeat_turn(f"s{i}", f"reply {i}", "bb")
+        srv._is_repeat_turn(f"s{i}", f"reply {i}")
     assert len(srv.last_turn) == ks.LAST_TURN_MAX
     assert "s0" not in srv.last_turn
-
-
-def test_runtime_claim_survives_a_restart(tmp_path):
-    srv = make_server(tmp_path)
-    request(srv, "POST", "/runtime", {"bb_plugin": True})
-    assert time.time() - ks._read_bb_claim() < 5
-    request(srv, "POST", "/runtime", {"bb_plugin": False})
-    assert ks._read_bb_claim() == 0.0
 
 
 def test_release_keeps_a_replacement_playback(tmp_path):
@@ -415,7 +365,7 @@ def test_sound_cleanup_after_replacement_keeps_the_new_sound(tmp_path):
 def test_turn_sound_respects_the_working_tick_switch(tmp_path):
     srv = make_server(tmp_path)
     srv.config.patch({"working_sound": False})
-    _, body = request(srv, "POST", "/turn", {"text": '<!-- TTS_RESPONSE weight="sound:working" -->'})
+    _, body = request(srv, "POST", "/turn", {"text": '::kokoro-tts{weight="sound:working"}'})
     assert body["action"] == "silent" and srv.calls == []
 
 
@@ -547,7 +497,7 @@ def test_replay_client_logs_an_entry_for_the_browser(tmp_path):
 
 def test_replay_ignores_repeat_suppression(tmp_path):
     srv = make_server(tmp_path)
-    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "t1", "source": "bb"})
+    request(srv, "POST", "/turn", {"text": BLOCK, "session_id": "t1"})
     request(srv, "POST", "/replay", {"text": "All done.", "session_id": "t1"})
     assert [c[1] for c in srv.calls] == ["All done.", "All done."]
 
@@ -576,7 +526,7 @@ def test_replay_rejects_bad_input(tmp_path, body):
 
 def test_turn_client_logs_the_text_before_markdown_strip(tmp_path):
     srv = make_server(tmp_path)
-    turn = '<!-- TTS_RESPONSE weight="speech"\n**Bold** done.\nTTS_RESPONSE -->'
+    turn = '::kokoro-tts{weight="speech" say="**Bold** done."}'
     _, body = request(srv, "POST", "/turn", {"text": turn, "session_id": "t1", "playback": "client"})
     assert body["text"] == "Bold done."
     entry = srv.speech_log.get(body["entry_id"])
