@@ -7,11 +7,6 @@ export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.P
   return path.join(env.XDG_DATA_HOME || path.join(home, ".local", "share"), "kokoro-tts");
 }
 
-/** Matches the Python server and hooks: XDG state dir on every platform. */
-export function stateDir(env: NodeJS.ProcessEnv = process.env, home = os.homedir()): string {
-  return path.join(env.XDG_STATE_HOME || path.join(home, ".local", "state"), "kokoro-tts");
-}
-
 export function venvDir(runtime: "cpu" | "gpu", base = dataDir()): string {
   return path.join(base, `venv-${runtime}`);
 }

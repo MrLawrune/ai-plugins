@@ -1,17 +1,19 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { ConfigCache } from "./config-cache.ts";
 import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import type { PlayerHub } from "./hub.ts";
 import { PREVIEW_ID_BASE } from "./protocol.ts";
 import type { PrefsStore } from "./prefs.ts";
-import { replayResultSchema, rpcContract, type ConfigResponse, type Health } from "./schemas.ts";
+import { replayResultSchema, rpcContract, type ConfigResponse, type Health, type HealthResult } from "./schemas.ts";
 import { installUv } from "./setup/uv.ts";
 import type { Supervisor } from "./supervisor.ts";
 
 export interface RpcDeps {
   client: () => KokoroClient;
-  /** Null when the plugin install is broken (no server/ found): health/config RPC still work. */
+  /** Null when the plugin install is broken (no server/ found): status/config RPC still work. */
   supervisor: () => Supervisor | null;
   prefs: PrefsStore;
+  config: ConfigCache;
   hub: Pick<PlayerHub, "clients" | "stop" | "speak" | "sound" | "hasReadyClient">;
   log: BbPluginApi["log"];
   publish: (channel: string, payload: unknown) => void;
@@ -41,7 +43,7 @@ export function installerFailure(code: number, output: string): string {
 export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   const call = <T>(...a: Parameters<KokoroClient["call"]>) => deps.client().call<T>(...a);
   let installing = false;
-  const health = async () => {
+  const health = async (): Promise<HealthResult> => {
     try {
       return { up: true as const, health: await call<Health>("GET", "/health") };
     } catch (cause) {
@@ -49,15 +51,15 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     }
   };
   bb.rpc.register(rpcContract, {
-    health,
     status: async () => ({
       health: await health(),
       setup: deps.supervisor()?.status() ?? brokenInstallStatus,
       clients: deps.hub.clients(),
     }),
-    getConfig: () => call<ConfigResponse>("GET", "/config"),
+    getConfig: () => deps.config.refresh(),
     patchConfig: async (patch) => {
       const next = await call<ConfigResponse>("PATCH", "/config", patch);
+      deps.config.set(next);
       deps.publish("kokoro-config", next);
       return next;
     },
@@ -68,7 +70,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     preview: async (input) => {
       if (deps.prefs.get().playback === "client") {
         if (!deps.hub.hasReadyClient()) return { status: "no_window" };
-        const { config } = await call<ConfigResponse>("GET", "/config");
+        const { config } = await deps.config.current();
         const { text, speech_gain, ...opts } = input;
         deps.hub.speak(nextPreviewId(), text?.trim() || PREVIEW_TEXT, "preview", speech_gain ?? config.speech_gain, opts);
         return { status: "playing" };
@@ -78,7 +80,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     playSound: async ({ sound }) => {
       if (deps.prefs.get().playback === "client") {
         if (!deps.hub.hasReadyClient()) return { status: "no_window" };
-        const { config } = await call<ConfigResponse>("GET", "/config");
+        const { config } = await deps.config.current();
         deps.hub.sound(sound, config.sound_volume, "bb-preview");
         return { status: "playing" };
       }
@@ -105,15 +107,19 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     setMuted: async ({ muted }) => {
       // Muting silences browser playback too, not just the server's speaker.
       if (muted) deps.hub.stop(null);
-      return { muted: (await call<{ muted: boolean }>("POST", "/mute", { muted })).muted };
+      const next = (await call<{ muted: boolean }>("POST", "/mute", { muted })).muted;
+      deps.config.setMuted(next);
+      return { muted: next };
     },
     interruptAll: () => {
       deps.hub.stop(null);
       return call("POST", "/interrupt-all", {});
     },
-    engine: () => call("GET", "/engine"),
-    speechLog: () => call("GET", "/speech-log?limit=300"),
-    setupStatus: () => deps.supervisor()?.status() ?? brokenInstallStatus,
+    stop: ({ threadId }) => {
+      deps.hub.stop(threadId);
+      return call("POST", "/interrupt", { session_id: threadId });
+    },
+    speechLog: ({ threadId }) => call("GET", `/speech-log?session_id=${encodeURIComponent(threadId)}`),
     installUv: async () => {
       if (installing) return { started: false };
       installing = true;
@@ -128,6 +134,5 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     },
     getPrefs: () => deps.prefs.get(),
     setPrefs: (patch) => deps.prefs.update(patch),
-    listClients: () => ({ clients: deps.hub.clients() }),
   });
 }

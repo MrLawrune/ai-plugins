@@ -82,8 +82,6 @@ export class PlayerHub {
   /** Sockets from a window on this computer. */
   #localSockets = new WeakSet<SocketLike>();
   #jobs = new Map<number, Job>();
-  #readyListeners = new Set<(ready: boolean) => void>();
-  #lastReady = false;
   #now: () => number;
   /** Client ids holding the output: whose drop-off makes replies wait for them. */
   #holders = new Set<string>();
@@ -131,7 +129,6 @@ export class PlayerHub {
       this.#welcomeBack(info);
       this.#syncHolders();
       this.#releaseHeld();
-      this.#checkReady();
       return;
     }
     const info = this.#socketInfo.get(socket);
@@ -155,7 +152,6 @@ export class PlayerHub {
       this.#endAway();
     }
     if (msg.type === "focus" || msg.type === "unlocked") this.#syncHolders();
-    this.#checkReady();
   }
 
   onClose(socket: SocketLike): void {
@@ -170,7 +166,6 @@ export class PlayerHub {
     if (wasHolder && this.#deps.routing().playOn !== "all") this.#goAway(info);
     this.#dropTarget(clientId);
     this.#syncHolders();
-    this.#checkReady();
   }
 
   /** The socket's window is on this computer (loopback); set when it opens. */
@@ -188,13 +183,6 @@ export class PlayerHub {
   routingChanged(): void {
     if (this.#away && !this.#awayActive()) this.#endAway();
     this.#syncHolders();
-    this.#checkReady();
-  }
-
-  /** Subscribes to changes of hasReadyClient() caused by window messages or closes. */
-  onReadyChange(listener: (ready: boolean) => void): () => void {
-    this.#readyListeners.add(listener);
-    return () => { this.#readyListeners.delete(listener); };
   }
 
   speak(entryId: number, text: string, sessionId: string, gain: number, opts?: SynthOptions): void {
@@ -240,7 +228,6 @@ export class PlayerHub {
     }
   }
 
-  /** A window can play, or replies are being held for one that will be back. */
   /**
    * Keepalive from the server side. A hidden page's timers are throttled to about
    * once a minute, too slow to keep its socket from being closed as idle, but an
@@ -251,11 +238,12 @@ export class PlayerHub {
     for (const id of this.#sockets.keys()) this.#send(id, { type: "ping" });
   }
 
-  /** Windows currently holding the output. */
+  /** Windows currently holding the output (the routing tests read it). */
   holderIds(): string[] {
     return [...this.#holders].sort();
   }
 
+  /** A window can play, or replies are being held for one that will be back. */
   hasReadyClient(): boolean {
     return this.#awayActive() || this.#deps.registry.select("all", null).length > 0;
   }
@@ -273,7 +261,6 @@ export class PlayerHub {
     for (const socket of this.#sockets.values()) socket.close(1001, "plugin unloading");
     this.#sockets.clear();
     this.#socketInfo.clear();
-    this.#readyListeners.clear();
   }
 
   /** Whether the output follows the last-used window (so using another device takes it). */
@@ -316,7 +303,6 @@ export class PlayerHub {
       timer: this.#setTimer(() => {
         this.#endAway();
         this.#syncHolders();
-        this.#checkReady();
       }, holdMs),
     };
   }
@@ -402,19 +388,6 @@ export class PlayerHub {
   #infoOf(clientId: string): PublicClientInfo | undefined {
     const socket = this.#sockets.get(clientId);
     return socket ? this.#socketInfo.get(socket) : undefined;
-  }
-
-  #checkReady(): void {
-    const ready = this.hasReadyClient();
-    if (ready === this.#lastReady) return;
-    this.#lastReady = ready;
-    for (const listener of this.#readyListeners) {
-      try {
-        listener(ready);
-      } catch {
-        // a listener's failure must not break socket handling
-      }
-    }
   }
 
   /**

@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { ClientRegistry } from "./clients.ts";
+import { ConfigCache } from "./config-cache.ts";
 import { PlayerHub } from "./hub.ts";
 import { createKokoroClient, portOf, type KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
@@ -12,8 +13,7 @@ import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
-import { dataDir, locatePluginRoot, pythonIn, stateDir, venvDir } from "./setup/paths.ts";
-import { writePresence } from "./setup/presence.ts";
+import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
 import { spawnServer } from "./setup/process.ts";
 import { findExecutable, findUv, probeAudio, syncRuntime } from "./setup/uv.ts";
 import { Supervisor } from "./supervisor.ts";
@@ -31,21 +31,32 @@ export default async function plugin(bb: BbPluginApi) {
       default: "http://127.0.0.1:6789",
     },
   });
-  let client: KokoroClient = createKokoroClient((await settings.get()).serverUrl);
+  let serverUrl = (await settings.get()).serverUrl;
+  let client: KokoroClient = createKokoroClient(serverUrl);
+  const config = new ConfigCache(() => client.call<ConfigResponse>("GET", "/config"));
+  bb.background.service("config-poll", { start: (signal) => config.poll(signal) });
 
-  // Registered up front so health/config/prefs RPC keep working even if the
+  // Registered up front so status/config/prefs RPC keep working even if the
   // install below turns out to be broken (no server/ next to this file).
   const prefs = new PrefsStore(bb.storage.kv);
   await prefs.load();
   const registry = new ClientRegistry();
+  /** Entry keys whose speech asked the server to pause other media. */
+  const pausing = new Set<string>();
   const hub = new PlayerHub({
     registry,
     routing: () => prefs.get(),
     synthesize: (text, signal, opts) => client.synthesize(text, signal, opts),
     log: (message) => bb.log.info(message),
-    // Other media is only paused for a window on this computer.
+    // Other media is only paused for a window on this computer, and only
+    // when the config asks for it; each end pairs with a start that went out.
     speaking: ({ key, on, local }) => {
-      if (on && !local) return;
+      if (on) {
+        if (!local || config.get()?.config.other_audio === "keep") return;
+        pausing.add(key);
+      } else if (!pausing.delete(key)) {
+        return;
+      }
       void client.call("POST", "/other-audio", { action: on ? "start" : "end", key }).catch(() => undefined);
     },
     reportStatus: async (id, status, extra) => {
@@ -65,6 +76,11 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   prefs.onChange((next, prev) => {
+    if (next.playback !== prev.playback) {
+      // Speech on the side just left would otherwise play on, out of reach of Stop.
+      hub.stop(null);
+      void client.call("POST", "/interrupt-all", {}).catch(() => undefined);
+    }
     if (next.playOn !== prev.playOn || next.pinnedDevice !== prev.pinnedDevice || next.playback !== prev.playback) {
       hub.routingChanged();
     }
@@ -72,14 +88,16 @@ export default async function plugin(bb: BbPluginApi) {
   prefs.onChange((next) => bb.realtime.publish("kokoro-prefs", next));
 
   let supervisor: Supervisor | null = null;
-  let serverUrl = (await settings.get()).serverUrl;
   settings.onChange((next) => {
     client = createKokoroClient(next.serverUrl);
     serverUrl = next.serverUrl;
+    // The old server's config and mute state no longer apply.
+    config.clear();
+    void config.refresh().catch(() => undefined);
     supervisor?.restart();
   });
   bb.log.info(`proxying to ${client.baseUrl}`);
-  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, hub, log: bb.log,
+  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, config, hub, log: bb.log,
     publish: (channel, payload) => bb.realtime.publish(channel, payload),
   });
 
@@ -87,11 +105,6 @@ export default async function plugin(bb: BbPluginApi) {
   if (!root) {
     bb.log.error(`plugin files incomplete: no server/ next to ${fileURLToPath(import.meta.url)}`);
     return;
-  }
-  try {
-    bb.onDispose(writePresence(stateDir()));
-  } catch (cause) {
-    bb.log.warn(`could not write the hook presence file: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   const readText = (p: string) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
 
@@ -124,10 +137,10 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     gpuAvailable: () => findExecutable("nvidia-smi") !== null,
     engineProvider: async () => {
-      const r = await client.call<ConfigResponse>("GET", "/config");
+      const r = await config.refresh();
       return { provider: r.config.provider, cudaAvailable: r.providers_available.cuda === true };
     },
-    setProvider: async (provider) => { await client.call("PATCH", "/config", { provider }); },
+    setProvider: async (provider) => { config.set(await client.call<ConfigResponse>("PATCH", "/config", { provider })); },
     sleep,
     now: Date.now,
   });
@@ -158,10 +171,10 @@ export default async function plugin(bb: BbPluginApi) {
     client: () => client,
     hub,
     prefs,
+    config,
     publish: (channel, payload) => bb.realtime.publish(channel, payload),
-    contract: readText(path.join(root, "hooks", "context", "tts-contract.md")),
-    contractFull: readText(path.join(root, "hooks", "context", "tts-contract-full.md")),
-    contractBb: readText(path.join(root, "hooks", "context", "tts-contract-bb.md")),
+    contract: readText(path.join(root, "contract", "tts-contract.md")),
+    contractFull: readText(path.join(root, "contract", "tts-contract-full.md")),
   });
 }
 

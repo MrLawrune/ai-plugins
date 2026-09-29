@@ -38,7 +38,6 @@ else:  # synthesis-only node (no audio hardware)
 import mistune
 
 from kokoro_config import (
-    DEFAULTS,
     ConfigError,
     ConfigStore,
     blend_voice,
@@ -47,12 +46,9 @@ from kokoro_config import (
 )
 from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import FRAME_END, FRAME_ERROR, SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
-from kokoro_turn import MODE_CEILING, apply_cue_prefs, route_cue, route_turn
+from kokoro_turn import MODE_CEILING, SOUNDS, apply_cue_prefs, extract_directive, route_cue, route_turn
 
 SERVER_VERSION = "0.2.0"
-# What this server understands beyond the base protocol; the bb plugin reads
-# it to decide which voice contract to give agents.
-FEATURES = ["directive", "replay"]
 MAX_REPLAY_CHARS = 2000
 PREVIEW_TEXT = "This is how I will sound when reading your updates."
 from mistune.plugins.formatting import strikethrough as strikethrough_plugin
@@ -167,8 +163,8 @@ async def read_object(request: web.Request) -> dict | None:
 
 
 def session_of(data: dict) -> str | None:
-    """The body's session_id ("default" when absent); None when it is not a short string."""
-    sid = data.get("session_id", "default")
+    """The body's session_id; None when it is missing or not a short string."""
+    sid = data.get("session_id")
     if not isinstance(sid, str) or not sid or len(sid) > MAX_SESSION_ID:
         return None
     return sid
@@ -253,25 +249,8 @@ def play_queue_interruptible(q: "queue.Queue[np.ndarray | None]", sr: int, cance
 # --- Speech log ---
 
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", os.path.expanduser("~/.local/state"))) / "kokoro-tts"
-BB_CLAIM_FILE = STATE_DIR / "bb-plugin-claim"
-REPEAT_WINDOW_S = 10
 ENGINE_KEYS = ("provider", "remote_url", "fallback_to_cpu", "idle_unload_minutes", "intra_op_threads", "gpu_mem_limit_mb")
 LAST_TURN_MAX = 500
-
-
-def _read_bb_claim() -> float:
-    try:
-        return float(BB_CLAIM_FILE.read_text().strip())
-    except (OSError, ValueError):
-        return 0.0
-
-
-def _write_bb_claim(ts: float) -> None:
-    try:
-        BB_CLAIM_FILE.parent.mkdir(parents=True, exist_ok=True)
-        BB_CLAIM_FILE.write_text(str(ts))
-    except OSError:
-        pass
 
 
 def _norm_text(text: str) -> str:
@@ -279,7 +258,7 @@ def _norm_text(text: str) -> str:
 
 
 class SpeechLog:
-    """Bounded history of /speak requests and what became of them.
+    """Bounded history of spoken replies and what became of them.
 
     Status lifecycle: queued -> playing -> done | interrupted | error,
     or straight to muted | empty. Persisted as JSONL (one line per status
@@ -350,9 +329,9 @@ class SpeechLog:
         entry.update(extra)
         self._append(entry)
 
-    def recent(self, limit: int) -> list[dict]:
-        items = list(self.entries)[-limit:]
-        return items
+    def recent(self, limit: int, session_id: str | None = None) -> list[dict]:
+        items = [e for e in self.entries if session_id is None or e["session_id"] == session_id]
+        return items[-limit:]
 
     def get(self, entry_id: int) -> dict | None:
         for e in reversed(self.entries):
@@ -379,13 +358,9 @@ class KokoroServer:
         self.pauser = MediaPauser()
         self.active_playbacks: dict[str, asyncio.Task] = {}
         self.cancel_events: dict[str, threading.Event] = {}
-        # The bb plugin's "I'm voicing" claim survives a server restart, so the
-        # Claude Code hooks don't speak over it in the seconds before its next
-        # heartbeat reaches the new server.
-        self.bb_plugin_seen = _read_bb_claim()
         self.last_turn: OrderedDict[str, str] = OrderedDict()
-        self.recent_turns: deque[tuple[float, str, str]] = deque(maxlen=20)
         self._audio_executor = None
+        self._sounds: dict[str, tuple[np.ndarray, int]] = {}
         self._config_lock = asyncio.Lock()
         try:
             self.engine: LocalEngine | RemoteEngine = self._make_engine(self.config.get())
@@ -488,7 +463,6 @@ class KokoroServer:
     def _config_response(self) -> dict:
         return {
             "config": self.config.get(),
-            "defaults": DEFAULTS,
             "muted": self.muted,
             "providers_available": available_providers(),
             "pause_other_audio_supported": pause_supported(),
@@ -583,27 +557,11 @@ class KokoroServer:
 
         A cancelled playback's cleanup can run after its replacement registered;
         popping unconditionally would drop the replacement's cancel handle and
-        make it deaf to /interrupt, /mute, and typing-to-stop.
+        make it deaf to /interrupt, /mute, and a new message stopping speech.
         """
         if self.cancel_events.get(session_id) is cancel:
             self.cancel_events.pop(session_id, None)
             self.active_playbacks.pop(session_id, None)
-
-    async def handle_speak(self, request: web.Request) -> web.Response:
-        data = await read_object(request)
-        if data is None:
-            return _bad("body must be a JSON object")
-        text = data.get("text", "")
-        if not isinstance(text, str) or not text.strip():
-            return _bad("text must be a non-empty string")
-        session_id = session_of(data)
-        if session_id is None:
-            return _bad("session_id must be a short string")
-        return await self._speak(text.strip(), data, session_id)
-
-    async def _speak(self, text: str, data: dict, session_id: str) -> web.Response:
-        body, status = await self._start_speech(text, data, session_id)
-        return web.json_response(body, status=status)
 
     async def _start_speech(self, text: str, data: dict, session_id: str, allow_muted: bool = False) -> tuple[dict, int]:
         if HEADLESS:
@@ -650,11 +608,14 @@ class KokoroServer:
         return {"status": "playing", "session_id": session_id}, 200
 
     async def handle_speech_log(self, request: web.Request) -> web.Response:
+        """Recent entries, oldest first; ?session_id= keeps one thread's (default limit 50)."""
+        session_id = request.query.get("session_id") or None
+        default = 50 if session_id else 100
         try:
-            limit = max(1, min(int(request.query.get("limit", "100")), 500))
+            limit = max(1, min(int(request.query.get("limit", str(default))), 500))
         except ValueError:
-            limit = 100
-        return web.json_response({"entries": self.speech_log.recent(limit)})
+            limit = default
+        return web.json_response({"entries": self.speech_log.recent(limit, session_id)})
 
     async def handle_preview(self, request: web.Request) -> web.Response:
         data = await read_object(request)
@@ -793,10 +754,8 @@ class KokoroServer:
         if data is None:
             return _bad("body must be a JSON object")
         muted = data.get("muted")
-        if muted is None:
-            muted = not self.muted
         if not isinstance(muted, bool):
-            return web.json_response({"error": "muted must be boolean"}, status=400)
+            return _bad("muted must be boolean")
         self.muted = muted
         if muted:
             for sid in list(self.active_playbacks):
@@ -842,41 +801,42 @@ class KokoroServer:
         if data is None:
             return _bad("body must be a JSON object")
         sound = data.get("sound")
-        valid_sounds = {"working", "done", "attention", "error"}
-        if not isinstance(sound, str) or sound.strip() not in valid_sounds:
-            return _bad(f"invalid sound, must be one of: {', '.join(sorted(valid_sounds))}")
-        volume = None
-        if "volume" in data:
-            try:
-                volume = validate_patch({"sound_volume": data["volume"]}, self.config.voices)["sound_volume"]
-            except ConfigError:
-                return _bad("volume must be a number in the sound volume range")
+        if not isinstance(sound, str) or sound.strip() not in SOUNDS:
+            return _bad(f"invalid sound, must be one of: {', '.join(sorted(SOUNDS))}")
         session_id = session_of(data)
         if session_id is None:
             return _bad("session_id must be a short string")
         if HEADLESS:
             return web.json_response({"error": "headless node"}, status=501)
-        body, status = await self._start_sound(sound.strip(), session_id, volume)
+        body, status = await self._start_sound(sound.strip(), session_id)
         return web.json_response(body, status=status)
 
-    async def _start_sound(self, sound: str, session_id: str, volume: float | None = None) -> tuple[dict, int]:
-        if HEADLESS:
-            return {"error": "headless node"}, 501
-        if self.muted:
-            return {"status": "muted", "sound": sound, "session_id": session_id}, 200
-        if volume is None:
-            volume = self.config.get()["sound_volume"]
-
-        assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
-        wav_path = os.path.join(assets_dir, f"{sound}.wav")
-
+    def _sound_samples(self, sound: str) -> tuple[np.ndarray, int] | None:
+        """A cue's decoded samples and rate, read from assets/ once; None if the file is missing."""
+        cached = self._sounds.get(sound)
+        if cached is not None:
+            return cached
+        wav_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", f"{sound}.wav")
         if not os.path.isfile(wav_path):
-            return {"error": f"asset not found: {sound}.wav"}, 404
-
+            return None
         with wave.open(wav_path, "rb") as wf:
             frames = wf.readframes(wf.getnframes())
             samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
             sr = wf.getframerate()
+        cached = self._sounds[sound] = (samples, sr)
+        return cached
+
+    async def _start_sound(self, sound: str, session_id: str) -> tuple[dict, int]:
+        if HEADLESS:
+            return {"error": "headless node"}, 501
+        if self.muted:
+            return {"status": "muted", "sound": sound, "session_id": session_id}, 200
+        volume = self.config.get()["sound_volume"]
+
+        decoded = self._sound_samples(sound)
+        if decoded is None:
+            return {"error": f"asset not found: {sound}.wav"}, 404
+        samples, sr = decoded
 
         if volume != 1.0:
             samples = np.clip(samples * volume, -1.0, 1.0)
@@ -901,105 +861,108 @@ class KokoroServer:
 
         return {"status": "playing", "sound": sound, "session_id": session_id}, 200
 
-    def _is_repeat_turn(self, session_id: str, text: str, source: str) -> bool:
+    def _is_repeat_turn(self, session_id: str, text: str) -> bool:
         """A reply already voiced: the same text again for this session (stopping a
-        thread re-reports its previous reply), or the same turn reported seconds
-        ago by the other surface (a Claude Code hook and the bb plugin both
-        reporting one turn). Two threads on one surface may say the same thing."""
+        thread re-reports its previous reply). Two threads may say the same thing."""
         key = hashlib.sha1(text.encode()).hexdigest()
-        now = time.time()
-        repeat = self.last_turn.get(session_id) == key or any(
-            k == key and s != source and now - t < REPEAT_WINDOW_S for t, k, s in self.recent_turns)
+        repeat = self.last_turn.get(session_id) == key
         self.last_turn[session_id] = key
         self.last_turn.move_to_end(session_id)
         while len(self.last_turn) > LAST_TURN_MAX:
             self.last_turn.popitem(last=False)
-        self.recent_turns.append((now, key, source))
         return repeat
 
+    def _mode_of(self, data: dict, cfg: dict) -> str:
+        """The request's per-request mode when it names one, else the configured mode."""
+        mode = data.get("mode")
+        return mode if isinstance(mode, str) and mode in MODE_CEILING else cfg["mode"]
+
     async def handle_turn(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "body must be an object"}, status=400)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        session_id = session_of(data)
+        if session_id is None:
+            return _bad("session_id must be a short string")
         text = data.get("text")
-        final_text = data.get("final_text")
-        # Malformed turns are never an error for the caller (a hook or bb):
-        # they just stay silent.
-        if not isinstance(text, str) or not (final_text is None or isinstance(final_text, str)):
+        # Malformed turns are never an error for the caller: they just stay silent.
+        if not isinstance(text, str):
             return web.json_response({"action": "silent"})
         text = text.strip()
         if not text:
             return web.json_response({"action": "silent"})
+        # say_text: the reply's directive say, on every outcome, so its chat card
+        # can tell it was muted or not spoken. logged_text: the speech-log text
+        # of the entry this turn made, so the card can follow that entry.
+        say = extract_directive(text)[1]
+
+        def reply(body: dict) -> web.Response:
+            if say:
+                body["say_text"] = say
+            return web.json_response(body)
+
         if self.muted:
-            return web.json_response({"action": "silent", "muted": True})
-        session_id = str(data.get("session_id") or "default")
-        source = str(data.get("source") or "unknown")
-        if self._is_repeat_turn(session_id, text, source):
-            return web.json_response({"action": "silent", "repeat": True})
+            return reply({"action": "silent", "muted": True})
+        if self._is_repeat_turn(session_id, text):
+            return reply({"action": "silent", "repeat": True})
         playback = "client" if data.get("playback") == "client" else "server"
         cfg = self.config.get()
-        mode = data.get("mode")
-        if not isinstance(mode, str) or mode not in MODE_CEILING:
-            mode = cfg["mode"]
-        result = apply_cue_prefs(route_turn(text, mode, final_text), cfg)
+        result = apply_cue_prefs(route_turn(text, self._mode_of(data, cfg)), cfg)
 
         if playback == "server":
             if result["action"] == "speech":
-                overrides = {k: data[k] for k in ("voice", "speed", "lang") if k in data}
-                body, status = await self._start_speech(result["text"], overrides, session_id)
+                logged = result["text"]
+                body, status = await self._start_speech(logged, {}, session_id)
                 if body.get("status") == "empty_after_strip":
                     await self._start_sound("done", session_id)
-                    result = {"action": "sound", "sound": "done"}
-                elif status != 200:
+                    result = {"action": "sound", "sound": "done", "logged_text": logged}
+                elif status == 200:
+                    result["logged_text"] = logged
+                else:
                     return web.json_response(body, status=status)
             elif result["action"] == "sound":
                 await self._start_sound(result["sound"], session_id)
-            return web.json_response(result)
+            return reply(result)
 
         if result["action"] == "speech":
             spoken = strip_markdown(result["text"]) if cfg["strip_markdown"] else result["text"]
+            # Log what the agent wrote (as the server path does), so the chat card matches it.
+            entry = self.speech_log.add(result["text"], session_id, voice=voice_label(cfg["voice"]))
             if not spoken:
-                result = {"action": "sound", "sound": "done"}
+                self.speech_log.update(entry, "empty")
+                result = {"action": "sound", "sound": "done", "logged_text": result["text"]}
             else:
-                # Log what the agent wrote (as the server path does), so the chat card matches it.
-                entry = self.speech_log.add(result["text"], session_id, voice=voice_label(cfg["voice"]))
                 result = {"action": "speech", "text": spoken, "entry_id": entry["id"],
-                          "speech_gain": cfg["speech_gain"]}
+                          "speech_gain": cfg["speech_gain"], "logged_text": result["text"]}
         if result["action"] == "sound":
             result["sound_volume"] = cfg["sound_volume"]
-        return web.json_response(result)
+        return reply(result)
 
     async def handle_cue(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "body must be an object"}, status=400)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
+        session_id = session_of(data)
+        if session_id is None:
+            return _bad("session_id must be a short string")
         if self.muted:
             return web.json_response({"action": "silent", "muted": True})
         cfg = self.config.get()
-        result = route_cue(str(data.get("sound", "")), data.get("mode") or cfg["mode"], cfg)
+        result = route_cue(str(data.get("sound", "")), self._mode_of(data, cfg), cfg)
         if result["action"] == "sound":
             if data.get("playback") == "client":
                 result["sound_volume"] = cfg["sound_volume"]
             else:
-                await self._start_sound(result["sound"], str(data.get("session_id") or "default"))
+                await self._start_sound(result["sound"], session_id)
         return web.json_response(result)
 
     async def handle_speech_log_status(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "body must be an object"}, status=400)
+        data = await read_object(request)
+        if data is None:
+            return _bad("body must be a JSON object")
         status = data.get("status")
         if status not in ("playing", "done", "interrupted", "error") or not isinstance(data.get("id"), int):
-            return web.json_response({"error": "invalid status update"}, status=400)
+            return _bad("invalid status update")
         entry = self.speech_log.get(data["id"])
         if entry is None:
             return web.json_response({"error": "unknown entry"}, status=404)
@@ -1015,40 +978,17 @@ class KokoroServer:
         self.speech_log.update(entry, status, **extra)
         return web.json_response({"status": "ok"})
 
-    async def handle_runtime(self, request: web.Request) -> web.Response:
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict):
-            return web.json_response({"error": "body must be an object"}, status=400)
-        self.bb_plugin_seen = time.time() if data.get("bb_plugin") is True else 0.0
-        _write_bb_claim(self.bb_plugin_seen)
-        return web.json_response({"status": "ok"})
-
     async def handle_other_audio(self, request: web.Request) -> web.Response:
         """Speech started or ended in a bb window on this computer (the bb plugin only calls for those)."""
-        try:
-            data = await request.json()
-        except Exception:
-            return web.json_response({"error": "invalid json"}, status=400)
-        if not isinstance(data, dict) or data.get("action") not in ("start", "end") or not isinstance(data.get("key"), str):
-            return web.json_response({"error": "need action start|end and a string key"}, status=400)
+        data = await read_object(request)
+        if data is None or data.get("action") not in ("start", "end") or not isinstance(data.get("key"), str):
+            return _bad("need action start|end and a string key")
         key = f"bb:{data['key']}"
         if data["action"] == "end":
             await self.pauser.end(key)
             return web.json_response({"paused": False})
         on = await self.pauser.start(key, self.config.get()["other_audio"])
         return web.json_response({"paused": on})
-
-    def _output_device_ok(self) -> bool:
-        if HEADLESS:
-            return False
-        try:
-            sd.query_devices(kind="output")
-            return True
-        except Exception:
-            return False
 
     async def handle_health(self, request: web.Request) -> web.Response:
         active = {k: not v.done() for k, v in self.active_playbacks.items()}
@@ -1057,16 +997,12 @@ class KokoroServer:
         return web.json_response({
             "status": "ok",
             "version": SERVER_VERSION,
-            "features": FEATURES,
             "model": os.path.basename(self.model_path),
-            "voices": self.config.voices,
             "active_sessions": sum(1 for v in active.values() if v),
             "provider": cfg["provider"],
             "engine": eng,
             "headless": HEADLESS,
-            "output_device": cfg["output_device"],
             "muted": self.muted,
-            "last_first_audio_ms": self.last_first_audio_ms,
             "latency": {
                 "last_ms": self.last_first_audio_ms,
                 "median_ms": median(self.latency_samples) if self.latency_samples else None,
@@ -1075,8 +1011,6 @@ class KokoroServer:
             },
             "uptime_s": int(time.time() - self.started_at),
             "started_by": os.environ.get("KOKORO_STARTED_BY") or None,
-            "bb_plugin_active": time.time() - self.bb_plugin_seen < 60,
-            "output_device_ok": self._output_device_ok(),
         })
 
 
@@ -1094,9 +1028,9 @@ def _host_name(host_header: str) -> str | None:
 def local_request_guard(bind_host: str):
     """Middleware against cross-origin and DNS-rebinding requests.
 
-    Every legitimate client (the Claude Code hooks via curl, the bb plugin
-    backend via Node fetch) is a non-browser client that sends no Origin
-    header, so any request carrying one came from a web page and is refused.
+    Every legitimate client (the bb plugin backend via Node fetch, or curl) is
+    a non-browser client that sends no Origin header, so any request carrying
+    one came from a web page and is refused.
     When the server is bound to loopback, a Host header naming anything other
     than a loopback name means a rebound DNS name pointed a page at us.
     """
@@ -1118,7 +1052,6 @@ def local_request_guard(bind_host: str):
 def build_app(server: "KokoroServer", host: str | None = None) -> web.Application:
     bind_host = host if host is not None else os.environ.get("KOKORO_HOST", "127.0.0.1")
     app = web.Application(middlewares=[local_request_guard(bind_host)])
-    app.router.add_post("/speak", server.handle_speak)
     app.router.add_post("/interrupt", server.handle_interrupt)
     app.router.add_post("/interrupt-all", server.handle_interrupt_all)
     app.router.add_post("/cleanup", server.handle_cleanup)
@@ -1137,7 +1070,6 @@ def build_app(server: "KokoroServer", host: str | None = None) -> web.Applicatio
     app.router.add_post("/turn", server.handle_turn)
     app.router.add_post("/cue", server.handle_cue)
     app.router.add_post("/speech-log/status", server.handle_speech_log_status)
-    app.router.add_post("/runtime", server.handle_runtime)
     app.router.add_post("/other-audio", server.handle_other_audio)
     return app
 

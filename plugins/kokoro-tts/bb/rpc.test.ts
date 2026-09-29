@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { ConfigCache } from "./config-cache.ts";
 import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import { PrefsStore } from "./prefs.ts";
 import { installerFailure, registerRpc } from "./rpc.ts";
-import type { KokoroStatus } from "./schemas.ts";
+import type { ConfigResponse, KokoroStatus } from "./schemas.ts";
 import { CONFIG_RESPONSE, HEALTH } from "./page/fixtures.ts";
 
 function harness(playback: "client" | "server" = "server", ready = true, replies: Record<string, (body: unknown) => unknown> = {}) {
@@ -28,10 +29,12 @@ function harness(playback: "client" | "server" = "server", ready = true, replies
   };
   const host = createFakePluginHost();
   const prefs = new PrefsStore(host.bb.storage.kv);
+  const config = new ConfigCache(() => client.call<ConfigResponse>("GET", "/config"));
   registerRpc(host.bb, {
     client: () => client,
     supervisor: () => null,
     prefs,
+    config,
     hub: {
       clients: () => [],
       stop: (sessionId) => { stops.push(sessionId); },
@@ -42,7 +45,7 @@ function harness(playback: "client" | "server" = "server", ready = true, replies
     log: host.bb.log,
     publish: (c, p) => { published.push([c, p]); },
   });
-  return { host, calls, stops, spoken, sounds, published, ready: prefs.update({ playback }) };
+  return { host, calls, stops, spoken, sounds, published, config, ready: prefs.update({ playback }) };
 }
 
 test("Stop all also stops browser playback", async () => {
@@ -52,12 +55,27 @@ test("Stop all also stops browser playback", async () => {
   assert.deepEqual(calls.map((c) => c.path), ["/interrupt-all"]);
 });
 
+test("Stop on a card stops only that thread, in the browser and on the server", async () => {
+  const { host, calls, stops } = harness();
+  await host.harness.callRpc("stop", { threadId: "t1" });
+  assert.deepEqual(stops, ["t1"]);
+  assert.deepEqual(calls, [{ method: "POST", path: "/interrupt", body: { session_id: "t1" } }]);
+});
+
 test("Mute also stops browser playback; unmute does not", async () => {
-  const { host, stops } = harness();
+  const { host, stops, config } = harness();
+  config.set(CONFIG_RESPONSE);
   assert.deepEqual(await host.harness.callRpc("setMuted", { muted: true }), { muted: true });
   assert.deepEqual(stops, [null]);
+  assert.equal(config.get()?.muted, true, "the cache learns the mute state");
   await host.harness.callRpc("setMuted", { muted: false });
   assert.deepEqual(stops, [null]);
+});
+
+test("the speech log is fetched for one thread", async () => {
+  const { host, calls } = harness("server", true, { "/speech-log?session_id=t%201": () => ({ entries: [] }) });
+  assert.deepEqual(await host.harness.callRpc("speechLog", { threadId: "t 1" }), { entries: [] });
+  assert.deepEqual(calls.map((c) => c.path), ["/speech-log?session_id=t%201"]);
 });
 
 test("installerFailure keeps the last lines of the installer output", () => {
@@ -81,6 +99,8 @@ test("preview plays in the browser when browser playback is selected", async () 
   assert.equal(session, "preview");
   assert.equal(gain, 0.8);
   assert.deepEqual(opts, { voice: "af_bella", speed: 1.2 });
+  await h.host.harness.callRpc("preview", {});
+  assert.deepEqual(h.calls.map((c) => c.path), ["/config"], "the second preview reads the cached config");
 });
 
 test("preview reports no_window when no browser can play", async () => {
@@ -112,12 +132,22 @@ test("status bundles health, setup and clients", async () => {
   assert.deepEqual(s.clients, []);
 });
 
-test("a config change is published to every window", async () => {
+test("a config change is published to every window and cached", async () => {
   const h = harness();
   await h.host.harness.callRpc("patchConfig", { speed: 1.2 });
   const [channel, payload] = h.published.at(-1)!;
   assert.equal(channel, "kokoro-config");
   assert.equal((payload as typeof CONFIG_RESPONSE).config.speed, 1.2);
+  assert.equal(h.config.get()?.config.speed, 1.2);
+});
+
+test("sound tests use the cached cue volume after a config change", async () => {
+  const h = harness("client");
+  await h.ready;
+  await h.host.harness.callRpc("patchConfig", { sound_volume: 0.3 });
+  await h.host.harness.callRpc("playSound", { sound: "done" });
+  assert.deepEqual(h.sounds, [["done", 0.3, "bb-preview"]]);
+  assert.equal(h.calls.some((c) => c.method === "GET"), false);
 });
 
 test("replay in browser playback speaks the new log entry in that thread", async () => {

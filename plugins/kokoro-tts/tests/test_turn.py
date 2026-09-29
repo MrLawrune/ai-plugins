@@ -3,45 +3,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
-from kokoro_turn import extract_block, first_sentence, full_text, parse_directive_attrs, route_cue, route_turn  # noqa: E402
+from kokoro_turn import extract_directive, first_sentence, full_text, parse_directive_attrs, route_cue, route_turn  # noqa: E402
 
 CFG = {"attention_sound": True, "working_sound": True}
 
 
-def block(weight, body=None):
-    if body is None:
-        return f'<!-- TTS_RESPONSE weight="{weight}" -->'
-    return f'<!-- TTS_RESPONSE weight="{weight}"\n{body}\nTTS_RESPONSE -->'
+def directive(attrs):
+    return f"::kokoro-tts{{{attrs}}}"
 
 
-def test_speech_block_is_spoken():
-    assert route_turn("Done.\n\n" + block("speech", "All tests pass."), "brief") == {
-        "action": "speech", "text": "All tests pass."}
-
-
-def test_last_block_wins():
-    text = block("sound:done") + "\nmore\n" + block("speech", "Final words.")
-    assert route_turn(text, "brief") == {"action": "speech", "text": "Final words."}
-
-
-def test_legacy_summary_block_is_speech():
-    text = "x\n<!-- TTS_SUMMARY\nLegacy words.\nTTS_SUMMARY -->"
-    assert route_turn(text, "verbose") == {"action": "speech", "text": "Legacy words."}
+def block(weight, say=None):
+    """A directive with a weight and an optional say."""
+    return directive(f'weight="{weight}"' if say is None else f'weight="{weight}" say="{say}"')
 
 
 def test_no_block_falls_back_to_first_sentence():
     assert route_turn("Build is green. Details follow.", "brief") == {
         "action": "speech", "text": "Build is green."}
-
-
-def test_fallback_prefers_final_text():
-    assert route_turn("Old part. New part.", "brief", final_text="New part.") == {
-        "action": "speech", "text": "New part."}
-
-
-def test_fallback_uses_full_text_when_final_has_nothing_speakable():
-    assert route_turn("Summary here. ```x```", "brief", final_text="```code```") == {
-        "action": "speech", "text": "Summary here."}
 
 
 def test_nothing_speakable_is_silent():
@@ -60,16 +38,8 @@ def test_ambient_keeps_lower_sounds():
     assert route_turn(block("sound:done"), "ambient") == {"action": "sound", "sound": "done"}
 
 
-def test_silent_block_is_silent():
-    assert route_turn(block("silent"), "verbose") == {"action": "silent"}
-
-
 def test_unknown_weight_is_silent():
     assert route_turn(block("shout"), "verbose") == {"action": "silent"}
-
-
-def test_empty_speech_block_plays_done():
-    assert route_turn('<!-- TTS_RESPONSE weight="speech" -->', "brief") == {"action": "sound", "sound": "done"}
 
 
 def test_unknown_mode_is_treated_as_speech_ceiling():
@@ -80,34 +50,30 @@ def test_first_sentence_strips_blocks_fences_and_headings():
     assert first_sentence("# Title\n```x```\nHello there. More.") == "Title Hello there."
 
 
-def test_extract_block_none():
-    assert extract_block("plain") == (None, None)
+def test_extract_directive_none():
+    assert extract_directive("plain") == (None, None)
 
 
 def test_cue_attention_allowed():
     assert route_cue("attention", "brief", CFG) == {"action": "sound", "sound": "attention"}
 
 
-def test_cue_respects_toggles():
+def test_cue_respects_the_attention_switch():
     assert route_cue("attention", "brief", {**CFG, "attention_sound": False}) == {"action": "silent"}
-    assert route_cue("working", "brief", {**CFG, "working_sound": False}) == {"action": "silent"}
 
 
 def test_cue_quiet_mode_is_silent():
     assert route_cue("attention", "quiet", CFG) == {"action": "silent"}
 
 
-def test_cue_unknown_sound_is_silent():
+def test_cue_only_plays_the_attention_ping():
     assert route_cue("klaxon", "brief", CFG) == {"action": "silent"}
+    assert route_cue("working", "brief", CFG) == {"action": "silent"}
 
 
 def test_full_reads_the_whole_reply_and_ignores_blocks():
     text = "First point.\n\nSecond point.\n" + block("silent")
     assert route_turn(text, "full") == {"action": "speech", "text": "First point.\n\nSecond point."}
-
-
-def test_full_prefers_the_final_message():
-    assert route_turn("Earlier text. Final text.", "full", "Final text.") == {"action": "speech", "text": "Final text."}
 
 
 def test_full_skips_code_and_tables_but_keeps_plain_inline_code():
@@ -154,10 +120,6 @@ def test_cue_prefs_leave_speech_and_enabled_sounds_alone():
         assert apply_cue_prefs(dict(r), cfg) == r
 
 
-def directive(attrs):
-    return f"::kokoro-tts{{{attrs}}}"
-
-
 def test_directive_speech_is_spoken():
     text = "Done.\n\n" + directive('weight="speech" say="All tests pass."')
     assert route_turn(text, "brief") == {"action": "speech", "text": "All tests pass."}
@@ -176,16 +138,16 @@ def test_directive_attribute_quoting_forms():
 
 def test_directive_decodes_entities():
     text = directive('weight="speech" say="He said &quot;hi&quot; &amp; left."')
-    assert extract_block(text) == ("speech", 'He said "hi" & left.')
+    assert extract_directive(text) == ("speech", 'He said "hi" & left.')
 
 
 def test_directive_say_may_contain_braces():
-    assert extract_block(directive('weight="speech" say="Use {name} here."')) == ("speech", "Use {name} here.")
+    assert extract_directive(directive('weight="speech" say="Use {name} here."')) == ("speech", "Use {name} here.")
 
 
 def test_directive_with_crlf_line_ending():
     text = "Done.\r\n\r\n" + directive('weight="speech" say="Windows line."') + "\r\n"
-    assert extract_block(text) == ("speech", "Windows line.")
+    assert extract_directive(text) == ("speech", "Windows line.")
 
 
 def test_directive_inside_code_fence_is_ignored():
@@ -195,19 +157,19 @@ def test_directive_inside_code_fence_is_ignored():
 
 def test_inline_directive_text_is_not_a_directive():
     text = "Write " + directive('weight="speech" say="No."') + " at the end."
-    assert extract_block(text) == (None, None)
+    assert extract_directive(text) == (None, None)
 
 
-def test_last_block_wins_across_forms():
-    comment_then_directive = block("speech", "Old.") + "\n\n" + directive('weight="speech" say="New."')
-    assert extract_block(comment_then_directive) == ("speech", "New.")
-    directive_then_comment = directive('weight="speech" say="Old."') + "\n\n" + block("speech", "New.")
-    assert extract_block(directive_then_comment) == ("speech", "New.")
+def test_html_comments_are_neither_directives_nor_spoken():
+    text = '<!-- TTS_RESPONSE weight="speech"\nOld form.\nTTS_RESPONSE -->\nBuild is green. More.'
+    assert extract_directive(text) == (None, None)
+    assert route_turn(text, "brief") == {"action": "speech", "text": "Build is green."}
+    assert "Old form" not in route_turn(text, "full")["text"]
 
 
 def test_last_of_two_directives_wins():
     text = directive('weight="sound:done"') + "\n\n" + directive('weight="speech" say="Final."')
-    assert extract_block(text) == ("speech", "Final.")
+    assert extract_directive(text) == ("speech", "Final.")
 
 
 def test_directive_speech_without_say_plays_done():
@@ -227,7 +189,7 @@ def test_first_sentence_and_full_text_skip_directives():
 
 def test_malformed_directive_body_falls_back_to_first_sentence():
     text = "Build is green. More detail.\n\n" + directive('weight="speech" say="He said "hi" now."')
-    assert extract_block(text) == (None, None)
+    assert extract_directive(text) == (None, None)
     assert route_turn(text, "brief") == {"action": "speech", "text": "Build is green."}
 
 

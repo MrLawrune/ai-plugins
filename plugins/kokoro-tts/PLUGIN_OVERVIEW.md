@@ -1,8 +1,8 @@
-Every bb agent gets a voice. When a thread finishes, you hear a short spoken summary; when an agent needs your permission, you hear a ping; when you start typing, it stops talking.
+Every bb agent gets a voice. When a thread finishes, you hear a short spoken summary; when an agent needs your permission, you hear a ping; when you send a message, it stops talking.
 
 ## What you get
 
-- Spoken turn summaries for Claude Code, Codex, and Pi threads, written by the agent to be heard, with a one-sentence default.
+- Spoken turn summaries for every thread, whichever agent provider runs it, written by the agent to be heard, with a one-sentence default.
 - Sounds instead of speech when you prefer: ambient and quiet modes. Or full mode, which reads the whole reply aloud and skips code.
 - Audio in the bb window you used last, so it follows you from desktop to laptop to phone. Pin a device or play everywhere instead.
 - Replies from different threads play one at a time, and replies for a device that drops off wait for it instead of playing at home.
@@ -18,4 +18,3 @@ The plugin runs the open-source Kokoro-82M model on your own machine. On first s
 - `uv` (the plugin settings page can install it for you with one click).
 - About 355 MB for the model, plus about 200 MB for the CPU runtime or about 2.5 GB for the optional NVIDIA GPU runtime.
 - Linux is tested. macOS should work. Windows is untested.
-- Claude Code users outside bb can install the companion Claude Code plugin from the same repository.

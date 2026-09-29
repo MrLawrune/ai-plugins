@@ -29,12 +29,5 @@ export function statusLine(s: KokoroStatus | null): { tone: Tone; text: string }
 export function ownerText(s: KokoroStatus): string | null {
   if (s.setup.state === "running") return "Managed by bb";
   if (s.setup.state !== "external" || !s.health.up) return null;
-  switch (s.health.health.started_by) {
-    case "claude-code":
-      return "Started by the Claude Code hooks";
-    case "bb":
-      return "Started by an earlier bb session";
-    default:
-      return "Started outside bb";
-  }
+  return s.health.health.started_by === "bb" ? "Started by an earlier bb session" : "Started outside bb";
 }

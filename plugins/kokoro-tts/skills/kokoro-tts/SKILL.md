@@ -1,6 +1,6 @@
 ---
 name: kokoro-tts
-description: Deep reference for Claude Code voice output via Kokoro TTS -- TTS_RESPONSE block format, weight selection, verbosity modes, fallback behavior, and troubleshooting. The always-loaded contract is injected by the SessionStart hook; consult this skill for details, examples, and debugging.
+description: Deep reference for voice output in bb via Kokoro TTS -- the kokoro-tts directive, weight selection, verbosity modes, fallback behavior, and troubleshooting. The always-loaded contract comes with the agent instructions; consult this skill for details, examples, and debugging.
 ---
 
 # Kokoro TTS -- Weighted Communication
@@ -12,54 +12,33 @@ The user receives every response through two independent channels:
 1. **Text (on screen)** -- Full technical detail. Write normally.
 2. **Voice (spoken aloud)** -- The primary channel. The user is listening.
 
-## The TTS_RESPONSE Block Is an Override, Not a Mandate
+## The Directive Is an Override, Not a Mandate
 
-If a response ends with a TTS_RESPONSE block, the hook obeys it. If not,
-the hook speaks the FIRST SENTENCE of the response as fallback. Nothing
-errors; there is no penalty sound. Only a server that is down stops speech,
-and the Stop hook then shows a message instead.
+If a reply ends with a kokoro-tts directive, the plugin obeys it. If not,
+it speaks the FIRST SENTENCE of the reply as fallback. Nothing errors;
+there is no penalty sound. Only a server that is down stops speech.
 
 Consequences:
-- On turns without a block, write a speakable first sentence (plain
+- On turns without a directive, write a speakable first sentence (plain
   English, no paths/code) -- it will be heard verbatim.
-- Provide a block when spoken content should differ from the opening
+- Provide a directive when spoken content should differ from the opening
   sentence, or when you want a sound or silence instead of speech.
 
-## Block Format
+## Directive Format
 
-Speech:
-
-    <!-- TTS_RESPONSE weight="speech"
-    Spoken content here. Plain ASCII English only.
-    TTS_RESPONSE -->
-
-Sound or silence (self-closing):
-
-    <!-- TTS_RESPONSE weight="sound:done" -->
-    <!-- TTS_RESPONSE weight="silent" -->
-
-Weights: `silent` | `sound:working` | `sound:done` | `sound:attention` | `speech`
-
-## Directive Form (bb)
-
-Inside bb, when the Kokoro server reports the `directive` feature, the
-injected contract asks for a directive instead of the comment block. It is
-the last line of the reply, on its own line after a blank line, never in a
+The last line of the reply, on its own line after a blank line, never in a
 code block:
 
     ::kokoro-tts{weight="speech" say="Spoken content here."}
     ::kokoro-tts{weight="sound:done"}
     ::kokoro-tts{weight="silent"}
 
+Weights: `silent` | `sound:working` | `sound:done` | `sound:attention` | `speech`
+
 The `say` value is one line in double quotes; write a double quote inside
 it as `&quot;`. bb renders the directive as a card with the spoken text,
 its status (Queued, Playing, Spoken, Interrupted, Muted, Not spoken, Error,
-No record), Replay, and Stop while playing.
-
-Which form to use: the one the injected contract shows. Plain Claude Code
-and bb on a server without the `directive` feature use the comment block.
-Both forms are parsed everywhere, with the same weights and the same
-first-sentence fallback.
+No record), Replay, and Stop while playing. HTML comments are never spoken.
 
 ## Weight Selection
 
@@ -67,14 +46,13 @@ first-sentence fallback.
   plans, completions. When uncertain, speak.
 - `silent`: mid-tool-loop with more calls queued and nothing to report.
 - `sound:done`: a non-final step in a batch (you will speak at the end).
-- `sound:working`: rarely needed -- the hook plays working ticks for
-  intermediate stops automatically.
-- `sound:attention`: rarely needed -- the Notification hook plays
-  attention pings automatically on permission prompts and idle waits.
+- `sound:working`: a soft tick; the Working tick switch can silence it.
+- `sound:attention`: rarely needed -- the plugin pings on its own when an
+  agent waits for a permission or an answer.
 
-## Verbosity Modes (KOKORO_MODE)
+## Verbosity Modes
 
-The mode is a ceiling the hook enforces by downgrading weights. Speech
+The mode is a ceiling the plugin enforces by downgrading weights. Speech
 length limits are the model's responsibility.
 
 | Mode | Ceiling | Speech limit |
@@ -86,19 +64,18 @@ length limits are the model's responsibility.
 | `verbose` | speech | full detail |
 | `full` | whole reply | none -- see below |
 
-In `full` mode the server reads the reply itself, not a block: blocks and
-weights are ignored, code blocks and tables are replaced with "Code block
+In `full` mode the server reads the reply itself, not a directive:
+directives and weights are ignored, code blocks and tables are replaced with "Code block
 skipped." / "Table skipped.", links read as their text, and paths and URLs
 are dropped. Replies over about 6000 characters stop at a sentence end with
 "The rest is on screen." Write the reply as speakable prose, and skip the
-TTS_RESPONSE block: in full mode the injected contract is a short version
-that says so, to save tokens.
+directive: in full mode the injected contract is a short version that says
+so, to save tokens.
 
 Mode switching mid-session ("go quiet", "go verbose"): acknowledge and
 apply the new ceiling to your own weight/length choices for the rest of
-the session. The server reads the mode on every turn; change it on the BB
-Kokoro TTS page or with `PATCH /config`. `KOKORO_MODE` overrides it for
-Claude Code sessions outside BB.
+the session. The server reads the mode on every turn; change it on the bb
+Kokoro TTS page or with `PATCH /config`.
 
 ## Speech Content Rules
 
@@ -109,11 +86,12 @@ Claude Code sessions outside BB.
 
 ## Pipeline Reference
 
-- **Routing**: the server's `POST /turn` parses the block, applies the mode
+- **Routing**: the server's `POST /turn` parses the directive, applies the mode
   ceiling, and falls back to the first sentence (`server/kokoro_turn.py`).
-  `POST /cue` gates attention and working sounds.
-- **In BB** (any agent): the BB plugin voices root threads on turn end,
-  stops speech when you type, pings on permission prompts, and injects this
+  `POST /cue` gates the attention ping. Both take a per-request `mode` that
+  overrides the configured one for that request.
+- **In bb** (any agent provider): the plugin voices root threads on turn end,
+  stops speech when you send a message, pings on permission prompts, and injects this
   contract as agent instructions. Audio plays in the bb window you used last
   (`playback=client`, default) or on the server host's speakers
   (`playback=server`). The Playback devices card picks the window: follow,
@@ -134,27 +112,21 @@ Claude Code sessions outside BB.
   playerctl). It applies while speech plays in such a window or on that
   computer's speakers; replies to other devices never touch it. Only players
   that were playing get paused, and only those resume.
-- **Claude Code outside BB**: the plugin's hooks call `/turn` and `/cue`.
-  Inside a BB thread they stand down while the BB plugin is active (its
-  claim is kept across server restarts). The server also stays silent for
-  a repeated turn: the same text again in a session (stopping a thread
-  re-reports its last reply) or from any caller within 10 seconds.
-- **Server**: the BB plugin installs and runs it (uv, verified model
+- **Repeats**: the server stays silent when a thread reports the same
+  reply again (stopping a thread re-reports its last reply).
+- **Server**: the plugin installs and runs it (uv, verified model
   download to the data dir, CPU or GPU runtime, audio probe) unless a server
-  already answers at the configured URL. Outside BB, the SessionStart hook
-  starts it with `uv run` from the plugin (or starts a
-  `kokoro-tts-server.service` user unit, if you installed one). On first
-  use it downloads the model files in the background instead
-  (`hooks/scripts/tts-fetch-models.sh`, checksum-verified) and the server
-  starts on a later session.
+  already answers at the configured URL.
 - **Data dir**: `~/.local/share/kokoro-tts` (models, `venv-cpu`, `venv-gpu`).
   Config: `~/.config/kokoro-tts/config.json`. Speech log:
   `~/.local/state/kokoro-tts/speech-log.jsonl`.
-- **Endpoints**: `/turn`, `/cue`, `/speak`, `/play-sound`, `/preview`,
-  `/interrupt`, `/interrupt-all`, `/cleanup`, `/mute`, `/config`, `/voices`,
-  `/devices`, `/engine`, `/synthesize`, `/speech-log`, `/speech-log/status`,
-  `/replay`, `/runtime`, `/health` (`bb_plugin_active`, `output_device_ok`,
-  latency, `features`).
+- **Endpoints**: `/turn`, `/cue`, `/play-sound`, `/preview`, `/replay`,
+  `/interrupt`, `/interrupt-all`, `/cleanup`, `/mute` (`{"muted": bool}`),
+  `/config`, `/voices`, `/devices`, `/engine`, `/synthesize`, `/speech-log`
+  (`?session_id=` for one thread), `/speech-log/status`, `/other-audio`,
+  `/health` (version, engine, latency, `started_by`). `/turn`, `/cue`,
+  `/play-sound`, `/replay`, `/interrupt`, and `/cleanup` require a
+  `session_id` (the bb thread id).
 - **Remote node**: `KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0` serves
   `/synthesize`; point another server at it with provider=remote.
   Warning: the server has no authentication. Binding beyond loopback lets
@@ -174,27 +146,13 @@ Claude Code sessions outside BB.
 
 ## Troubleshooting
 
-In BB, open the Kokoro TTS page: the Server card shows setup state and the
+Open the Kokoro TTS page: the Server card shows setup state and the
 exact fix command for any failure.
 
 No audio:
 1. Server health: `curl http://127.0.0.1:6789/health`
 2. Muted? `curl http://127.0.0.1:6789/health | jq .muted`
-3. Log: `tail -20 /tmp/kokoro-hook.log`
-4. Direct test: `curl -X POST http://127.0.0.1:6789/speak -H "Content-Type: application/json" -d '{"text":"test","session_id":"t1"}'`
-
-No server outside BB: the SessionStart hook starts it on your next Claude
-Code session. It needs `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-and, on first use, downloads the model (about 355 MB) to
-`~/.local/share/kokoro-tts` in the background; `/tmp/kokoro-hook.log` shows
-progress. To keep one server running regardless of sessions, you can run it
-as a systemd user unit named `kokoro-tts-server.service` (`ExecStart` running
-`uv run --project <plugin>/server python <plugin>/server/kokoro_server.py`);
-the hook then starts that unit, and
-`systemctl --user restart kokoro-tts-server.service` restarts it.
+3. Server log: the plugin's log in bb (lines tagged `[server]`)
+4. Direct test (plays on the server host's speakers, even while muted): `curl -X POST http://127.0.0.1:6789/preview -H "Content-Type: application/json" -d '{"text":"test"}'`
 
 Garbled audio: non-ASCII characters in speech content -- check the log.
-
-## Legacy
-
-`TTS_SUMMARY` blocks are still parsed as `weight="speech"`.

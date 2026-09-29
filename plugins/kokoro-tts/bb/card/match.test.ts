@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { SpeechLogEntry } from "../schemas.ts";
-import { cardState, findEntry, needsPolling, normalizeSpoken, PENDING_GRACE_MS, statusText } from "./match.ts";
+import { cardState, findEntry, needsPolling, normalizeSpoken, PENDING_GRACE_MS, STALE_ENTRY_MS, statusText } from "./match.ts";
 
 const entry = (o: Partial<SpeechLogEntry>): SpeechLogEntry =>
   ({ id: 1, ts: 0, session_id: "t1", text: "All done.", status: "done", ...o });
@@ -47,6 +47,27 @@ test("cardState without an entry after a turn: queued through the grace, then no
   assert.deepEqual(cardState(undefined, { turnAt: 10_000, now: 10_000 }), { kind: "queued" });
   assert.deepEqual(cardState(undefined, { turnAt: 10_000, now: 10_000 + PENDING_GRACE_MS - 1 }), { kind: "queued" });
   assert.deepEqual(cardState(undefined, { turnAt: 10_000, now: 10_000 + PENDING_GRACE_MS }), { kind: "unspoken" });
+});
+
+test("cardState while the thread's turn is out: queued through the grace, then no record", () => {
+  assert.deepEqual(cardState(undefined, { turnAt: null, pendingAt: 10_000, now: 10_000 }), { kind: "queued" });
+  assert.deepEqual(cardState(undefined, { turnAt: null, pendingAt: 10_000, now: 10_000 + PENDING_GRACE_MS }), { kind: "unknown" });
+});
+
+test("cardState reads a queued or playing entry older than the stale bound as interrupted", () => {
+  const now = 100_000_000;
+  const old = (now - STALE_ENTRY_MS - 1) / 1000;
+  const fresh = (now - STALE_ENTRY_MS + 60_000) / 1000;
+  assert.deepEqual(cardState(entry({ status: "queued", ts: old }), { turnAt: null, now }), { kind: "interrupted" });
+  assert.deepEqual(cardState(entry({ status: "playing", ts: old }), { turnAt: null, now }), { kind: "interrupted" });
+  assert.deepEqual(cardState(entry({ status: "playing", ts: fresh }), { turnAt: null, now }), { kind: "playing" });
+  assert.deepEqual(cardState(entry({ status: "done", ts: old }), { turnAt: null, now }).kind, "spoken");
+});
+
+test("cardState for a turn that made no entry: muted or not spoken, with no grace period", () => {
+  assert.deepEqual(cardState(undefined, { turnAt: null, skipped: "muted", now: 10_000 }), { kind: "muted" });
+  assert.deepEqual(cardState(undefined, { turnAt: null, pendingAt: 10_000, skipped: "unspoken", now: 10_000 }), { kind: "unspoken" });
+  assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: null, skipped: "muted", now: 10_000 }).kind, "spoken");
 });
 
 test("cardState prefers the log entry over the turn signal", () => {

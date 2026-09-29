@@ -1,4 +1,5 @@
-// One speech-log poll shared by every card on the page; it runs only while some card is waiting.
+// One speech-log poll per thread, shared by every card of that thread on the
+// page; it fetches only that thread's entries and runs only while a card waits.
 import { useEffect, useMemo, useReducer } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract, SpeechLogEntry } from "../schemas.ts";
@@ -10,95 +11,121 @@ const RETRY_MS = 8_000;
 /** A card mounting within this long of the last good fetch reuses it instead of refetching. */
 const FRESH_MS = 2_000;
 
-const listeners = new Set<() => void>();
-/** Cards that are queued or playing; the poll stops when this is empty. */
-const waiting = new Set<symbol>();
-let entries: SpeechLogEntry[] | null = null;
-let activeRpc: Rpc | null = null;
-let timer: ReturnType<typeof setTimeout> | null = null;
-let inflight = false;
-let failed = false;
-/** When the last fetch succeeded; 0 before the first. */
-let fetchedAt = 0;
+class ThreadLog {
+  readonly listeners = new Set<() => void>();
+  /** Cards that are queued or playing; the poll stops when this is empty. */
+  readonly waiting = new Set<symbol>();
+  entries: SpeechLogEntry[] | null = null;
+  rpc: Rpc | null = null;
+  timer: ReturnType<typeof setTimeout> | null = null;
+  inflight = false;
+  failed = false;
+  /** When the last fetch succeeded; 0 before the first. */
+  fetchedAt = 0;
+
+  constructor(readonly threadId: string) {}
+
+  schedule(): void {
+    if (this.timer || this.inflight || this.waiting.size === 0) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      // Cards re-render (and may settle) after a fetch, so check again when the timer fires.
+      if (this.waiting.size > 0) void this.fetch();
+    }, this.failed ? RETRY_MS : POLL_MS);
+  }
+
+  async fetch(): Promise<void> {
+    this.timer = null;
+    if (this.inflight || !this.rpc) return;
+    this.inflight = true;
+    const gen = generation;
+    try {
+      const r = await this.rpc.call("speechLog", { threadId: this.threadId });
+      if (gen !== generation) return;
+      this.entries = r.entries;
+      this.failed = false;
+      this.fetchedAt = Date.now();
+    } catch {
+      if (gen !== generation) return;
+      this.failed = true; // keep the last entries; cards keep their last state
+    }
+    this.inflight = false;
+    for (const notify of this.listeners) notify();
+    this.schedule();
+  }
+
+  refresh(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    void this.fetch();
+  }
+
+  stop(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+}
+
+const logs = new Map<string, ThreadLog>();
+/** Cards mounted on the page, across threads. */
+let mounted = 0;
 /** Bumped by resetSpeechLogForTests so an in-flight fetch from a previous mount is ignored. */
 let generation = 0;
 
-function schedule(): void {
-  if (timer || inflight || waiting.size === 0) return;
-  timer = setTimeout(() => {
-    timer = null;
-    // Cards re-render (and may settle) after a fetch, so check again when the timer fires.
-    if (waiting.size > 0) void fetchLog();
-  }, failed ? RETRY_MS : POLL_MS);
+function logFor(threadId: string): ThreadLog {
+  let log = logs.get(threadId);
+  if (!log) logs.set(threadId, (log = new ThreadLog(threadId)));
+  return log;
 }
 
-async function fetchLog(): Promise<void> {
-  timer = null;
-  if (inflight || !activeRpc) return;
-  inflight = true;
-  const gen = generation;
-  try {
-    const r = await activeRpc.call("speechLog");
-    if (gen !== generation) return;
-    entries = r.entries;
-    failed = false;
-    fetchedAt = Date.now();
-  } catch {
-    if (gen !== generation) return;
-    failed = true; // keep the last entries; cards keep their last state
-  }
-  inflight = false;
-  for (const notify of listeners) notify();
-  schedule();
-}
-
-export function refreshSpeechLog(): void {
-  if (timer) clearTimeout(timer);
-  timer = null;
-  void fetchLog();
+export function refreshSpeechLog(threadId: string): void {
+  logs.get(threadId)?.refresh();
 }
 
 const onVisible = () => {
-  if (document.visibilityState === "visible") refreshSpeechLog();
+  if (document.visibilityState !== "visible") return;
+  for (const log of logs.values()) if (log.listeners.size > 0) log.refresh();
 };
 
-export function useSpeechLog(pending: boolean): SpeechLogEntry[] | null {
+export function useSpeechLog(threadId: string, pending: boolean): SpeechLogEntry[] | null {
   const rpc = useRpc<typeof rpcContract>();
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const token = useMemo(() => Symbol("kokoro-card"), []);
+  // A thread's log lives while one of its cards is mounted, so effects look it
+  // up rather than holding the one this render saw.
   useEffect(() => {
-    activeRpc = rpc;
-    if (listeners.size === 0) document.addEventListener("visibilitychange", onVisible);
-    listeners.add(rerender);
-    if (Date.now() - fetchedAt >= FRESH_MS) refreshSpeechLog();
+    const log = logFor(threadId);
+    log.rpc = rpc;
+    if (mounted++ === 0) document.addEventListener("visibilitychange", onVisible);
+    log.listeners.add(rerender);
+    if (Date.now() - log.fetchedAt >= FRESH_MS) log.refresh();
     return () => {
-      listeners.delete(rerender);
-      waiting.delete(token);
-      if (listeners.size === 0) document.removeEventListener("visibilitychange", onVisible);
+      log.listeners.delete(rerender);
+      log.waiting.delete(token);
+      if (log.listeners.size === 0) {
+        log.stop();
+        if (logs.get(threadId) === log) logs.delete(threadId);
+      }
+      if (--mounted === 0) document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [rpc, token]);
+  }, [rpc, token, threadId]);
   useEffect(() => {
+    const log = logFor(threadId);
     if (pending) {
-      waiting.add(token);
-      schedule();
+      log.waiting.add(token);
+      log.schedule();
     } else {
-      waiting.delete(token);
+      log.waiting.delete(token);
     }
-  }, [pending, token]);
-  return entries;
+  }, [pending, token, threadId, rpc]);
+  return logs.get(threadId)?.entries ?? null;
 }
 
-/** Tests only: forget the shared poll between renders. */
+/** Tests only: forget the shared polls between renders. */
 export function resetSpeechLogForTests(): void {
   generation++;
-  if (timer) clearTimeout(timer);
-  timer = null;
-  inflight = false;
-  failed = false;
-  entries = null;
-  activeRpc = null;
-  waiting.clear();
-  listeners.clear();
+  for (const log of logs.values()) log.stop();
+  logs.clear();
+  mounted = 0;
   document.removeEventListener("visibilitychange", onVisible);
-  fetchedAt = 0;
 }

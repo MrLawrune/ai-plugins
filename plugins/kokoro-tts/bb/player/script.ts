@@ -22,7 +22,6 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
   let ctx: AudioContext | null = null;
   let ws: WebSocket | null = null;
   let retryMs = 1_000;
-  let pingTimer: ReturnType<typeof setInterval> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let focusedAt = document.hasFocus() ? Date.now() : 0;
   let wasUnlocked = false;
@@ -69,16 +68,12 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
     sock.onopen = () => {
       retryMs = 1_000;
       hello();
-      // A hidden page's timers are throttled; the server's pings, answered
-      // below, keep the socket alive then.
-      pingTimer = setInterval(() => send({ type: "ping" }), 15_000);
     };
     sock.onmessage = (ev) => {
       if (typeof ev.data === "string") onServerMsg(JSON.parse(ev.data) as ServerMsg);
       else onFrame(new Uint8Array(ev.data as ArrayBuffer));
     };
     sock.onclose = (ev) => {
-      clearInterval(pingTimer);
       stopAll(null);
       if (signal.aborted) return;
       if (ev.code === 4001) {
@@ -128,6 +123,8 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
         stopAll(m.sessionId);
         return;
       case "ping":
+        // The server's keepalive; the answer keeps both directions active,
+        // even on a hidden page whose own timers are throttled.
         send({ type: "ping" });
         return;
     }
@@ -214,7 +211,6 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
     document.removeEventListener("visibilitychange", onVisible);
     window.removeEventListener(DEVICE_NAME_EVENT, onName);
     window.removeEventListener("storage", onStorage);
-    clearInterval(pingTimer);
     clearTimeout(reconnectTimer);
     stopAll(null);
     ws?.close();

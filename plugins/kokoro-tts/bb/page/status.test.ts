@@ -29,7 +29,7 @@ test("an unmanaged server that is down is not an error", () => {
 
 test("ownerText names who started an adopted server", () => {
   assert.equal(ownerText({ health: up(), setup: setup(), clients: [] }), "Managed by bb");
-  assert.equal(ownerText({ health: up({ started_by: "claude-code" }), setup: setup({ state: "external" }), clients: [] }),
-    "Started by the Claude Code hooks");
+  assert.equal(ownerText({ health: up({ started_by: "bb" }), setup: setup({ state: "external" }), clients: [] }),
+    "Started by an earlier bb session");
   assert.equal(ownerText({ health: up(), setup: setup({ state: "external" }), clients: [] }), "Started outside bb");
 });
