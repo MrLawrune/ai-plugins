@@ -12,6 +12,8 @@ import { PrefsStore } from "./prefs.ts";
 import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
+import { VoiceScopes } from "./scopes.ts";
+import { isNotFound, pruneScopes } from "./scopes-prune.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
 import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
 import { spawnServer } from "./setup/process.ts";
@@ -40,6 +42,19 @@ export default async function plugin(bb: BbPluginApi) {
   // install below turns out to be broken (no server/ next to this file).
   const prefs = new PrefsStore(bb.storage.kv);
   await prefs.load();
+  const scopes = new VoiceScopes(bb.storage.kv);
+  await scopes.load();
+  scopes.onChange((kind) => { if (kind === "settings") bb.realtime.publish("kokoro-scopes", { changed: true }); });
+  bb.background.service("scopes-prune", {
+    start: (signal) => pruneScopes(scopes, async (threadId) => {
+      try {
+        await bb.sdk.threads.get({ threadId, signal });
+        return true;
+      } catch (cause) {
+        return isNotFound(cause) ? false : null;
+      }
+    }, signal),
+  });
   const registry = new ClientRegistry();
   /** Entry keys whose speech asked the server to pause other media. */
   const pausing = new Set<string>();
@@ -172,6 +187,7 @@ export default async function plugin(bb: BbPluginApi) {
     hub,
     prefs,
     config,
+    scopes,
     publish: (channel, payload) => bb.realtime.publish(channel, payload),
     contract: readText(path.join(root, "contract", "tts-contract.md")),
     contractFull: readText(path.join(root, "contract", "tts-contract-full.md")),

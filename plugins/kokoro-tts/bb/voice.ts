@@ -5,18 +5,22 @@ import type { ConfigCache } from "./config-cache.ts";
 import type { PlayerHub } from "./hub.ts";
 import type { KokoroClient } from "./kokoro-client.ts";
 import type { PrefsStore } from "./prefs.ts";
-import { turnResultSchema, type TurnResult } from "./schemas.ts";
+import { turnResultSchema, type Mode, type TurnResult } from "./schemas.ts";
+import { resolveVoice, type ResolvedVoice, type VoiceScopes } from "./scopes.ts";
 
 export interface VoiceDeps {
   client: () => KokoroClient;
   hub: Pick<PlayerHub, "speak" | "sound" | "stop" | "hasReadyClient">;
   prefs: Pick<PrefsStore, "get">;
   config: Pick<ConfigCache, "get" | "current">;
+  /** Per-thread and per-project voice settings, and the parent links they inherit through. */
+  scopes: Pick<VoiceScopes, "get" | "learnParent" | "forget">;
   /**
    * bb.realtime.publish. "kokoro-turn" tells chat cards a thread's turn is on
    * its way to the server ({ threadId, pending: true }) and then what became of
    * it ({ threadId, action, text?, say?, muted? }: text is the speech-log text
-   * it made, say the reply's directive say, muted whether mute silenced it).
+   * it made, say the reply's directive say, muted whether mute silenced it), or
+   * that the thread's voice is off ({ threadId, action: "off" }).
    */
   publish: (channel: string, payload: unknown) => void;
   /** The reply ends with a ::kokoro-tts directive that bb renders as a card. */
@@ -40,13 +44,43 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
     const turn = inflight.get(threadId);
     if (turn) turn.cancelled = true;
   };
+  /** The server's mode, or null while its config is not known. */
+  const globalMode = (): Mode | null => deps.config.get()?.config.mode ?? null;
+  /** Threads this process has voiced; a child among them is still stopped after it is switched off. */
+  const spoke = new Set<string>();
+  type EventThread = { id: string; parentThreadId: string | null; projectId: string };
+  /**
+   * The thread's voice, from what the event says about its parent (so a failed
+   * or pending write never makes a child a root).
+   */
+  const resolveOnly = (thread: EventThread): ResolvedVoice => {
+    const data = deps.scopes.get();
+    const known = thread.parentThreadId && data.parents[thread.id] !== thread.parentThreadId
+      ? { ...data, parents: { ...data.parents, [thread.id]: thread.parentThreadId } }
+      : data;
+    return resolveVoice(known, globalMode(), thread.id, thread.projectId);
+  };
+  /**
+   * resolveOnly, and the parent is stored in the background for the
+   * instruction path, which only has the thread id.
+   */
+  const voiceOf = (thread: EventThread): ResolvedVoice => {
+    void deps.scopes.learnParent(thread.id, thread.parentThreadId).catch((cause: unknown) => warn("scopes", cause));
+    return resolveOnly(thread);
+  };
+  /** A mode for the request body only when an override chose it; else the server applies its own. */
+  const modeField = (v: ResolvedVoice) => (v.modeFrom === "global" ? {} : { mode: v.mode });
+  /** A child that is not voiced, has nothing in flight, and never spoke here needs no stop or cleanup. */
+  const ignorable = (thread: EventThread, v: ResolvedVoice) =>
+    thread.parentThreadId !== null && !v.voiced && !inflight.has(thread.id) && !spoke.has(thread.id);
 
   // Full mode reads the whole reply and ignores directives, so it gets a short
-  // contract that tells the agent not to write them.
-  bb.agents.contributeInstructions(() => {
-    const mode = deps.config.get()?.config.mode ?? "brief";
-    const contract = mode === "full" && deps.contractFull ? deps.contractFull : deps.contract;
-    return contract ? contract.replaceAll("{{MODE}}", mode) : null;
+  // contract that tells the agent not to write them. An off thread gets none.
+  bb.agents.contributeInstructions(({ threadId, projectId }) => {
+    const v = resolveVoice(deps.scopes.get(), globalMode(), threadId, projectId);
+    if (!v.voiced) return null;
+    const contract = v.mode === "full" && deps.contractFull ? deps.contractFull : deps.contract;
+    return contract ? contract.replaceAll("{{MODE}}", v.mode) : null;
   });
 
   const deliver = (r: TurnResult, sessionId: string) => {
@@ -58,10 +92,15 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
   };
 
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
-    if (thread.parentThreadId || !canVoice()) return;
     const text = lastAssistantText?.trim();
     if (!text) return;
     const threadId = thread.id;
+    const v = voiceOf(thread);
+    if (!v.voiced) {
+      deps.publish("kokoro-turn", { threadId, action: "off" });
+      return;
+    }
+    if (!canVoice()) return;
     const { playback } = deps.prefs.get();
     const turn = { cancelled: false };
     inflight.set(threadId, turn);
@@ -69,8 +108,9 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
       { threadId, action: "silent" };
     try {
       deps.publish("kokoro-turn", { threadId, pending: true });
+      spoke.add(threadId);
       const parsed = turnResultSchema.safeParse(
-        await deps.client().call<unknown>("POST", "/turn", { text, session_id: threadId, playback }),
+        await deps.client().call<unknown>("POST", "/turn", { text, session_id: threadId, playback, ...modeField(v) }),
       );
       if (!parsed.success) return;
       const r = parsed.data;
@@ -103,7 +143,7 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
   });
 
   bb.events.on("thread.active", async ({ thread }) => {
-    if (thread.parentThreadId) return;
+    if (ignorable(thread, voiceOf(thread))) return;
     cancelTurn(thread.id);
     try {
       if (deps.prefs.get().playback === "client") deps.hub.stop(thread.id);
@@ -115,15 +155,19 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
 
   bb.events.on("interaction.pending", async ({ thread }) => {
     try {
-      if (thread.parentThreadId || !canVoice()) return;
+      const v = voiceOf(thread);
+      if (!v.voiced || !canVoice()) return;
       const { playback } = deps.prefs.get();
       if (playback === "server") {
-        await deps.client().call("POST", "/cue", { sound: "attention", session_id: thread.id, playback });
+        spoke.add(thread.id);
+        await deps.client().call("POST", "/cue", { sound: "attention", session_id: thread.id, playback, ...modeField(v) });
         return;
       }
-      // The window plays the ping, so decide here what /cue would.
+      // The window plays the ping, so decide here what /cue would; being voiced
+      // already rules out quiet, whichever scope chose it.
       const { config, muted } = await deps.config.current();
-      if (muted || config.mode === "quiet" || !config.attention_sound) return;
+      if (muted || !config.attention_sound) return;
+      spoke.add(thread.id);
       deps.hub.sound("attention", config.sound_volume, thread.id);
     } catch (cause) {
       warn("interaction.pending", cause);
@@ -132,14 +176,32 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
 
   for (const event of ["thread.archived", "thread.deleted"] as const) {
     bb.events.on(event, async ({ thread }) => {
-      if (thread.parentThreadId) return;
+      let v: ResolvedVoice;
+      if (event === "thread.deleted") {
+        // Resolved before forgetting, so a child voiced by its own mode still gets its cleanup.
+        v = resolveOnly(thread);
+        try {
+          await deps.scopes.forget(thread.id);
+        } catch (cause) {
+          warn("scopes", cause);
+        }
+      } else {
+        v = voiceOf(thread);
+      }
+      if (ignorable(thread, v)) return;
       cancelTurn(thread.id);
       try {
         deps.hub.stop(thread.id);
         await deps.client().call("POST", "/cleanup", { session_id: thread.id });
       } catch (cause) {
         warn(event, cause);
+      } finally {
+        spoke.delete(thread.id);
       }
     });
   }
+
+  bb.events.on("thread.created", ({ thread }) => {
+    voiceOf(thread);
+  });
 }
