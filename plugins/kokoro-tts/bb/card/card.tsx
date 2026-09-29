@@ -14,7 +14,7 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import type { rpcContract } from "../schemas.ts";
 import { errorText } from "../util.ts";
-import { cardState, findEntry, needsPolling, statusText, type CardState } from "./match.ts";
+import { cardState, findEntry, needsPolling, normalizeSpoken, statusText, type CardState } from "./match.ts";
 import { refreshSpeechLog, useSpeechLog } from "./speech-log.ts";
 
 const SOUND_LABEL: Record<string, string> = {
@@ -94,7 +94,7 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const replay = async () => {
     setNote(null);
     try {
-      const r = await rpc.call("replay", { threadId, text: say });
+      const r = await rpc.call("replay", { threadId, text: normalizeSpoken(say) });
       if (r.status === "no_window") setNote("No bb window can play right now. Click in a bb window to enable audio.");
       else if (r.status === "unsupported") setNote("Restart the Kokoro server to use replay.");
       else if (r.status === "empty_after_strip") setNote("Nothing left to speak after removing markup.");

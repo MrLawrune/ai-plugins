@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { SpeechLogEntry } from "../schemas.ts";
 import { rpcStubs } from "../page/fixtures.ts";
+import { normalizeSpoken } from "./match.ts";
 import { resetSpeechLogForTests } from "./speech-log.ts";
 
 const MESSAGE = { id: "m1", threadId: "t1", turnId: null, projectId: null };
@@ -75,6 +76,16 @@ test("Replay asks for this reply in this thread", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Replay" }));
   await waitFor(() => expect(slot.inspection.rpcCalls.find((c) => c.method === "replay")?.input)
     .toEqual({ threadId: "t1", text: "All tests pass." }));
+});
+
+test("Replay sends the normalized, capped text for a long say", async () => {
+  const long = "word  ".repeat(500);
+  const slot = await card({ weight: "speech", say: long });
+  fireEvent.click(await screen.findByRole("button", { name: "Replay" }));
+  await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "replay")).toBe(true));
+  const input = slot.inspection.rpcCalls.find((c) => c.method === "replay")?.input as { text: string };
+  expect(input.text).toBe(normalizeSpoken(long));
+  expect(input.text.length).toBe(2000);
 });
 
 test("Replay with no window explains why nothing played", async () => {
