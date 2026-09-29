@@ -91,6 +91,9 @@ export default async function plugin(bb: BbPluginApi) {
   settings.onChange((next) => {
     client = createKokoroClient(next.serverUrl);
     serverUrl = next.serverUrl;
+    // The old server's config and mute state no longer apply.
+    config.clear();
+    void config.refresh().catch(() => undefined);
     supervisor?.restart();
   });
   bb.log.info(`proxying to ${client.baseUrl}`);

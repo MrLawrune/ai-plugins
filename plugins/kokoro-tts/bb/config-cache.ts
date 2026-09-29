@@ -12,6 +12,8 @@ export class ConfigCache {
   #fetch: () => Promise<ConfigResponse>;
   #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   #value: ConfigResponse | null = null;
+  /** Bumped by every write, so a fetch that started before one does not overwrite it. */
+  #version = 0;
 
   constructor(fetch: () => Promise<ConfigResponse>, sleep = realSleep) {
     this.#fetch = fetch;
@@ -24,16 +26,26 @@ export class ConfigCache {
   }
 
   set(next: ConfigResponse): void {
+    this.#version++;
     this.#value = next;
   }
 
   setMuted(muted: boolean): void {
+    this.#version++;
     if (this.#value) this.#value = { ...this.#value, muted };
   }
 
-  /** Fetches the config from the server and keeps it. */
+  /** Forgets the config (the server URL changed). */
+  clear(): void {
+    this.#version++;
+    this.#value = null;
+  }
+
+  /** Fetches the config from the server and keeps it, unless a newer write landed meanwhile. */
   async refresh(): Promise<ConfigResponse> {
+    const version = this.#version;
     const next = await this.#fetch();
+    if (version !== this.#version) return this.#value ?? next;
     this.#value = next;
     return next;
   }

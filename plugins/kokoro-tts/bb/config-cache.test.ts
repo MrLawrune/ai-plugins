@@ -15,6 +15,37 @@ test("set, setMuted and refresh keep the cache current", async () => {
   assert.equal(cache.get()?.muted, true);
 });
 
+test("a fetch that started before a write does not overwrite it", async () => {
+  let reply!: (r: ConfigResponse) => void;
+  const cache = new ConfigCache(() => new Promise((r) => { reply = r; }));
+  const patched = { ...CONFIG_RESPONSE, config: { ...CONFIG_RESPONSE.config, mode: "verbose" as const } };
+  const stale = cache.refresh();
+  cache.set(patched);
+  reply(CONFIG_RESPONSE);
+  assert.equal((await stale).config.mode, "verbose");
+  assert.equal(cache.get()?.config.mode, "verbose");
+  const staleMute = cache.refresh();
+  cache.setMuted(true);
+  reply(CONFIG_RESPONSE);
+  await staleMute;
+  assert.equal(cache.get()?.muted, true);
+});
+
+test("clear forgets the config, and a fetch from before it does not bring it back", async () => {
+  let reply!: (r: ConfigResponse) => void;
+  const cache = new ConfigCache(() => new Promise((r) => { reply = r; }));
+  cache.set(CONFIG_RESPONSE);
+  const old = cache.refresh();
+  cache.clear();
+  reply(CONFIG_RESPONSE);
+  await old;
+  assert.equal(cache.get(), null);
+  const fresh = cache.refresh();
+  reply({ ...CONFIG_RESPONSE, muted: true });
+  await fresh;
+  assert.equal(cache.get()?.muted, true);
+});
+
 test("current fetches only when nothing is cached", async () => {
   let fetches = 0;
   const cache = new ConfigCache(async () => { fetches++; return CONFIG_RESPONSE; });
