@@ -124,8 +124,9 @@ Kokoro TTS page or with `PATCH /config`.
   `/interrupt`, `/interrupt-all`, `/cleanup`, `/mute` (`{"muted": bool}`),
   `/config`, `/voices`, `/devices`, `/engine`, `/synthesize`, `/speech-log`
   (`?session_id=` for one thread), `/speech-log/status`, `/other-audio`,
-  `/health` (version, engine, latency, `started_by`). Every playback route
-  takes a `session_id` (the bb thread id).
+  `/health` (version, engine, latency, `started_by`). `/turn`, `/cue`,
+  `/play-sound`, `/replay`, `/interrupt`, and `/cleanup` require a
+  `session_id` (the bb thread id).
 - **Remote node**: `KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0` serves
   `/synthesize`; point another server at it with provider=remote.
   Warning: the server has no authentication. Binding beyond loopback lets
