@@ -36,8 +36,10 @@ Inside bb, once the Kokoro server reports the `directive` feature in
 
 bb renders it as a card showing the spoken text and what the server's speech
 log says happened to it: Queued, Playing, Spoken (with the voice and time to
-first audio), Interrupted, Muted, Not spoken (no log entry within 25 s),
-Error, or No record (a message older than this page load). Replay speaks the
+first audio), Interrupted, Muted, Not spoken (the thread's turn went to the
+server but no log entry appeared within 25 s), Error, or No record (no log
+entry and no turn in its thread since the card appeared, as for older
+messages and sub-thread replies, which are not voiced). Replay speaks the
 reply again through `POST /replay`, in the window where replies play and
 logged under the thread; Stop appears while it plays. Sound weights show a
 one-line chip with the sound name; `silent` renders nothing.
