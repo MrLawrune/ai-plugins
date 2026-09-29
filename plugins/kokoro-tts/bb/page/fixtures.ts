@@ -48,6 +48,7 @@ export function rpcStubs(overrides: Record<string, Handler> = {}): Record<string
     playSound: () => ({ status: "playing" }),
     setMuted: (p) => p,
     interruptAll: () => ({ sessions_cancelled: 0 }),
+    stop: () => ({ status: "interrupted" }),
     installUv: () => ({ started: true }),
     speechLog: () => ({ entries: [] }),
     replay: () => ({ status: "playing" }),

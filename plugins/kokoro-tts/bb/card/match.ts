@@ -5,6 +5,12 @@ import type { SpeechLogEntry } from "../schemas.ts";
 export const MAX_LOG_TEXT = 2000;
 /** How long a card waits for its entry after its thread's turn before showing "Not spoken". */
 export const PENDING_GRACE_MS = 25_000;
+/**
+ * A queued or playing entry older than this was orphaned (a lost status
+ * report): read it as interrupted. Longer than the 15 minute hold for a
+ * dropped window plus the longest full-mode reply.
+ */
+export const STALE_ENTRY_MS = 20 * 60_000;
 
 export type CardState =
   | { kind: "queued" }
@@ -31,14 +37,19 @@ export function findEntry(entries: SpeechLogEntry[], threadId: string, say: stri
   return best;
 }
 
+/**
+ * turnAt: when a turn in this card's thread logged this card's text.
+ * pendingAt: when a turn went out for the thread while this was its newest card.
+ */
 export function cardState(
   entry: SpeechLogEntry | undefined,
-  t: { turnAt: number | null; now: number },
+  t: { turnAt: number | null; pendingAt?: number | null; now: number },
 ): CardState {
   if (entry) {
+    const stale = t.now - entry.ts * 1000 > STALE_ENTRY_MS;
     switch (entry.status) {
-      case "queued": return { kind: "queued" };
-      case "playing": return { kind: "playing" };
+      case "queued": return stale ? { kind: "interrupted" } : { kind: "queued" };
+      case "playing": return stale ? { kind: "interrupted" } : { kind: "playing" };
       case "done": return { kind: "spoken", voice: entry.voice, firstAudioMs: entry.first_audio_ms };
       case "interrupted": return { kind: "interrupted" };
       case "muted": return { kind: "muted" };
@@ -46,9 +57,10 @@ export function cardState(
       case "empty": return { kind: "error", detail: "nothing left to speak after stripping markup" };
     }
   }
-  // No turn in this thread since the card mounted (history, a sub-thread): a missing entry means "no record".
-  if (t.turnAt === null) return { kind: "unknown" };
-  return t.now - t.turnAt < PENDING_GRACE_MS ? { kind: "queued" } : { kind: "unspoken" };
+  if (t.turnAt !== null) return t.now - t.turnAt < PENDING_GRACE_MS ? { kind: "queued" } : { kind: "unspoken" };
+  if (t.pendingAt != null && t.now - t.pendingAt < PENDING_GRACE_MS) return { kind: "queued" };
+  // No turn for this card since it mounted (history, a sub-thread): a missing entry means "no record".
+  return { kind: "unknown" };
 }
 
 export function needsPolling(state: CardState): boolean {

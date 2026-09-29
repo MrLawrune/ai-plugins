@@ -1,5 +1,5 @@
 // The chat card bb renders for a reply's ::kokoro-tts directive: what was said, whether it played, and replay.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   CancelCircleIcon,
@@ -24,6 +24,11 @@ const SOUND_LABEL: Record<string, string> = {
 };
 /** How long Replay keeps the card polling for the new entry before giving up. */
 const REPLAY_WAIT_MS = 10_000;
+/** Per thread, the speech card mounted last: the newest reply's, as far as the page knows. */
+const newestCard = new Map<string, symbol>();
+
+/** What voice.ts publishes on "kokoro-turn". */
+type TurnSignal = { threadId?: unknown; pending?: unknown; text?: unknown };
 
 const ICON: Record<CardState["kind"], IconSvgElement> = {
   queued: SpeechIcon,
@@ -68,18 +73,37 @@ export function KokoroCard({ attributes, message }: PluginMessageDirectiveProps)
 
 function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
-  /** When this card's thread last sent a turn to the server since the card mounted. */
+  const token = useMemo(() => Symbol("kokoro-card"), []);
+  useEffect(() => {
+    newestCard.set(threadId, token);
+    return () => {
+      if (newestCard.get(threadId) === token) newestCard.delete(threadId);
+    };
+  }, [threadId, token]);
+  /** When a turn since the card mounted logged this card's text. */
   const [turnAt, setTurnAt] = useState<number | null>(null);
+  /** When a turn went out for this thread while this card was its newest; cleared by the turn's outcome. */
+  const [pendingAt, setPendingAt] = useState<number | null>(null);
   useRealtime("kokoro-turn", (payload) => {
-    if ((payload as { threadId?: unknown } | null)?.threadId === threadId) setTurnAt(Date.now());
+    const turn = payload as TurnSignal | null;
+    if (turn?.threadId !== threadId) return;
+    if (turn.pending === true) {
+      if (newestCard.get(threadId) === token) setPendingAt(Date.now());
+      return;
+    }
+    setPendingAt(null);
+    if (typeof turn.text === "string" && normalizeSpoken(turn.text) === normalizeSpoken(say)) {
+      setTurnAt(Date.now());
+      refreshSpeechLog(threadId);
+    }
   });
   /** Entry id at the moment Replay was pressed; the card polls until a newer entry shows up. */
   const [replayAfter, setReplayAfter] = useState<number | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
-  const entries = useSpeechLog(pending);
+  const entries = useSpeechLog(threadId, pending);
   const entry = entries ? findEntry(entries, threadId, say) : undefined;
-  const state = cardState(entry, { turnAt, now: Date.now() });
+  const state = cardState(entry, { turnAt, pendingAt, now: Date.now() });
   const polling = needsPolling(state) || replayAfter !== null;
   useEffect(() => setPending(polling), [polling]);
   useEffect(() => {
@@ -100,7 +124,7 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
       else if (r.status === "empty_after_strip") setNote("Nothing left to speak after removing markup.");
       else {
         setReplayAfter(entry?.id ?? 0);
-        refreshSpeechLog();
+        refreshSpeechLog(threadId);
       }
     } catch (cause) {
       setNote(`Replay failed: ${errorText(cause)}`);
@@ -108,11 +132,11 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   };
   const stop = async () => {
     try {
-      await rpc.call("interruptAll");
+      await rpc.call("stop", { threadId });
     } catch (cause) {
       setNote(`Stop failed: ${errorText(cause)}`);
     }
-    refreshSpeechLog();
+    refreshSpeechLog(threadId);
   };
 
   return (

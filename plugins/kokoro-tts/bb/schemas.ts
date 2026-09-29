@@ -62,8 +62,6 @@ export const remoteEngineSchema = z.object({
   fallback: localEngineSchema.nullable(),
   remote_health: z.record(z.string(), z.unknown()).nullable().optional(),
 });
-export const engineSchema = z.union([localEngineSchema, remoteEngineSchema]);
-export type EngineInfo = z.infer<typeof engineSchema>;
 
 export const configResponseSchema = z.object({
   config: configSchema,
@@ -79,7 +77,6 @@ export type ConfigResponse = z.infer<typeof configResponseSchema>;
 const healthSchema = z.object({
   status: z.string(),
   version: z.string().nullable().optional(),
-  features: z.array(z.string()).optional(),
   model: z.string(),
   active_sessions: z.number(),
   provider: z.string().optional(),
@@ -173,9 +170,12 @@ export const statusSchema = z.object({
 export type KokoroStatus = z.infer<typeof statusSchema>;
 
 export const rpcContract = defineRpcContract({
-  health: { input: z.null(), output: healthResultSchema },
   status: { input: z.null(), output: statusSchema },
-  speechLog: { input: z.null(), output: z.object({ entries: z.array(speechLogEntrySchema) }) },
+  /** One thread's recent speech-log entries, oldest first. */
+  speechLog: {
+    input: z.object({ threadId: z.string().min(1).max(128) }).strict(),
+    output: z.object({ entries: z.array(speechLogEntrySchema) }),
+  },
   getConfig: { input: z.null(), output: configResponseSchema },
   patchConfig: { input: configPatchSchema, output: configResponseSchema },
   listVoices: { input: z.null(), output: z.object({ voices: z.array(voiceInfoSchema) }) },
@@ -205,12 +205,11 @@ export const rpcContract = defineRpcContract({
   },
   setMuted: { input: z.object({ muted: z.boolean() }).strict(), output: z.object({ muted: z.boolean() }) },
   interruptAll: { input: z.null(), output: z.object({ sessions_cancelled: z.number() }) },
-  engine: { input: z.null(), output: engineSchema },
-  setupStatus: { input: z.null(), output: setupStateSchema },
+  /** Stops one thread's speech, wherever it plays. */
+  stop: { input: z.object({ threadId: z.string().min(1).max(128) }).strict(), output: z.object({ status: z.string() }) },
   installUv: { input: z.null(), output: z.object({ started: z.boolean() }) },
   getPrefs: { input: z.null(), output: prefsSchema },
   setPrefs: { input: prefsSchema.partial().strict(), output: prefsSchema },
-  listClients: { input: z.null(), output: z.object({ clients: z.array(clientInfoSchema) }) },
 });
 
 /** What POST /replay returns: a browser-playback entry to play, or the server's status. */
@@ -229,5 +228,7 @@ export const turnResultSchema = z.object({
   speech_gain: z.number().optional(),
   sound_volume: z.number().optional(),
   muted: z.boolean().optional(),
+  /** The speech-log text of the entry this turn made. */
+  logged_text: z.string().optional(),
 });
 export type TurnResult = z.infer<typeof turnResultSchema>;
