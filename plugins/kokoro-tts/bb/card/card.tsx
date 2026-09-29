@@ -8,14 +8,14 @@ import {
   VolumeHighIcon,
   VolumeMute01Icon,
 } from "@hugeicons/core-free-icons";
-import { useRpc, type PluginMessageDirectiveProps } from "@get-bb/plugin-sdk/app";
+import { useRealtime, useRpc, type PluginMessageDirectiveProps } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import type { rpcContract } from "../schemas.ts";
 import { errorText } from "../util.ts";
 import { cardState, findEntry, needsPolling, statusText, type CardState } from "./match.ts";
-import { pageLoadedAt, refreshSpeechLog, useSpeechLog } from "./speech-log.ts";
+import { refreshSpeechLog, useSpeechLog } from "./speech-log.ts";
 
 const SOUND_LABEL: Record<string, string> = {
   "sound:working": "Working sound",
@@ -32,7 +32,7 @@ const ICON: Record<CardState["kind"], IconSvgElement> = {
   interrupted: StopCircleIcon,
   muted: VolumeMute01Icon,
   error: CancelCircleIcon,
-  unspoken: CancelCircleIcon,
+  unspoken: SpeechIcon,
   unknown: SpeechIcon,
 };
 
@@ -43,7 +43,7 @@ const TONE: Record<CardState["kind"], string> = {
   interrupted: "text-amber-500",
   muted: "text-muted-foreground",
   error: "text-destructive",
-  unspoken: "text-destructive",
+  unspoken: "text-muted-foreground opacity-60",
   unknown: "text-muted-foreground opacity-60",
 };
 
@@ -68,14 +68,18 @@ export function KokoroCard({ attributes, message }: PluginMessageDirectiveProps)
 
 function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
-  const [mountedAt] = useState(() => Date.now());
+  /** When this card's thread last sent a turn to the server since the card mounted. */
+  const [turnAt, setTurnAt] = useState<number | null>(null);
+  useRealtime("kokoro-turn", (payload) => {
+    if ((payload as { threadId?: unknown } | null)?.threadId === threadId) setTurnAt(Date.now());
+  });
   /** Entry id at the moment Replay was pressed; the card polls until a newer entry shows up. */
   const [replayAfter, setReplayAfter] = useState<number | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [pending, setPending] = useState(true);
   const entries = useSpeechLog(pending);
   const entry = entries ? findEntry(entries, threadId, say) : undefined;
-  const state = cardState(entry, { mountedAt, pageLoadedAt: pageLoadedAt(), now: Date.now() });
+  const state = cardState(entry, { turnAt, now: Date.now() });
   const polling = needsPolling(state) || replayAfter !== null;
   useEffect(() => setPending(polling), [polling]);
   useEffect(() => {

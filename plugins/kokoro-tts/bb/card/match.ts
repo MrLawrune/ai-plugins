@@ -3,10 +3,8 @@ import type { SpeechLogEntry } from "../schemas.ts";
 
 /** The server stores at most this many characters of an entry's text. */
 export const MAX_LOG_TEXT = 2000;
-/** How long a live card waits for its entry before showing "Not spoken". */
+/** How long a card waits for its entry after its thread's turn before showing "Not spoken". */
 export const PENDING_GRACE_MS = 25_000;
-/** Cards mounted this soon after page load are history, not live replies. */
-export const HISTORY_WINDOW_MS = 4_000;
 
 export type CardState =
   | { kind: "queued" }
@@ -35,7 +33,7 @@ export function findEntry(entries: SpeechLogEntry[], threadId: string, say: stri
 
 export function cardState(
   entry: SpeechLogEntry | undefined,
-  t: { mountedAt: number; pageLoadedAt: number; now: number },
+  t: { turnAt: number | null; now: number },
 ): CardState {
   if (entry) {
     switch (entry.status) {
@@ -48,9 +46,9 @@ export function cardState(
       case "empty": return { kind: "error", detail: "nothing left to speak after stripping markup" };
     }
   }
-  // Rendered with the page, so it was not spoken in this session: a missing entry means "no record", not "failed".
-  if (t.mountedAt - t.pageLoadedAt < HISTORY_WINDOW_MS) return { kind: "unknown" };
-  return t.now - t.mountedAt < PENDING_GRACE_MS ? { kind: "queued" } : { kind: "unspoken" };
+  // No turn in this thread since the card mounted (history, a sub-thread): a missing entry means "no record".
+  if (t.turnAt === null) return { kind: "unknown" };
+  return t.now - t.turnAt < PENDING_GRACE_MS ? { kind: "queued" } : { kind: "unspoken" };
 }
 
 export function needsPolling(state: CardState): boolean {

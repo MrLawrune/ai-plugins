@@ -13,13 +13,16 @@ const done = (o: Partial<SpeechLogEntry> = {}): SpeechLogEntry => ({
 
 afterEach(() => vi.useRealTimers());
 
-async function card(attributes: Record<string, string>, overrides = {}, opts: { live?: boolean } = {}) {
-  // A live card mounts well after page load; a history card mounts with the page.
-  resetSpeechLogForTests({ pageLoadedAt: opts.live ? Date.now() - 60_000 : Date.now() });
+async function mount(attributes: Record<string, string>, overrides = {}) {
   const app = await loadPluginApp(() => import("../app.tsx"));
   const reg = app.messageDirectives.find((d) => d.id === "kokoro-tts")!;
   return renderSlot(reg, { attributes, source: "::kokoro-tts{}", message: MESSAGE, openWorkspaceFile: null },
     { rpc: rpcStubs(overrides) });
+}
+
+async function card(attributes: Record<string, string>, overrides = {}) {
+  resetSpeechLogForTests();
+  return mount(attributes, overrides);
 }
 
 const speechLogCalls = (slot: Awaited<ReturnType<typeof card>>) =>
@@ -31,14 +34,34 @@ test("a spoken reply shows its text, voice and latency", async () => {
   expect(await screen.findByText("Spoken · af_sky · 410 ms to first audio")).toBeTruthy();
 });
 
-test("history with no log entry shows No record; another thread's entry does not count", async () => {
+test("with no log entry and no turn since mount it shows No record; another thread's entry does not count", async () => {
   await card(SPEECH, { speechLog: () => ({ entries: [done({ session_id: "t2" })] }) });
   expect(await screen.findByText("No record")).toBeTruthy();
 });
 
-test("a live reply waits as Queued", async () => {
-  await card(SPEECH, {}, { live: true });
+test("a turn in this thread makes a card with no entry wait as Queued", async () => {
+  const slot = await card(SPEECH);
+  await screen.findByText("No record");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t1" });
   expect(await screen.findByText("Queued")).toBeTruthy();
+});
+
+test("a turn in another thread leaves the card at No record", async () => {
+  const slot = await card(SPEECH);
+  await screen.findByText("No record");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t2" });
+  expect(screen.getByText("No record")).toBeTruthy();
+});
+
+test("a turn that never reaches the log reads Not spoken in a neutral tone", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const slot = await card(SPEECH);
+  await screen.findByText("No record");
+  await slot.emitRealtime("kokoro-turn", { threadId: "t1" });
+  await screen.findByText("Queued");
+  await act(() => vi.advanceTimersByTimeAsync(26_000));
+  expect(await screen.findByText("Not spoken")).toBeTruthy();
+  expect(slot.container.querySelector(".text-destructive")).toBeNull();
 });
 
 test("while playing, Stop stops playback", async () => {

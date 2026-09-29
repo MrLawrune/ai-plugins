@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { SpeechLogEntry } from "../schemas.ts";
-import { cardState, findEntry, HISTORY_WINDOW_MS, needsPolling, normalizeSpoken, PENDING_GRACE_MS, statusText } from "./match.ts";
+import { cardState, findEntry, needsPolling, normalizeSpoken, PENDING_GRACE_MS, statusText } from "./match.ts";
 
 const entry = (o: Partial<SpeechLogEntry>): SpeechLogEntry =>
   ({ id: 1, ts: 0, session_id: "t1", text: "All done.", status: "done", ...o });
@@ -26,7 +26,7 @@ test("findEntry matches a say longer than the log cap", () => {
 });
 
 test("cardState maps every log status", () => {
-  const t = { mountedAt: 10_000, pageLoadedAt: 0, now: 10_000 };
+  const t = { turnAt: null, now: 10_000 };
   assert.deepEqual(cardState(entry({ status: "queued" }), t), { kind: "queued" });
   assert.deepEqual(cardState(entry({ status: "playing" }), t), { kind: "playing" });
   assert.deepEqual(cardState(entry({ status: "done", voice: "af_sky", first_audio_ms: 410 }), t),
@@ -38,10 +38,19 @@ test("cardState maps every log status", () => {
   assert.deepEqual(cardState(entry({ status: "empty" }), t), { kind: "error", detail: "nothing left to speak after stripping markup" });
 });
 
-test("cardState without an entry: history, grace, then not spoken", () => {
-  assert.deepEqual(cardState(undefined, { pageLoadedAt: 0, mountedAt: HISTORY_WINDOW_MS - 1, now: 60_000 }), { kind: "unknown" });
-  assert.deepEqual(cardState(undefined, { pageLoadedAt: 0, mountedAt: 10_000, now: 10_000 + PENDING_GRACE_MS - 1 }), { kind: "queued" });
-  assert.deepEqual(cardState(undefined, { pageLoadedAt: 0, mountedAt: 10_000, now: 10_000 + PENDING_GRACE_MS }), { kind: "unspoken" });
+test("cardState without an entry and no turn since mount is no record", () => {
+  assert.deepEqual(cardState(undefined, { turnAt: null, now: 60_000 }), { kind: "unknown" });
+  assert.deepEqual(cardState(undefined, { turnAt: null, now: 10_000 + PENDING_GRACE_MS }), { kind: "unknown" });
+});
+
+test("cardState without an entry after a turn: queued through the grace, then not spoken", () => {
+  assert.deepEqual(cardState(undefined, { turnAt: 10_000, now: 10_000 }), { kind: "queued" });
+  assert.deepEqual(cardState(undefined, { turnAt: 10_000, now: 10_000 + PENDING_GRACE_MS - 1 }), { kind: "queued" });
+  assert.deepEqual(cardState(undefined, { turnAt: 10_000, now: 10_000 + PENDING_GRACE_MS }), { kind: "unspoken" });
+});
+
+test("cardState prefers the log entry over the turn signal", () => {
+  assert.deepEqual(cardState(entry({ status: "done" }), { turnAt: 10_000, now: 10_000 }), { kind: "spoken", voice: undefined, firstAudioMs: undefined });
 });
 
 test("needsPolling only while queued or playing", () => {

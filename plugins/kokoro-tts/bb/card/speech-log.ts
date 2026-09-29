@@ -16,14 +16,8 @@ let activeRpc: Rpc | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inflight = false;
 let failed = false;
-let loadedAt = Date.now();
 /** Bumped by resetSpeechLogForTests so an in-flight fetch from a previous mount is ignored. */
 let generation = 0;
-
-/** When this page (and so the plugin app) loaded; cards mounted soon after are history. */
-export function pageLoadedAt(): number {
-  return loadedAt;
-}
 
 function schedule(): void {
   if (timer || inflight || waiting.size === 0) return;
@@ -90,7 +84,7 @@ export function useSpeechLog(pending: boolean): SpeechLogEntry[] | null {
 }
 
 /** Tests only: forget the shared poll between renders. */
-export function resetSpeechLogForTests(opts: { pageLoadedAt?: number } = {}): void {
+export function resetSpeechLogForTests(): void {
   generation++;
   if (timer) clearTimeout(timer);
   timer = null;
@@ -101,5 +95,4 @@ export function resetSpeechLogForTests(opts: { pageLoadedAt?: number } = {}): vo
   waiting.clear();
   listeners.clear();
   document.removeEventListener("visibilitychange", onVisible);
-  loadedAt = opts.pageLoadedAt ?? Date.now();
 }

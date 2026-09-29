@@ -11,6 +11,8 @@ export interface VoiceDeps {
   client: () => KokoroClient;
   hub: Pick<PlayerHub, "speak" | "sound" | "stop" | "hasReadyClient" | "onReadyChange">;
   prefs: Pick<PrefsStore, "get">;
+  /** bb.realtime.publish; tells chat cards a thread's turn is on its way to the server. */
+  publish: (channel: string, payload: unknown) => void;
   contract: string | null;
   /** Short contract for full mode, which reads the whole reply and ignores blocks. */
   contractFull?: string | null;
@@ -85,6 +87,7 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
       const text = lastAssistantText?.trim();
       if (!text) return;
       const { playback } = deps.prefs.get();
+      deps.publish("kokoro-turn", { threadId: thread.id });
       const reply = await deps.client().call<unknown>("POST", "/turn", {
         text, session_id: thread.id, playback, source: "bb",
       });

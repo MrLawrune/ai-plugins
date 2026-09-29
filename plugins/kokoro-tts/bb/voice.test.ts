@@ -21,6 +21,7 @@ function harness(prefs: Partial<Prefs> = {}, replies: Record<string, unknown> = 
   const host = createFakePluginHost();
   registerVoice(host.bb, {
     client: () => client,
+    publish: (channel, payload) => { calls.push({ method: "PUBLISH", path: channel, body: payload }); },
     hub: {
       speak: (...a) => { hubCalls.push(["speak", ...a]); },
       sound: (...a) => { hubCalls.push(["sound", ...a]); },
@@ -47,6 +48,27 @@ test("thread.idle in client mode routes speech to the hub", async () => {
     method: "POST", path: "/turn", body: { text: "Done.", session_id: "t1", playback: "client", source: "bb" },
   });
   assert.deepEqual(hubCalls, [["speak", 5, "Done.", "t1", 0.8]]);
+});
+
+test("thread.idle announces the turn to cards right before sending it", async () => {
+  const { host, calls } = harness();
+  await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
+  assert.deepEqual(calls.slice(-2).map((c) => [c.method, c.path, c.body]), [
+    ["PUBLISH", "kokoro-turn", { threadId: "t1" }],
+    ["POST", "/turn", { text: "Done.", session_id: "t1", playback: "client", source: "bb" }],
+  ]);
+});
+
+test("thread.idle that is not voiced announces nothing", async () => {
+  const { host, calls } = harness({}, {}, false);
+  await host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "Done." });
+  const child = harness();
+  await child.host.harness.emitThreadEvent("thread.idle", {
+    thread: makeThreadResponse({ id: "c1", parentThreadId: "t1" }), lastAssistantText: "Child done.",
+  });
+  const empty = harness();
+  await empty.host.harness.emitThreadEvent("thread.idle", { thread: root(), lastAssistantText: "  " });
+  assert.deepEqual([...calls, ...child.calls, ...empty.calls].filter((c) => c.method === "PUBLISH"), []);
 });
 
 test("thread.idle in server mode lets the server play", async () => {
