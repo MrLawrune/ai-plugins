@@ -12,7 +12,7 @@ import { useRealtime, useRpc, type PluginMessageDirectiveProps } from "@get-bb/p
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import type { rpcContract } from "../schemas.ts";
+import type { rpcContract } from "../contract.ts";
 import { errorText } from "../util.ts";
 import { cardState, findEntry, needsPolling, normalizeSpoken, statusText, type CardState } from "./match.ts";
 import { refreshSpeechLog, useSpeechLog } from "./speech-log.ts";

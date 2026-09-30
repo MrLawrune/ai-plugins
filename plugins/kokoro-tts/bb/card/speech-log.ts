@@ -2,7 +2,8 @@
 // page; it fetches only that thread's entries and runs only while a card waits.
 import { useEffect, useMemo, useReducer } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { rpcContract, SpeechLogEntry } from "../schemas.ts";
+import type { rpcContract } from "../contract.ts";
+import type { SpeechLogEntry } from "../schemas.ts";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 

@@ -4,9 +4,8 @@ import { ServerError, type KokoroClient } from "./kokoro-client.ts";
 import type { PlayerHub } from "./hub.ts";
 import { PREVIEW_ID_BASE } from "./protocol.ts";
 import type { PrefsStore } from "./prefs.ts";
-import {
-  replayResultSchema, rpcContract, type ConfigResponse, type Health, type HealthResult, type VoiceScopeState,
-} from "./schemas.ts";
+import { rpcContract } from "./contract.ts";
+import { replayResultSchema, type ConfigResponse, type Health, type HealthResult, type VoiceScopeState } from "./schemas.ts";
 import { resolveVoice, type VoiceScopes } from "./scopes.ts";
 import { installUv } from "./setup/uv.ts";
 import type { Supervisor } from "./supervisor.ts";

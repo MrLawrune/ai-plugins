@@ -1,7 +1,6 @@
-import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-const voiceSchema = z.union([z.string(), z.record(z.string(), z.number())]);
+export const voiceSchema = z.union([z.string(), z.record(z.string(), z.number())]);
 export const modeSchema = z.enum(["quiet", "ambient", "brief", "conversational", "verbose", "full"]);
 export type Mode = z.infer<typeof modeSchema>;
 export const scopeSettingSchema = z.object({ mode: modeSchema.optional(), voiceChildren: z.boolean().optional() }).strict();
@@ -99,7 +98,7 @@ const healthSchema = z.object({
 });
 export type Health = z.infer<typeof healthSchema>;
 
-const voiceInfoSchema = z.object({
+export const voiceInfoSchema = z.object({
   name: z.string(),
   lang_code: z.string(),
   lang: z.string(),
@@ -108,7 +107,7 @@ const voiceInfoSchema = z.object({
 });
 export type VoiceInfo = z.infer<typeof voiceInfoSchema>;
 
-const deviceSchema = z.object({
+export const deviceSchema = z.object({
   index: z.number(),
   name: z.string(),
   default: z.boolean(),
@@ -123,7 +122,7 @@ export const healthResultSchema = z.union([
 ]);
 export type HealthResult = z.infer<typeof healthResultSchema>;
 
-const speechLogEntrySchema = z.object({
+export const speechLogEntrySchema = z.object({
   id: z.number(),
   ts: z.number(),
   session_id: z.string(),
@@ -192,71 +191,12 @@ export const voiceScopeSchema = z.object({
 });
 export type VoiceScopeState = z.infer<typeof voiceScopeSchema>;
 
-const scopePatchSchema = z
+export const scopePatchSchema = z
   .object({ mode: modeSchema.nullable().optional(), voiceChildren: z.boolean().nullable().optional() })
   .strict();
 export type ScopePatchInput = z.infer<typeof scopePatchSchema>;
 
-const threadIdSchema = z.string().min(1).max(128);
-
-export const rpcContract = defineRpcContract({
-  status: { input: z.null(), output: statusSchema },
-  /** One thread's recent speech-log entries, oldest first. */
-  speechLog: {
-    input: z.object({ threadId: z.string().min(1).max(128) }).strict(),
-    output: z.object({ entries: z.array(speechLogEntrySchema) }),
-  },
-  getConfig: { input: z.null(), output: configResponseSchema },
-  patchConfig: { input: configPatchSchema, output: configResponseSchema },
-  listVoices: { input: z.null(), output: z.object({ voices: z.array(voiceInfoSchema) }) },
-  listDevices: {
-    input: z.null(),
-    output: z.object({ devices: z.array(deviceSchema), selected: z.number().nullable() }),
-  },
-  preview: {
-    input: z
-      .object({
-        text: z.string().max(400).optional(),
-        voice: voiceSchema.optional(),
-        speed: z.number().optional(),
-        lang: z.string().optional(),
-        speech_gain: z.number().optional(),
-      })
-      .strict(),
-    output: z.object({ status: z.string() }),
-  },
-  playSound: {
-    input: z.object({ sound: z.enum(["working", "done", "attention", "error"]) }).strict(),
-    output: z.object({ status: z.string() }),
-  },
-  replay: {
-    input: z.object({ threadId: z.string().min(1).max(128), text: z.string().min(1).max(2000) }).strict(),
-    output: z.object({ status: z.string() }),
-  },
-  setMuted: { input: z.object({ muted: z.boolean() }).strict(), output: z.object({ muted: z.boolean() }) },
-  interruptAll: { input: z.null(), output: z.object({ sessions_cancelled: z.number() }) },
-  /** Stops one thread's speech, wherever it plays. */
-  stop: { input: z.object({ threadId: z.string().min(1).max(128) }).strict(), output: z.object({ status: z.string() }) },
-  installUv: { input: z.null(), output: z.object({ started: z.boolean() }) },
-  getPrefs: { input: z.null(), output: prefsSchema },
-  setPrefs: { input: prefsSchema.partial().strict(), output: prefsSchema },
-  getVoiceScope: {
-    input: z.object({ threadId: threadIdSchema, projectId: threadIdSchema }).strict(),
-    output: voiceScopeSchema,
-  },
-  /** A null in the patch clears that field of the thread's or project's setting. */
-  setVoiceScope: {
-    input: z
-      .object({
-        threadId: threadIdSchema,
-        projectId: threadIdSchema,
-        scope: z.enum(["thread", "project"]),
-        patch: scopePatchSchema,
-      })
-      .strict(),
-    output: voiceScopeSchema,
-  },
-});
+export const threadIdSchema = z.string().min(1).max(128);
 
 /** What POST /replay returns: a browser-playback entry to play, or the server's status. */
 export const replayResultSchema = z.object({

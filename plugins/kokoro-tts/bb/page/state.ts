@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
+import type { rpcContract } from "../contract.ts";
 import {
   configResponseSchema,
   prefsSchema,
@@ -9,7 +10,6 @@ import {
   type KokoroConfig,
   type KokoroStatus,
   type Prefs,
-  type rpcContract,
 } from "../schemas.ts";
 import { errorText } from "../util.ts";
 import { createPatchQueue, type SaveState } from "./patch-queue.ts";

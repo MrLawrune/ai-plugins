@@ -2,7 +2,8 @@ import { useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import type { KokoroConfig, rpcContract } from "../schemas.ts";
+import type { rpcContract } from "../contract.ts";
+import type { KokoroConfig } from "../schemas.ts";
 import { errorText, Section, SliderRow, SwitchRow } from "./ui.tsx";
 import { playbackStatusToast } from "./voice-section.tsx";
 

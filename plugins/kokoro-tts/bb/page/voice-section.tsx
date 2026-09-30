@@ -6,7 +6,8 @@ import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import type { KokoroConfig, rpcContract, VoiceInfo } from "../schemas.ts";
+import type { rpcContract } from "../contract.ts";
+import type { KokoroConfig, VoiceInfo } from "../schemas.ts";
 import { Disclosure, errorText, Row, Section } from "./ui.tsx";
 
 type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;

@@ -22,7 +22,7 @@ import { Supervisor } from "./supervisor.ts";
 import { sleep } from "./util.ts";
 import { registerVoice } from "./voice.ts";
 
-export { rpcContract } from "./schemas.ts";
+export { rpcContract } from "./contract.ts";
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({

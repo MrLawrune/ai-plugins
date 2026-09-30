@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
-import type { rpcContract } from "../schemas.ts";
+import type { rpcContract } from "../contract.ts";
 import { ListeningSection } from "./listening-section.tsx";
 import { SoundsSection } from "./sounds-section.tsx";
 import { useConfig, useLoaded, usePrefs, useStatus } from "./state.ts";
