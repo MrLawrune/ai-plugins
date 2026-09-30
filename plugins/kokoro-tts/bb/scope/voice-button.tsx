@@ -1,13 +1,15 @@
 // The thread header's voice control: what this thread speaks, and its thread and project settings.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SpeechIcon, VolumeHighIcon, VolumeMute01Icon } from "@hugeicons/core-free-icons";
 import { useRealtime, useRpc, type PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { KokoroConfig, rpcContract, ScopePatchInput, ScopeSetting, VoiceScopeState } from "../schemas.ts";
 import { MODES } from "../page/listening-section.tsx";
-import { ChoiceGroup } from "../page/ui.tsx";
+import { StopSlider } from "../page/ui.tsx";
 import { errorText } from "../util.ts";
 
 type Scope = "thread" | "project";
@@ -20,11 +22,11 @@ const SOURCE: Record<VoiceScopeState["effective"]["modeFrom"], string> = {
   global: "global",
 };
 
-const CHILDREN: { value: Children; label: string }[] = [
-  { value: "default", label: "Default" },
-  { value: "on", label: "Voice" },
-  { value: "off", label: "Don't voice" },
-];
+const CHILDREN: Record<Exclude<Children, "default">, string> = { on: "Voice", off: "Don't voice" };
+
+export function childrenPatch(choice: Children): ScopePatchInput {
+  return { voiceChildren: choice === "default" ? null : choice === "on" };
+}
 
 function modeLabel(mode: KokoroConfig["mode"]): string {
   return MODES.find((m) => m.value === mode)?.label ?? mode;
@@ -72,7 +74,7 @@ export function VoiceScopeButton({ threadId, projectId }: PluginThreadHeaderActi
 
   const save = (scope: Scope, patch: ScopePatchInput) => {
     const made = key;
-    rpc.call("setVoiceScope", { threadId, projectId, scope, patch }).then(
+    return rpc.call("setVoiceScope", { threadId, projectId, scope, patch }).then(
       (state) => applyFor(made, (v) => ({ ...v, state, error: null, loadFailed: false })),
       (cause) => applyFor(made, (v) => ({ ...v, error: errorText(cause) })),
     );
@@ -103,9 +105,11 @@ export function VoiceScopeButton({ threadId, projectId }: PluginThreadHeaderActi
         {state ? (
           <>
             <ScopeSection title="This thread" setting={state.thread}
-              defaultMode={state.inherited.mode} onSave={(patch) => save("thread", patch)} />
+              defaultMode={state.inherited.voiced ? state.inherited.mode : "quiet"}
+              defaultChildren={state.effective.isChild ? null : state.project.voiceChildren === true}
+              onSave={(patch) => save("thread", patch)} />
             <ScopeSection title="This project" setting={state.project}
-              defaultMode={state.globalMode} onSave={(patch) => save("project", patch)} />
+              defaultMode={state.globalMode} defaultChildren={false} onSave={(patch) => save("project", patch)} />
             <p className="text-xs text-muted-foreground">
               Mode changes reach an agent's instructions when its session restarts; Off and the mode's limit apply to the next reply.
             </p>
@@ -119,23 +123,40 @@ export function VoiceScopeButton({ threadId, projectId }: PluginThreadHeaderActi
   );
 }
 
-function ScopeSection({ title, setting, defaultMode, onSave }: {
+function ScopeSection({ title, setting, defaultMode, defaultChildren, onSave }: {
   title: string;
   setting: ScopeSetting;
+  /** What applies here with no mode set. */
   defaultMode: KokoroConfig["mode"];
-  onSave: (patch: ScopePatchInput) => void;
+  /** Whether child threads are voiced with nothing set; null when an ancestor thread decides. */
+  defaultChildren: boolean | null;
+  onSave: (patch: ScopePatchInput) => Promise<void>;
 }) {
-  const modes = [{ value: "default", label: `Default (${modeLabel(defaultMode)})` }, ...MODES];
+  const scope = title.toLowerCase();
+  const childrenId = useId();
   const children: Children = setting.voiceChildren === undefined ? "default" : setting.voiceChildren ? "on" : "off";
+  const defaultLabel = defaultChildren === null ? "Default" : `Default (${CHILDREN[defaultChildren ? "on" : "off"].toLowerCase()})`;
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-      <p className="text-xs">Mode</p>
-      <ChoiceGroup<string> label={`${title} mode`} value={setting.mode ?? "default"} options={modes}
-        onChange={(v) => onSave({ mode: v === "default" ? null : (v as KokoroConfig["mode"]) })} />
-      <p className="text-xs">Child threads</p>
-      <ChoiceGroup<Children> label={`${title} child threads`} value={children} options={CHILDREN}
-        onChange={(v) => onSave({ voiceChildren: v === "default" ? null : v === "on" })} />
+      <StopSlider label={`${title} mode`}
+        caption={<h3 className="shrink-0 text-xs font-medium text-muted-foreground">{title}</h3>}
+        value={setting.mode ?? defaultMode} options={MODES}
+        inherited={setting.mode === undefined} onChange={(mode) => onSave({ mode })}
+        action={setting.mode === undefined ? null : (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" aria-label={`Reset ${scope} mode`}
+            onClick={() => void onSave({ mode: null })}>Reset</Button>
+        )} />
+      <div className="flex items-center justify-between gap-3">
+        <Label htmlFor={childrenId} className="text-xs font-normal">Child threads</Label>
+        <Select value={children} onValueChange={(v) => void onSave(childrenPatch(v as Children))}>
+          <SelectTrigger id={childrenId} aria-label={`${title} child threads`} className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">{defaultLabel}</SelectItem>
+            <SelectItem value="on">{CHILDREN.on}</SelectItem>
+            <SelectItem value="off">{CHILDREN.off}</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
     </section>
   );
 }

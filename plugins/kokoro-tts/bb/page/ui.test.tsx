@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { expect, test } from "vitest";
-import { ChoiceGroup, SaveIndicator, SliderRow } from "./ui.tsx";
+import { ChoiceGroup, SaveIndicator, SliderRow, StopSlider } from "./ui.tsx";
 
 const MODES = [
   { value: "quiet", label: "Quiet", hint: "Silent." },
@@ -33,6 +33,28 @@ test("slider thumbs have a name and a spoken value", () => {
   render(<SliderRow id="speed" label="Speed" value={1.2} min={0.5} max={2} step={0.05} format={(v) => `${v.toFixed(2)}×`} onChange={() => {}} />);
   const thumb = screen.getByRole("slider", { name: "Speed" });
   expect(thumb.getAttribute("aria-valuetext")).toBe("1.20×");
+});
+
+test("a stop slider names its stop, shows its hint, and reports a move once", () => {
+  const moves: string[] = [];
+  render(<StopSlider label="Mode" value="brief" options={[...MODES]} onChange={(v) => { moves.push(v); }} />);
+  const thumb = screen.getByRole("slider", { name: "Mode" });
+  expect(thumb.getAttribute("aria-valuetext")).toBe("Brief");
+  expect(screen.getByText("One short sentence per reply.")).toBeTruthy();
+  fireEvent.keyDown(thumb, { key: "ArrowRight" });
+  expect(moves).toEqual(["full"]);
+});
+
+test("a stop slider holds a move until its save settles, then shows the saved value", async () => {
+  let settle!: () => void;
+  render(<StopSlider label="Mode" value="brief" inherited options={[...MODES]}
+    onChange={() => new Promise<void>((r) => { settle = r; })} />);
+  const thumb = screen.getByRole("slider", { name: "Mode" });
+  expect(thumb.getAttribute("aria-valuetext")).toBe("Brief, default");
+  fireEvent.keyDown(thumb, { key: "ArrowLeft" });
+  expect(thumb.getAttribute("aria-valuetext")).toBe("Quiet");
+  settle();
+  await waitFor(() => expect(thumb.getAttribute("aria-valuetext")).toBe("Brief, default"));
 });
 
 test("the save indicator shows failures with a retry", () => {
