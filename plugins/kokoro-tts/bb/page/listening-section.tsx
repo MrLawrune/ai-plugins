@@ -1,5 +1,5 @@
 import type { KokoroConfig } from "../schemas.ts";
-import { ChoiceGroup, Row, Section, SliderRow, SwitchRow } from "./ui.tsx";
+import { Row, Section, SliderRow, StopSlider, SwitchRow } from "./ui.tsx";
 
 type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;
 
@@ -15,8 +15,8 @@ export const MODES: { value: KokoroConfig["mode"]; label: string; hint: string }
 export function ListeningSection({ config, patch }: { config: KokoroConfig; patch: Patch }) {
   return (
     <Section title="Listening" description="How much you hear when an agent finishes.">
-      <Row label="Mode">
-        <ChoiceGroup label="Mode" value={config.mode} options={MODES} onChange={(mode) => patch({ mode })} />
+      <Row label="Mode" htmlFor="mode">
+        <StopSlider id="mode" label="Mode" value={config.mode} options={MODES} onChange={(mode) => patch({ mode })} />
       </Row>
       <SliderRow id="speed" label="Speed" value={config.speed} min={0.5} max={2} step={0.05}
         format={(v) => `${v.toFixed(2)}×`} onChange={(v) => patch({ speed: v }, 350)} />

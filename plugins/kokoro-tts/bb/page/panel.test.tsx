@@ -16,8 +16,9 @@ test("sections appear in listening-first order", async () => {
 
 test("choosing a mode with the keyboard saves it", async () => {
   const slot = await panel();
-  const brief = await screen.findByRole("radio", { name: "Brief" });
-  fireEvent.keyDown(brief, { key: "ArrowRight" });
+  const mode = await screen.findByRole("slider", { name: "Mode" });
+  expect(mode.getAttribute("aria-valuetext")).toBe("Brief");
+  fireEvent.keyDown(mode, { key: "ArrowRight" });
   await waitFor(() => {
     expect(slot.inspection.rpcCalls.some((c) => c.method === "patchConfig" && (c.input as { mode?: string }).mode === "conversational")).toBe(true);
   });

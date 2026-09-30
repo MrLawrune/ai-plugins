@@ -146,6 +146,68 @@ export function SliderRow({ id, label, hint, value, min, max, step, format, onCh
   );
 }
 
+/**
+ * A slider over a short ordered list of named stops. It reports a move once,
+ * on release, and holds the thumb there until a returned promise settles.
+ */
+export function StopSlider<V extends string>({ id, label, caption, value, options, inherited, action, onChange }: {
+  id?: string;
+  label: string;
+  /** Leads the value line, pushing the stop's name to its end. */
+  caption?: ReactNode;
+  value: V;
+  options: { value: V; label: string; hint?: string }[];
+  /** The value is a default rather than a choice made here. */
+  inherited?: boolean;
+  /** Sits at the end of the value line. */
+  action?: ReactNode;
+  onChange: (v: V) => void | Promise<unknown>;
+}) {
+  const saved = Math.max(0, options.findIndex((o) => o.value === value));
+  const [moved, setMoved] = useState<number | null>(null);
+  const latest = useRef<Promise<unknown> | null>(null);
+  const index = moved ?? saved;
+  const stop = options[index];
+  const isDefault = inherited === true && moved === null;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex min-h-6 items-center gap-2">
+        {caption}
+        <p className={cn("min-w-0 flex-1 truncate text-sm", caption ? "text-right" : null)}>
+          <span className="font-medium">{stop.label}</span>
+          {isDefault ? <span className="text-muted-foreground"> · default</span> : null}
+        </p>
+        {action}
+      </div>
+      <Slider
+        id={id}
+        min={0}
+        max={options.length - 1}
+        step={1}
+        value={[index]}
+        thumbLabel={label}
+        thumbValueText={isDefault ? `${stop.label}, default` : stop.label}
+        onValueChange={([i]) => setMoved(i === saved ? null : i)}
+        onValueCommit={([i]) => {
+          const save = Promise.resolve(onChange(options[i].value)).catch(() => undefined);
+          latest.current = save;
+          // Only the newest save lets the thumb go back to the saved value.
+          void save.then(() => { if (latest.current === save) setMoved(null); });
+        }}
+        className={cn(isDefault && "opacity-60")}
+      />
+      <div aria-hidden className="flex justify-between px-[7px]">
+        {options.map((o) => <span key={o.value} className="h-1 w-0.5 rounded-full bg-muted-foreground/50" />)}
+      </div>
+      <div aria-hidden className="flex justify-between text-[11px] leading-none text-muted-foreground">
+        <span>{options[0].label}</span>
+        <span>{options[options.length - 1].label}</span>
+      </div>
+      {stop.hint ? <p className="text-xs text-muted-foreground">{stop.hint}</p> : null}
+    </div>
+  );
+}
+
 export function SwitchRow({ id, label, hint, checked, onChange, disabled }: {
   id: string;
   label: string;
