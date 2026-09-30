@@ -24,7 +24,8 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
   let retryMs = 1_000;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let focusedAt = document.hasFocus() ? Date.now() : 0;
-  let wasUnlocked = false;
+  /** What this socket's server last heard about the audio: a new socket starts over. */
+  let reportedUnlocked = false;
   const utterances = new Map<number, Utterance>();
   const soundCache = new Map<SoundName, Promise<AudioBuffer>>();
 
@@ -33,16 +34,20 @@ export function mountPlayer({ pluginId, signal }: { pluginId: string; signal: Ab
   const send = (m: ClientMsg) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
   };
-  const hello = () =>
-    send({ type: "hello", clientId, deviceName: readDeviceName(localStorage, navigator.userAgent), focusedAt, audioUnlocked: unlocked() });
+  const hello = () => {
+    reportedUnlocked = unlocked();
+    send({ type: "hello", clientId, deviceName: readDeviceName(localStorage, navigator.userAgent), focusedAt, audioUnlocked: reportedUnlocked });
+  };
 
   const unlock = () => {
     // Clicking or typing marks this window as the one you use, even when it
     // never lost focus (a desktop window you keep working in).
     if (Date.now() - focusedAt > 2_000) onFocus();
     void audio().resume().then(() => {
-      if (unlocked() && !wasUnlocked) {
-        wasUnlocked = true;
+      // A phone's browser suspends the audio while it sleeps, so a reconnect can
+      // say locked again: every such hello needs its own unlock report.
+      if (unlocked() && !reportedUnlocked) {
+        reportedUnlocked = true;
         send({ type: "unlocked" });
       }
     });
