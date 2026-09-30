@@ -18,6 +18,8 @@ jq --arg v "$version" '.version = $v' package.json > package.json.tmp && mv pack
 # breaking it (tests/test_runtime_groups.py guards this).
 sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"$version\"/" server/pyproject.toml
 sed -i -E "s/^SERVER_VERSION = \"[^\"]+\"/SERVER_VERSION = \"$version\"/" server/kokoro_server.py
+# tests/test_version.py pins the version every file above must agree on.
+sed -i -E "s/== \{\"[0-9.]+\"\}$/== {\"$version\"}/" tests/test_version.py
 # uv.lock records the project version; re-lock (resolution only, no sync).
 uv lock --project server
 npm version "$version" --no-git-tag-version --allow-same-version >/dev/null
@@ -32,7 +34,7 @@ npm test
 npx tsc --noEmit
 bb plugin build .
 
-git add package.json package-lock.json server/pyproject.toml server/uv.lock server/kokoro_server.py
+git add package.json package-lock.json server/pyproject.toml server/uv.lock server/kokoro_server.py tests/test_version.py
 git commit -m "chore(kokoro-tts): release $version"
 git tag -a "$tag" -m "kokoro-tts $version"
 git push origin HEAD "$tag"
