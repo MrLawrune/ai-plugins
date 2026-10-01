@@ -2,6 +2,7 @@
 // Turn routing: directive parsing, mode ceiling, fallback. Pure functions; no I/O.
 import { decodeHTML } from "entities";
 import type { Mode } from "../schemas.ts";
+import { BOL, EOL, pyCollapse, pyStrip, WS } from "./pytext.ts";
 
 export type Sound = "working" | "done" | "attention" | "error";
 export type Routed = { action: "speech"; text: string } | { action: "sound"; sound: Sound } | { action: "silent" };
@@ -15,12 +16,7 @@ const WEIGHT_RANK: Record<string, number> = { silent: 0, "sound:working": 1, "so
 const RANK_WEIGHT = Object.fromEntries(Object.entries(WEIGHT_RANK).map(([w, r]) => [r, w])) as Record<number, string>;
 const MODE_CEILING: Record<string, number> = { quiet: 0, ambient: 3, brief: 4, conversational: 4, verbose: 4, full: 4 };
 
-// Python's \s (str.isspace); JS \s differs (adds U+FEFF, lacks U+001C-U+001F and U+0085).
-const WS = "\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
 const S = `[${WS}]`;
-// Python re.MULTILINE ^ and $ break lines at \n only; JS's m flag also breaks at \r, U+2028 and U+2029.
-const BOL = "(?<![^\\n])";
-const EOL = "(?![^\\n])";
 
 // bb never shows HTML comments, so they are never spoken either.
 const HTML_COMMENT = /<!--[\s\S]*?-->/gu;
@@ -37,12 +33,9 @@ const CODE_FENCE = /```[\s\S]*?```/gu;
 const SENTENCE = new RegExp(`^(.+?[.!?])(?:${S}|$)`, "u");
 const TABLE = new RegExp(`(?:${BOL}[ \\t]*\\|[^\\n]*\\|[ \\t]*(?:\\n|${EOL}))+`, "gu");
 const HEADING = new RegExp(`${BOL}#+${S}*`, "gu");
-const WS_RUN = new RegExp(`${S}+`, "gu");
-const EDGE_WS = new RegExp(`^${S}+|${S}+$`, "gu");
 const INLINE_CODE = /`([^`\n]+)`/gu;
 const MAX_INLINE_CODE = 60;
 
-const strip = (s: string): string => s.replace(EDGE_WS, "");
 // Python lengths and slices count code points; JS strings count UTF-16 units.
 const codePoints = (s: string): string[] => Array.from(s);
 // Python's str.rfind over code points.
@@ -85,7 +78,7 @@ export function extractDirective(text: string): [weight: string | null, say: str
     if (fences.some(([s, e]) => s <= m.index && m.index < e)) continue;
     const attrs = parseDirectiveAttrs(m[1]);
     if (attrs === null) continue;
-    return [attrs.get("weight") ?? "", strip(attrs.get("say") ?? "") || null];
+    return [attrs.get("weight") ?? "", pyStrip(attrs.get("say") ?? "") || null];
   }
   return [null, null];
 }
@@ -93,14 +86,14 @@ export function extractDirective(text: string): [weight: string | null, say: str
 /** First speakable sentence of the turn, directives, comments, and fences stripped. */
 export function firstSentence(text: string): string | null {
   text = stripDirectives(text).replace(CODE_FENCE, "");
-  text = strip(strip(text).replace(HEADING, "").replace(WS_RUN, " "));
+  text = pyStrip(pyCollapse(pyStrip(text).replace(HEADING, "")));
   if (!text) return null;
   const m = SENTENCE.exec(text);
   return codePoints(m ? m[1] : text).slice(0, MAX_FALLBACK_CHARS).join("");
 }
 
 function speakInlineCode(code: string): string {
-  code = strip(code);
+  code = pyStrip(code);
   if (code.includes("://") || codePoints(code).length > MAX_INLINE_CODE) return "";
   if (code.includes("/") && !code.includes(" ")) return code.replace(/\/+$/u, "").split("/").at(-1)!;
   return code;
@@ -117,7 +110,7 @@ export function fullText(text: string): string | null {
     .replace(CODE_FENCE, "\n\nCode block skipped.\n\n")
     .replace(TABLE, "\nTable skipped.\n\n")
     .replace(INLINE_CODE, (_, code: string) => speakInlineCode(code));
-  text = strip(text);
+  text = pyStrip(text);
   if (!text) return null;
   const chars = codePoints(text);
   if (chars.length > FULL_MAX_CHARS) {
