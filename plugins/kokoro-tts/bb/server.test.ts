@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import * as net from "node:net";
 import * as path from "node:path";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { NOTE_UNREADABLE } from "./coord/migrate.ts";
+import { NOTE_LOCAL_SWITCH_FAILED, NOTE_UNREADABLE } from "./coord/migrate.ts";
 import { DEFAULT_SETTINGS, type Settings } from "./schemas.ts";
-import plugin, { isLocalRequest } from "./server.ts";
+import plugin, { createPlugin, enginesChange, isLocalRequest } from "./server.ts";
 import { tmpDir } from "./test-tmp.ts";
 
 /** A loopback URL nothing listens on, so no real Kokoro server is touched. */
@@ -99,6 +99,67 @@ test("no engine reachable and no backup: the reply is logged unreachable and the
   } finally {
     await host.harness.dispose();
   }
+});
+
+test("a provider switch that never answers cannot hold up loading: the note says so", async () => {
+  // A fake local server (no real one is touched): its config forwards to a remote, and PATCH hangs.
+  const patches: unknown[] = [];
+  const fakeFetch: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (init?.method === "PATCH") {
+      patches.push(JSON.parse(String(init.body)));
+      return new Promise<Response>((_, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }
+    if (url === "http://127.0.0.1:6789/config") {
+      return Response.json({ config: { provider: "remote", remote_url: "http://gpu.test:6789", fallback_to_cpu: true, voice: "bm_george" } });
+    }
+    throw new TypeError("fetch failed");
+  };
+  const host = createFakePluginHost({ settings: { serverUrl: "http://127.0.0.1:6789" } });
+  try {
+    const t0 = Date.now();
+    await createPlugin({ fetch: fakeFetch, migrationPatchMs: 50 })(host.bb);
+    assert.ok(Date.now() - t0 < 2_000);
+    assert.deepEqual(patches, [{ provider: "cpu" }]);
+    const settings = await host.bb.storage.kv.get<Settings>("settings");
+    assert.deepEqual(settings?.engines, { main: { url: "http://gpu.test:6789" }, backup: "local" });
+    assert.equal(settings?.voice, "bm_george");
+    assert.equal(await host.bb.storage.kv.get("migration-note"), NOTE_LOCAL_SWITCH_FAILED);
+  } finally {
+    await host.harness.dispose();
+  }
+});
+
+test("a failing settings listener does not fail the patch that was saved", async () => {
+  const host = await load();
+  try {
+    host.bb.storage.database().exec("DROP TABLE speech_log");
+    await host.harness.callRpc("patchConfig", { retention: { maxAgeDays: 7, maxEntries: 100 } });
+    assert.deepEqual((await host.bb.storage.kv.get<Settings>("settings"))?.retention, { maxAgeDays: 7, maxEntries: 100 });
+    const warnings = host.harness.inspection.logEntries.filter((e) => e.level === "warn").map((e) => e.message);
+    assert.ok(warnings.some((m) => /settings change/.test(m) && /speech_log/.test(m)), warnings.join("\n"));
+  } finally {
+    await host.harness.dispose();
+  }
+});
+
+test("an engines change resets the chain, but restarts the local server only when its use changes", () => {
+  const remote = (url: string) => ({ url });
+  assert.deepEqual(
+    enginesChange({ main: "local", backup: remote("http://a") }, { main: "local", backup: remote("http://b") }),
+    { reset: true, restart: false },
+    "editing a remote backup keeps the local model loaded",
+  );
+  assert.deepEqual(
+    enginesChange({ main: remote("http://a"), backup: "local" }, { main: "local", backup: remote("http://a") }),
+    { reset: true, restart: false },
+    "still used locally, in another slot",
+  );
+  assert.deepEqual(enginesChange({ main: "local", backup: null }, { main: remote("http://a"), backup: null }), { reset: true, restart: true });
+  assert.deepEqual(enginesChange({ main: remote("http://a"), backup: null }, { main: remote("http://a"), backup: "local" }), { reset: true, restart: true });
+  assert.deepEqual(enginesChange({ main: "local", backup: null }, { main: "local", backup: null }), { reset: false, restart: false });
 });
 
 test("a player socket is local when its browser's address is this computer's", () => {

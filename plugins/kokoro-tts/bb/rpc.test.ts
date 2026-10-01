@@ -63,6 +63,7 @@ interface Options {
   threadParent?: (threadId: string) => Promise<string | null | undefined>;
   threadExists?: (threadId: string) => Promise<boolean>;
   replay?: RpcDeps["turns"]["replay"];
+  installUv?: RpcDeps["installUv"];
 }
 
 async function harness(o: Options = {}) {
@@ -103,6 +104,12 @@ async function harness(o: Options = {}) {
   await scopes.load();
   scopes.onChange((kind) => { if (kind === "settings") published.push(["kokoro-scopes", { changed: true }]); });
   const scope = new LoadScope();
+  const uvEvents: string[] = [];
+  const supervisor = {
+    status: () => ({ state: "needs-uv" as const, detail: null, progress: null, fixCommand: null, headless: null, gpuAvailable: false }),
+    uvInstalled: () => { uvEvents.push("installed"); },
+    uvInstallFailed: (message: string) => { uvEvents.push(`failed: ${message}`); },
+  };
   registerRpc(host.bb, {
     settings,
     mute,
@@ -116,7 +123,8 @@ async function harness(o: Options = {}) {
     fetch: fetchImpl,
     scope,
     turns: { replay: o.replay ?? (async (threadId, text) => { replays.push([threadId, text]); return { status: "playing" as const }; }) },
-    supervisor: () => null,
+    supervisor: () => (o.installUv ? supervisor : null),
+    installUv: o.installUv,
     prefs: new PrefsStore(kv),
     hub: {
       clients: () => [],
@@ -134,7 +142,7 @@ async function harness(o: Options = {}) {
     kv,
   });
   const call = <T>(name: string, input: unknown = null) => host.harness.callRpc(name, input) as Promise<T>;
-  return { host, kv, settings, mute, speechLog, chain, fetches, stops, spoken, sounds, published, replays, scopes, call, db };
+  return { host, kv, settings, mute, speechLog, chain, fetches, stops, spoken, sounds, published, replays, scopes, call, db, uvEvents };
 }
 
 test("getConfig answers with runtime: null when the local server is down", async () => {
@@ -370,6 +378,15 @@ test("clearHistory deletes every row and publishes kokoro-log-cleared", async ()
   assert.deepEqual(await h.call("clearHistory"), { deleted: 2 });
   assert.equal(h.speechLog.count(), 0);
   assert.deepEqual(h.published, [["kokoro-log-cleared", {}]]);
+});
+
+test("a rejecting uv installer is reported as a failed install, not left unhandled", async () => {
+  const h = await harness({ installUv: async () => { throw new Error("spawn sh ENOENT"); } });
+  assert.deepEqual(await h.call("installUv"), { started: true });
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(h.uvEvents, ["failed: spawn sh ENOENT"]);
+  assert.ok(h.host.harness.inspection.logEntries.some((e) => e.level === "warn" && /spawn sh ENOENT/.test(e.message)));
+  assert.deepEqual(await h.call("installUv"), { started: true }, "a later click can try again");
 });
 
 test("installerFailure keeps the last lines of the installer output", () => {

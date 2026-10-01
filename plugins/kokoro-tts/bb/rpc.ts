@@ -45,7 +45,9 @@ export interface RpcDeps {
   scope: Pick<LoadScope, "signal" | "track">;
   turns: Pick<TurnCoordinator, "replay">;
   /** Null when the plugin install is broken (no server/ found): status/config RPC still work. */
-  supervisor: () => Supervisor | null;
+  supervisor: () => Pick<Supervisor, "status" | "uvInstalled" | "uvInstallFailed"> | null;
+  /** Runs the uv installer script; tests pass a fake. */
+  installUv?: typeof installUv;
   prefs: PrefsStore;
   hub: Pick<PlayerHub, "clients" | "stop" | "stopAll" | "speak" | "sound" | "hasReadyClient">;
   log: BbPluginApi["log"];
@@ -272,12 +274,16 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     installUv: async () => {
       if (installing) return { started: false };
       installing = true;
-      void scope.track(installUv(within(300_000)))
+      void scope.track((deps.installUv ?? installUv)(within(300_000)))
         .then((r) => {
           if (scope.signal.aborted) return;
           deps.log.info(`uv installer exited ${r.code}: ${r.output.slice(-400)}`);
           if (r.code === 0) deps.supervisor()?.uvInstalled();
           else deps.supervisor()?.uvInstallFailed(installerFailure(r.code, r.output));
+        })
+        .catch((cause: unknown) => {
+          deps.log.warn(`uv installer failed: ${errorText(cause)}`);
+          if (!scope.signal.aborted) deps.supervisor()?.uvInstallFailed(errorText(cause));
         })
         .finally(() => { installing = false; });
       return { started: true };

@@ -19,7 +19,7 @@ import { LoadScope } from "./lifecycle.ts";
 import { PrefsStore } from "./prefs.ts";
 import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
 import { registerRpc } from "./rpc.ts";
-import type { EngineRef } from "./schemas.ts";
+import type { EngineRef, Settings } from "./schemas.ts";
 import { VoiceScopes } from "./scopes.ts";
 import { isNotFound, pruneScopes } from "./scopes-prune.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
@@ -34,11 +34,41 @@ export { rpcContract } from "./contract.ts";
 
 const DEFAULT_LOCAL_URL = "http://127.0.0.1:6789";
 const PRUNE_EVERY_MS = 3_600_000;
+/** Migration's provider switch: long enough for a model reload, short enough not to hold up loading. */
+const MIGRATION_PATCH_MS = 8_000;
 
 /** The local server's URL: the setting when it is loopback, else the default. */
 const localOf = (serverUrl: string) => (isLoopback(serverUrl) ? serverUrl : DEFAULT_LOCAL_URL);
 
-export default async function plugin(bb: BbPluginApi) {
+type Engines = Settings["engines"];
+
+/** Whether an engine slot uses the plugin-managed local server. */
+export const usesLocal = ({ main, backup }: Engines) => main === "local" || backup === "local";
+
+/**
+ * What an engines settings change needs: the chain forgets its breaker and
+ * health on any change, but the local server (and its loaded model) restarts
+ * only when it starts or stops being used.
+ */
+export function enginesChange(prev: Engines, next: Engines): { reset: boolean; restart: boolean } {
+  return { reset: JSON.stringify(prev) !== JSON.stringify(next), restart: usesLocal(prev) !== usesLocal(next) };
+}
+
+export interface PluginOptions {
+  /** For every request to a Kokoro server; tests pass a fake. */
+  fetch?: typeof fetch;
+  /** Timeout of migration's provider switch on the local server. */
+  migrationPatchMs?: number;
+}
+
+export default createPlugin();
+
+export function createPlugin(opts: PluginOptions = {}) {
+  return (bb: BbPluginApi) => plugin(bb, opts);
+}
+
+async function plugin(bb: BbPluginApi, opts: PluginOptions) {
+  const fetchImpl = opts.fetch;
   // Registered first so it runs last (hooks run LIFO): after hub, turns and pauser cleanup.
   const scope = new LoadScope();
   bb.onDispose(() => scope.dispose());
@@ -84,7 +114,7 @@ export default async function plugin(bb: BbPluginApi) {
       runtime: prefs.get().runtime,
       fetchConfig: async (base) => {
         try {
-          const body = await createKokoroClient(base).call<{ config?: unknown } | null>("GET", "/config");
+          const body = await createKokoroClient(base, fetchImpl).call<{ config?: unknown } | null>("GET", "/config");
           const config = body?.config;
           return config && typeof config === "object" && !Array.isArray(config) ? (config as Record<string, unknown>) : null;
         } catch {
@@ -100,7 +130,10 @@ export default async function plugin(bb: BbPluginApi) {
       },
       env: process.env,
       home: os.homedir(),
-      setLocalProvider: async (provider) => { await createKokoroClient(localUrl).call("PATCH", "/config", { provider }); },
+      setLocalProvider: async (provider) => {
+        const patchMs = opts.migrationPatchMs ?? MIGRATION_PATCH_MS;
+        await createKokoroClient(localUrl, fetchImpl, { default: 4_000, patch: patchMs }).call("PATCH", "/config", { provider });
+      },
     }));
     await settings.replace(result.settings);
     if (result.note) await bb.storage.kv.set("migration-note", result.note);
@@ -127,7 +160,7 @@ export default async function plugin(bb: BbPluginApi) {
   const engineAt = (url: string): Engine => {
     let engine = engineCache.get(url);
     if (!engine) {
-      engine = createKokoroEngine(url);
+      engine = createKokoroEngine(url, fetchImpl);
       engineCache.set(url, engine);
     }
     return engine;
@@ -210,11 +243,15 @@ export default async function plugin(bb: BbPluginApi) {
   });
   prefs.onChange((next) => publish("kokoro-prefs", next));
   settings.onChange((next, prev) => {
-    const { retention: r, engines: e } = next;
-    if (r.maxAgeDays !== prev.retention.maxAgeDays || r.maxEntries !== prev.retention.maxEntries) speechLog.prune();
-    if (JSON.stringify(e) !== JSON.stringify(prev.engines)) {
-      chain.reset();
-      supervisor?.restart();
+    // The new settings are already saved; a failure here must not fail the patch.
+    try {
+      const r = next.retention;
+      if (r.maxAgeDays !== prev.retention.maxAgeDays || r.maxEntries !== prev.retention.maxEntries) speechLog.prune();
+      const change = enginesChange(prev.engines, next.engines);
+      if (change.reset) chain.reset();
+      if (change.restart) supervisor?.restart();
+    } catch (cause) {
+      bb.log.warn(`settings change: ${errorText(cause)}`);
     }
   });
   pluginSettings.onChange((next) => {
@@ -230,6 +267,7 @@ export default async function plugin(bb: BbPluginApi) {
     chain,
     engines,
     localUrl: () => localUrl,
+    fetch: fetchImpl,
     scope,
     turns,
     supervisor: () => supervisor,
@@ -263,13 +301,10 @@ export default async function plugin(bb: BbPluginApi) {
   const manifest = loadModelManifest(serverDir);
   const modelPath = path.join(modelDir, manifest.find((f) => f.name.endsWith(".onnx"))!.name);
   const voicesPath = path.join(modelDir, manifest.find((f) => f.name.endsWith(".bin"))!.name);
-  const localClient = () => createKokoroClient(localUrl);
+  const localClient = () => createKokoroClient(localUrl, fetchImpl);
 
   const sup = new Supervisor({
-    needed: () => {
-      const { main, backup } = settings.get().engines;
-      return main === "local" || backup === "local";
-    },
+    needed: () => usesLocal(settings.get().engines),
     health: async () => {
       try {
         return (await engineAt(localUrl).health(scope.signal)).reachable;
