@@ -59,8 +59,3 @@ export async function syncRuntime(uv: string, serverDir: string, runtime: "cpu" 
     throw new SetupError(`Runtime install failed: ${last}`, `UV_PROJECT_ENVIRONMENT="${venv}" ${uv} ${args.join(" ")}`);
   }
 }
-
-export async function probeAudio(python: string, signal?: AbortSignal): Promise<boolean> {
-  const r = await run(python, ["-c", "import sounddevice as sd; sd.query_devices(kind='output')"], { signal });
-  return r.code === 0;
-}

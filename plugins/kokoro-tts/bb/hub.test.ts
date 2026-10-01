@@ -746,6 +746,20 @@ test("queue cap drops the oldest held job as interrupted", async () => {
   assert.deepEqual(speaks(), [1, 3, 4]);
 });
 
+test("stopAll interrupts every playing and held job and counts them", async () => {
+  const { hub, connect, statuses } = setup();
+  const b = connect("b", 20);
+  hub.speak(1, "A.", "ta", 1);
+  hub.speak(2, "B.", "tb", 1);
+  hub.speak(3, "C.", "tc", 1);
+  await tick();
+  assert.equal(hub.stopAll(), 3);
+  await tick();
+  assert.deepEqual(statuses.map(([id, s]) => [id, s]).sort(), [[1, "interrupted"], [2, "interrupted"], [3, "interrupted"]]);
+  assert.ok(b.json().some((m) => m.type === "stop" && m.sessionId === "ta"));
+  assert.equal(hub.stopAll(), 0, "nothing left");
+});
+
 test("the queue holds 16 by default", async () => {
   const { hub, connect, statuses } = setup();
   connect("b", 20);

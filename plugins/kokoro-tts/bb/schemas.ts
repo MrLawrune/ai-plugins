@@ -215,6 +215,7 @@ export const engineStatusSchema = z.object({
   health: healthResultSchema,
   breaker: z.enum(["closed", "open", "half-open"]),
 });
+export type EngineStatus = z.infer<typeof engineStatusSchema>;
 
 export const statusSchema = z.object({
   /** The main engine's health; the page header reads it. */

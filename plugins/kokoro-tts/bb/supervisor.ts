@@ -1,5 +1,6 @@
-// Brings the Kokoro server up: adopt a running one, else uv -> models ->
-// runtime -> audio probe -> spawn, and keep it alive. State feeds the page.
+// Brings the local Kokoro server up when an engine slot uses it: adopt a
+// running one, else uv -> models -> runtime -> spawn (headless), and keep it
+// alive. State feeds the page.
 import { isLoopback } from "./kokoro-client.ts";
 import type { Prefs, SetupState } from "./schemas.ts";
 import { SetupError } from "./setup/errors.ts";
@@ -12,13 +13,14 @@ export interface ServerProcess {
 }
 
 export interface SupervisorDeps {
+  /** Whether an engine slot uses the local server; when not, nothing is checked or spawned. */
+  needed(): boolean;
   health(): Promise<boolean>;
   prefs(): Prefs;
   serverUrl(): string;
   findUv(): string | null;
   ensureModels(onProgress: (fraction: number) => void, signal: AbortSignal): Promise<void>;
   syncRuntime(uv: string, runtime: "cpu" | "gpu", signal: AbortSignal): Promise<void>;
-  probeAudio(runtime: "cpu" | "gpu", signal: AbortSignal): Promise<boolean>;
   spawnServer(o: { runtime: "cpu" | "gpu"; headless: boolean }): ServerProcess;
   gpuAvailable(): boolean;
   /** The running server's configured engine provider and whether it can build a CUDA session. */
@@ -103,6 +105,12 @@ export class Supervisor {
 
   async #run(signal: AbortSignal): Promise<void> {
     const d = this.#deps;
+    if (!d.needed()) {
+      // A settings change that starts using the local server calls restart().
+      this.#set({ state: "external", detail: "No local engine is configured.", progress: null, fixCommand: null, headless: null });
+      while (!signal.aborted) await d.sleep(60_000, signal);
+      return;
+    }
     this.#set({ state: "checking", detail: null, progress: null, fixCommand: null, headless: null });
     if (await d.health()) return this.#watchExternal(signal);
 
@@ -138,10 +146,8 @@ export class Supervisor {
     await d.syncRuntime(uv, runtime, signal);
     if (signal.aborted) return;
 
-    const audio = await d.probeAudio(runtime, signal);
-    if (signal.aborted) return;
-    this.#set({ state: "starting", detail: null, headless: !audio });
-    const proc = d.spawnServer({ runtime, headless: !audio });
+    this.#set({ state: "starting", detail: null, headless: true });
+    const proc = d.spawnServer({ runtime, headless: true });
 
     const result = await this.#waitHealthy(proc, signal);
 
@@ -170,8 +176,7 @@ export class Supervisor {
       return;
     }
 
-    const notes = [audio ? null : "Headless: this host has no audio output.", providerNote].filter((n) => n !== null);
-    this.#set({ state: "running", detail: notes.length ? notes.join(" ") : null });
+    this.#set({ state: "running", detail: providerNote });
 
     const onAbort = () => { void this.#stopProc(proc); };
     signal.addEventListener("abort", onAbort, { once: true });

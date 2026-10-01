@@ -5,38 +5,55 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { ClientRegistry } from "./clients.ts";
-import { ConfigCache } from "./config-cache.ts";
+import { migrate } from "./coord/migrate.ts";
+import { MediaPauser } from "./coord/pause.ts";
+import { MuteStore, SettingsStore } from "./coord/settings.ts";
+import { SpeechLogStore } from "./coord/speech-log.ts";
+import { TurnCoordinator } from "./coord/turns.ts";
+import { EngineChain } from "./engines/chain.ts";
+import { createKokoroEngine } from "./engines/kokoro.ts";
+import type { Engine } from "./engines/types.ts";
 import { PlayerHub } from "./hub.ts";
-import { createKokoroClient, portOf, type KokoroClient } from "./kokoro-client.ts";
+import { createKokoroClient, isLoopback, portOf } from "./kokoro-client.ts";
+import { LoadScope } from "./lifecycle.ts";
 import { PrefsStore } from "./prefs.ts";
 import { PREVIEW_ID_BASE, SOUNDS } from "./protocol.ts";
-import type { ConfigResponse } from "./schemas.ts";
 import { registerRpc } from "./rpc.ts";
+import type { EngineRef } from "./schemas.ts";
 import { VoiceScopes } from "./scopes.ts";
 import { isNotFound, pruneScopes } from "./scopes-prune.ts";
 import { ensureModels, loadModelManifest } from "./setup/models.ts";
 import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
 import { spawnServer } from "./setup/process.ts";
-import { findExecutable, findUv, probeAudio, syncRuntime } from "./setup/uv.ts";
+import { findExecutable, findUv, syncRuntime } from "./setup/uv.ts";
 import { Supervisor } from "./supervisor.ts";
-import { sleep } from "./util.ts";
+import { errorText, sleep } from "./util.ts";
 import { registerVoice } from "./voice.ts";
 
 export { rpcContract } from "./contract.ts";
 
+const DEFAULT_LOCAL_URL = "http://127.0.0.1:6789";
+const PRUNE_EVERY_MS = 3_600_000;
+
+/** The local server's URL: the setting when it is loopback, else the default. */
+const localOf = (serverUrl: string) => (isLoopback(serverUrl) ? serverUrl : DEFAULT_LOCAL_URL);
+
 export default async function plugin(bb: BbPluginApi) {
-  const settings = bb.settings.define({
+  // Registered first so it runs last (hooks run LIFO): after hub, turns and pauser cleanup.
+  const scope = new LoadScope();
+  bb.onDispose(() => scope.dispose());
+  const publish = (channel: string, payload: unknown) => bb.realtime.publish(channel, payload);
+
+  const pluginSettings = bb.settings.define({
     serverUrl: {
       type: "string",
-      label: "Kokoro server URL",
-      description: "Where the Kokoro TTS server listens. A non-local URL is used as-is and never managed.",
-      default: "http://127.0.0.1:6789",
+      label: "Local Kokoro server URL",
+      description: "Where the plugin-managed Kokoro server listens.",
+      default: DEFAULT_LOCAL_URL,
     },
   });
-  let serverUrl = (await settings.get()).serverUrl;
-  let client: KokoroClient = createKokoroClient(serverUrl);
-  const config = new ConfigCache(() => client.call<ConfigResponse>("GET", "/config"));
-  bb.background.service("config-poll", { start: (signal) => config.poll(signal) });
+  const serverUrl = (await pluginSettings.get()).serverUrl;
+  let localUrl = localOf(serverUrl);
 
   // Registered up front so status/config/prefs RPC keep working even if the
   // install below turns out to be broken (no server/ next to this file).
@@ -44,7 +61,7 @@ export default async function plugin(bb: BbPluginApi) {
   await prefs.load();
   const scopes = new VoiceScopes(bb.storage.kv);
   await scopes.load();
-  scopes.onChange((kind) => { if (kind === "settings") bb.realtime.publish("kokoro-scopes", { changed: true }); });
+  scopes.onChange((kind) => { if (kind === "settings") publish("kokoro-scopes", { changed: true }); });
   bb.background.service("scopes-prune", {
     start: (signal) => pruneScopes(scopes, async (threadId) => {
       try {
@@ -55,30 +72,115 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }, signal),
   });
-  const registry = new ClientRegistry();
-  /** Entry keys whose speech asked the server to pause other media. */
+
+  const settings = new SettingsStore(bb.storage.kv);
+  const mute = new MuteStore(bb.storage.kv);
+  await mute.load();
+  if ((await settings.load()) === null) {
+    // First load of this version: the speech settings come over from the Kokoro server.
+    const result = await scope.track(migrate({
+      serverUrl,
+      rawPrefs: await bb.storage.kv.get<unknown>("prefs"),
+      runtime: prefs.get().runtime,
+      fetchConfig: async (base) => {
+        try {
+          const body = await createKokoroClient(base).call<{ config?: unknown } | null>("GET", "/config");
+          const config = body?.config;
+          return config && typeof config === "object" && !Array.isArray(config) ? (config as Record<string, unknown>) : null;
+        } catch {
+          return null;
+        }
+      },
+      readFile: (p) => {
+        try {
+          return fs.readFileSync(p, "utf8");
+        } catch {
+          return null;
+        }
+      },
+      env: process.env,
+      home: os.homedir(),
+      setLocalProvider: async (provider) => { await createKokoroClient(localUrl).call("PATCH", "/config", { provider }); },
+    }));
+    await settings.replace(result.settings);
+    if (result.note) await bb.storage.kv.set("migration-note", result.note);
+  }
+
+  const speechLog = new SpeechLogStore({
+    db: () => bb.storage.database(),
+    migrate: (db, statements) => bb.storage.migrate(db, statements),
+    limits: () => settings.get().retention,
+  });
+  speechLog.init();
+  bb.background.service("log-prune", {
+    async start(signal) {
+      while (!signal.aborted) {
+        speechLog.prune();
+        speechLog.reconcile();
+        await sleep(PRUNE_EVERY_MS, signal);
+      }
+    },
+  });
+
+  /** One adapter per engine URL, so each keeps its connection reuse. */
+  const engineCache = new Map<string, Engine>();
+  const engineAt = (url: string): Engine => {
+    let engine = engineCache.get(url);
+    if (!engine) {
+      engine = createKokoroEngine(url);
+      engineCache.set(url, engine);
+    }
+    return engine;
+  };
+  const engineFor = (ref: EngineRef) => engineAt(ref === "local" ? localUrl : ref.url);
+  const engines = () => {
+    const { main, backup } = settings.get().engines;
+    return { main: engineFor(main), backup: backup ? engineFor(backup) : null, mainRef: main, backupRef: backup };
+  };
+  const chain = new EngineChain({ engines });
+
+  const pauser = new MediaPauser();
+  bb.onDispose(() => pauser.dispose());
+  /** Entry keys whose speech paused other media; each end pairs with a start that went out. */
   const pausing = new Set<string>();
-  const hub = new PlayerHub({
+
+  const registry = new ClientRegistry();
+  const hub: PlayerHub = new PlayerHub({
     registry,
     routing: () => prefs.get(),
-    synthesize: (text, signal, opts) => client.synthesize(text, signal, opts),
+    synthesize: (text, signal, opts, entryId) => {
+      const s = settings.get();
+      return chain.synthesize(text, {
+        voice: opts?.voice ?? s.voice,
+        speed: opts?.speed ?? s.speed,
+        lang: opts?.lang ?? s.lang,
+        trim: s.trim,
+        leadInMs: s.lead_in_ms,
+        gapMs: s.gap_ms,
+        only: opts?.slot,
+      }, signal, (_slot, url) => {
+        if (entryId < PREVIEW_ID_BASE) speechLog.setEngine(entryId, url);
+      });
+    },
     log: (message) => bb.log.info(message),
-    // Other media is only paused for a window on this computer, and only
-    // when the config asks for it; each end pairs with a start that went out.
+    // Other media is only paused for a window on this computer, and only when the settings ask for it.
     speaking: ({ key, on, local }) => {
       if (on) {
-        if (!local || config.get()?.config.other_audio === "keep") return;
+        if (!local || settings.get().other_audio !== "pause") return;
         pausing.add(key);
-      } else if (!pausing.delete(key)) {
-        return;
+        void pauser.start(key, "pause").catch((cause: unknown) => bb.log.warn(`pause: ${errorText(cause)}`));
+      } else if (pausing.delete(key)) {
+        void pauser.end(key).catch((cause: unknown) => bb.log.warn(`pause: ${errorText(cause)}`));
       }
-      void client.call("POST", "/other-audio", { action: on ? "start" : "end", key }).catch(() => undefined);
     },
-    reportStatus: async (id, status, extra) => {
+    reportStatus: async (id, status, extra, sessionId) => {
       if (id >= PREVIEW_ID_BASE) return;
-      await client.call("POST", "/speech-log/status", {
-        id, status, first_audio_ms: extra?.firstAudioMs, error: extra?.error,
-      });
+      speechLog.setStatus(id, status, { first_audio_ms: extra?.firstAudioMs, error: extra?.error });
+      // Nothing could be spoken: a cue says so (an error mid-reply was already heard).
+      const s = settings.get();
+      if (status === "error" && extra?.error?.startsWith("unreachable") && !mute.get() && s.mode !== "quiet") {
+        hub.sound("error", s.sound_volume, sessionId);
+      }
     },
   });
   bb.onDispose(() => hub.dispose());
@@ -90,32 +192,63 @@ export default async function plugin(bb: BbPluginApi) {
       }
     },
   });
-  prefs.onChange((next, prev) => {
-    if (next.playback !== prev.playback) {
-      // Speech on the side just left would otherwise play on, out of reach of Stop.
-      hub.stop(null);
-      void client.call("POST", "/interrupt-all", {}).catch(() => undefined);
-    }
-    if (next.playOn !== prev.playOn || next.pinnedDevice !== prev.pinnedDevice || next.playback !== prev.playback) {
-      hub.routingChanged();
-    }
+
+  const turns = new TurnCoordinator({
+    settings: () => settings.get(),
+    muted: () => mute.get(),
+    log: speechLog,
+    hub,
+    publish,
+    warn: (message) => bb.log.warn(message),
   });
-  prefs.onChange((next) => bb.realtime.publish("kokoro-prefs", next));
+  bb.onDispose(() => turns.dispose());
 
   let supervisor: Supervisor | null = null;
-  settings.onChange((next) => {
-    client = createKokoroClient(next.serverUrl);
-    serverUrl = next.serverUrl;
-    // The old server's config and mute state no longer apply.
-    config.clear();
-    void config.refresh().catch(() => undefined);
+  prefs.onChange((next, prev) => {
+    if (next.playOn !== prev.playOn || next.pinnedDevice !== prev.pinnedDevice) hub.routingChanged();
+    if (next.runtime !== prev.runtime || next.manageServer !== prev.manageServer) supervisor?.restart();
+  });
+  prefs.onChange((next) => publish("kokoro-prefs", next));
+  settings.onChange((next, prev) => {
+    const { retention: r, engines: e } = next;
+    if (r.maxAgeDays !== prev.retention.maxAgeDays || r.maxEntries !== prev.retention.maxEntries) speechLog.prune();
+    if (JSON.stringify(e) !== JSON.stringify(prev.engines)) {
+      chain.reset();
+      supervisor?.restart();
+    }
+  });
+  pluginSettings.onChange((next) => {
+    localUrl = localOf(next.serverUrl);
+    chain.reset();
     supervisor?.restart();
   });
-  bb.log.info(`proxying to ${client.baseUrl}`);
-  registerRpc(bb, { client: () => client, supervisor: () => supervisor, prefs, config, hub, log: bb.log,
-    publish: (channel, payload) => bb.realtime.publish(channel, payload),
+
+  registerRpc(bb, {
+    settings,
+    mute,
+    speechLog,
+    chain,
+    engines,
+    localUrl: () => localUrl,
+    scope,
+    turns,
+    supervisor: () => supervisor,
+    prefs,
+    hub,
+    log: bb.log,
+    publish,
     scopes,
     threadParent: async (threadId) => (await bb.sdk.threads.get({ threadId })).parentThreadId,
+    threadExists: async (threadId) => {
+      try {
+        await bb.sdk.threads.get({ threadId, signal: scope.signal });
+        return true;
+      } catch (cause) {
+        // Only a thread known to be gone is refused; a failed lookup does not block a replay.
+        return !isNotFound(cause);
+      }
+    },
+    kv: bb.storage.kv,
   });
 
   const root = locatePluginRoot(path.dirname(fileURLToPath(import.meta.url)));
@@ -130,42 +263,42 @@ export default async function plugin(bb: BbPluginApi) {
   const manifest = loadModelManifest(serverDir);
   const modelPath = path.join(modelDir, manifest.find((f) => f.name.endsWith(".onnx"))!.name);
   const voicesPath = path.join(modelDir, manifest.find((f) => f.name.endsWith(".bin"))!.name);
+  const localClient = () => createKokoroClient(localUrl);
 
   const sup = new Supervisor({
+    needed: () => {
+      const { main, backup } = settings.get().engines;
+      return main === "local" || backup === "local";
+    },
     health: async () => {
       try {
-        await client.call("GET", "/health");
-        return true;
+        return (await engineAt(localUrl).health(scope.signal)).reachable;
       } catch {
         return false;
       }
     },
     prefs: () => prefs.get(),
-    serverUrl: () => serverUrl,
+    serverUrl: () => localUrl,
     findUv: () => findUv(),
     ensureModels: (onProgress, signal) => ensureModels(modelDir, manifest, { onProgress, signal }),
     syncRuntime: (uv, runtime, signal) => syncRuntime(uv, serverDir, runtime, venvDir(runtime, modelDir), signal),
-    probeAudio: (runtime, signal) => probeAudio(pythonIn(venvDir(runtime, modelDir)), signal),
     spawnServer: ({ runtime, headless }) =>
       spawnServer({
         python: pythonIn(venvDir(runtime, modelDir)),
-        serverDir, modelPath, voicesPath, port: portOf(serverUrl), headless,
+        serverDir, modelPath, voicesPath, port: portOf(localUrl), headless,
         log: (line) => bb.log.info(`[server] ${line}`),
       }),
     gpuAvailable: () => findExecutable("nvidia-smi") !== null,
     engineProvider: async () => {
-      const r = await config.refresh();
+      const r = await localClient().call<{ config: { provider: string }; providers_available: { cuda?: boolean } }>("GET", "/config");
       return { provider: r.config.provider, cudaAvailable: r.providers_available.cuda === true };
     },
-    setProvider: async (provider) => { config.set(await client.call<ConfigResponse>("PATCH", "/config", { provider })); },
+    setProvider: async (provider) => { await localClient().call("PATCH", "/config", { provider }); },
     sleep,
     now: Date.now,
   });
   supervisor = sup;
   bb.background.service("server", { start: (signal) => sup.start(signal) });
-  prefs.onChange((next, prev) => {
-    if (next.runtime !== prev.runtime || next.manageServer !== prev.manageServer) sup.restart();
-  });
 
   bb.http.experimental_websocket("/player", (ctx) => {
     const local = isLocalRequest(ctx.url, ctx.headers);
@@ -185,12 +318,11 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
   registerVoice(bb, {
-    client: () => client,
+    turns,
     hub,
-    prefs,
-    config,
+    settings: () => settings.get(),
     scopes,
-    publish: (channel, payload) => bb.realtime.publish(channel, payload),
+    publish,
     contract: readText(path.join(root, "contract", "tts-contract.md")),
     contractFull: readText(path.join(root, "contract", "tts-contract-full.md")),
   });

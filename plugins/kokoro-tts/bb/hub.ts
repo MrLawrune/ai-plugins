@@ -233,6 +233,13 @@ export class PlayerHub {
     }
   }
 
+  /** Stops every reply, playing or waiting; returns how many it ended. */
+  stopAll(): number {
+    const live = [...this.#jobs.values()].filter((job) => !job.finished);
+    this.stop(null);
+    return live.filter((job) => job.finished).length;
+  }
+
   /**
    * Keepalive from the server side. A hidden page's timers are throttled to about
    * once a minute, too slow to keep its socket from being closed as idle, but an

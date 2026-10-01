@@ -32,7 +32,7 @@ function deps(over: Omit<Partial<SupervisorDeps>, "prefs"> & { healthSeq?: boole
     findUv: () => "/usr/bin/uv",
     ensureModels: async (p) => { log.push("models"); p(1); },
     syncRuntime: async (_uv, rt) => { log.push(`sync:${rt}`); },
-    probeAudio: async () => true,
+    needed: () => true,
     spawnServer: (o) => { log.push(`spawn:${o.runtime}:${o.headless}`); const p = fakeProc(); procs.push(p); return p; },
     gpuAvailable: () => false,
     engineProvider: async () => ({ provider: "cpu", cudaAvailable: false }),
@@ -64,20 +64,42 @@ test("full managed setup reaches running, then stops the server on abort", async
   const ctl = new AbortController();
   const run = sup.start(ctl.signal);
   await until(() => sup.status().state === "running");
-  assert.deepEqual(log, ["models", "sync:cpu", "spawn:cpu:false"]);
+  assert.deepEqual(log, ["models", "sync:cpu", "spawn:cpu:true"]);
+  assert.equal(sup.status().headless, true);
+  assert.equal(sup.status().detail, null);
   ctl.abort();
   await run;
   assert.deepEqual(procs[0].kills, ["SIGTERM"]);
 });
 
-test("no audio output spawns headless", async () => {
-  const { d, log } = deps({ probeAudio: async () => false });
+test("not needed: external, never spawns", async () => {
+  let checks = 0;
+  const { d, log } = deps({ needed: () => false, health: async () => { checks++; return false; } });
   const sup = new Supervisor(d);
   const ctl = new AbortController();
   const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "external");
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sup.status(), {
+    state: "external", detail: "No local engine is configured.", progress: null, fixCommand: null, headless: null, gpuAvailable: false,
+  });
+  assert.deepEqual(log, []);
+  assert.equal(checks, 0, "no health checks against a local server nobody uses");
+  ctl.abort();
+  await run;
+});
+
+test("restart after becoming needed spawns", async () => {
+  let needed = false;
+  const { d, log } = deps({ needed: () => needed });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "external");
+  needed = true;
+  sup.restart();
   await until(() => sup.status().state === "running");
-  assert.equal(log.at(-1), "spawn:cpu:true");
-  assert.equal(sup.status().headless, true);
+  assert.deepEqual(log, ["models", "sync:cpu", "spawn:cpu:true"]);
   ctl.abort();
   await run;
 });
@@ -138,7 +160,7 @@ test("restart kills the managed server and runs setup again", async () => {
   await until(() => sup.status().state === "running");
   runtime = "gpu";
   sup.restart();
-  await until(() => log.includes("spawn:gpu:false"));
+  await until(() => log.includes("spawn:gpu:true"));
   assert.deepEqual(procs[0].kills, ["SIGTERM"]);
   ctl.abort();
   await run;
