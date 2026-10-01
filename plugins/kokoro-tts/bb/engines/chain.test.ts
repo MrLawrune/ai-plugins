@@ -37,7 +37,7 @@ test("main unreachable: backup speaks and the breaker opens", async () => {
 });
 test("main hangs: backup answers within the first-frame budget", async () => {
   const main = engine("m", hang); const backup = engine("b", ok);
-  const chain = new EngineChain({ engines: () => ({ main, backup }), firstFrameMs: 50 });
+  const chain = new EngineChain({ engines: () => ({ main, backup }), firstFrameMs: 50, firstFrameColdMs: 50 });
   const t0 = Date.now();
   const frames = await collect(chain.synthesize("Hello.", OPTS, new AbortController().signal));
   assert.equal(frames.length, 1); assert.ok(Date.now() - t0 < 1000);
@@ -127,16 +127,89 @@ test("a stall between frames throws stream 'engine stalled'", async () => {
   await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)),
     (e: EngineError) => e.kind === "stream" && e.message === "engine stalled");
 });
-test("cold health selects the long first-frame timeout", async () => {
-  const slow = (_c: string, signal: AbortSignal) => (async function* () {
-    await new Promise((res, rej) => { const t = setTimeout(res, 60); signal.addEventListener("abort", () => { clearTimeout(t); rej(new Error("aborted")); }); });
-    yield frame(1);
-  })();
-  const main = engine("m", slow);
+const slowFirst = (ms: number) => (_c: string, signal: AbortSignal) => (async function* () {
+  await new Promise((res, rej) => { const t = setTimeout(res, ms); signal.addEventListener("abort", () => { clearTimeout(t); rej(new Error("aborted")); }); });
+  yield frame(1);
+})();
+const COLD = { reachable: true, loaded: false, version: null, forwards: false, error: null };
+const WARM = { ...COLD, loaded: true };
+
+test("cold health selects the long first-frame timeout; audio makes the engine warm", async () => {
+  const main = engine("m", slowFirst(60));
   const chain = new EngineChain({ engines: () => ({ main, backup: null }), firstFrameMs: 20, firstFrameColdMs: 1000 });
-  chain.noteHealth("main", { reachable: true, loaded: false, version: null, forwards: false, error: null });
+  chain.noteHealth("main", COLD, "m");
   assert.equal((await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal))).length, 1);
+  // It just spoke, so its model is loaded: the short budget applies, and 60 ms is too slow.
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)), (e: EngineError) => e.kind === "unreachable");
+});
+test("an engine that has not spoken in 10 minutes gets the cold budget, even if health once said loaded", async () => {
+  let t = 0;
+  const main = engine("m", slowFirst(60));
+  const chain = new EngineChain({ engines: () => ({ main, backup: null }), now: () => t, firstFrameMs: 20, firstFrameColdMs: 1000 });
+  chain.noteHealth("main", WARM, "m");
+  assert.equal((await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal))).length, 1, "never spoke here: cold");
+  t += 9 * 60_000;
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)), (e: EngineError) => e.kind === "unreachable");
   chain.reset();
+  chain.noteHealth("main", WARM, "m");
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal));
+  t += 10 * 60_000; // a GPU engine may have unloaded since
+  assert.equal((await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal))).length, 1);
+});
+test("stale loaded:false health is replaced once the engine speaks", async () => {
+  // The settings page saw the model unloaded once and then closed: later outages must not keep the 30 s budget.
+  const t = 0;
+  let mode: "slow" | "hang" = "slow";
+  const main = engine("m", (c, s) => (mode === "slow" ? slowFirst(30)(c, s) : hang(c, s)));
+  const backup = engine("b", ok);
+  const chain = new EngineChain({ engines: () => ({ main, backup }), now: () => t, firstFrameMs: 50, firstFrameColdMs: 5000 });
+  chain.noteHealth("main", COLD, "m");
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal));
+  mode = "hang";
+  const t0 = Date.now();
+  const used: string[] = [];
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal, (s) => used.push(s)));
+  assert.deepEqual(used, ["backup"]);
+  assert.ok(Date.now() - t0 < 2000, "the short budget, not the cold one");
+});
+test("an engine whose last attempt went unanswered retries with the short budget", async () => {
+  const main = engine("m", hang);
+  const chain = new EngineChain({ engines: () => ({ main, backup: null }), firstFrameMs: 20, firstFrameColdMs: 300, cooldownMs: 0 });
+  const t0 = Date.now();
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)));
+  const cold = Date.now() - t0;
+  assert.ok(cold >= 280, `first attempt used the cold budget (${cold} ms)`);
+  const t1 = Date.now();
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)));
+  assert.ok(Date.now() - t1 < 200, "the retry used the short budget");
+});
+test("an old main failing after the engines changed leaves the new configuration's breaker alone", async () => {
+  let release: () => void = () => {};
+  const oldMain = engine("old", () => (async function* (): AsyncGenerator<Pcm> {
+    await new Promise<void>((r) => { release = r; });
+    throw new EngineError("unreachable", "unreachable: connect ECONNREFUSED");
+  })());
+  const newMain = engine("new", ok);
+  const backup = engine("b", ok);
+  let main: Engine = oldMain;
+  const chain = new EngineChain({ engines: () => ({ main, backup }) });
+  const inflight = collect(chain.synthesize("Hi.", OPTS, new AbortController().signal));
+  await new Promise((r) => setImmediate(r));
+  main = newMain;
+  chain.reset();
+  release();
+  await inflight; // the old reply still finishes, through the backup
+  assert.deepEqual(chain.breaker(), { state: "closed", until: null });
+  const used: string[] = [];
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal, (s) => used.push(s)));
+  assert.deepEqual(used, ["main"]);
+  assert.equal(newMain.calls.length, 1);
+});
+test("health for an engine no longer in its slot is ignored", async () => {
+  const main = engine("new", slowFirst(60));
+  const chain = new EngineChain({ engines: () => ({ main, backup: null }), firstFrameMs: 20, firstFrameColdMs: 1000 });
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)); // now warm
+  chain.noteHealth("main", COLD, "old");
   await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)), (e: EngineError) => e.kind === "unreachable");
 });
 test("consumer return() closes the engine iterator", async () => {

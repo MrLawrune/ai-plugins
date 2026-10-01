@@ -41,10 +41,12 @@ The main engine synthesizes every reply. It is either "This computer
 or "Another server" at a URL. An optional backup engine, set the same way,
 takes over when the main one fails before the reply's first audio:
 
-- Unreachable main engine (connection refused, HTTP 5xx, no first audio
-  within 8 s, or 30 s while its model is still loading): the reply goes to
-  the backup, and the main engine is skipped for 30 s before one reply tries
-  it again.
+- Unreachable main engine (connection refused, HTTP 5xx, or no first audio
+  in time): the reply goes to the backup, and the main engine is skipped
+  for 30 s before one reply tries it again. An engine gets 8 s to start
+  speaking, or 30 s when it may be loading its model: its health said the
+  model is not loaded, or it has not spoken in the last 10 minutes (a GPU
+  engine unloads when idle) and its last attempt did not go unanswered.
 - Main engine refuses the request (HTTP 4xx, such as an unknown voice): the
   reply goes to the backup, and the main engine stays in use.
 - No engine could speak the reply (no backup, or the backup failed too):

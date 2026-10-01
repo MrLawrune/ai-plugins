@@ -152,7 +152,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     } catch (cause) {
       h = { reachable: false, loaded: null, version: null, forwards: null, error: errorText(cause) };
     }
-    deps.chain.noteHealth(slot, h);
+    deps.chain.noteHealth(slot, h, engine.url);
     return h;
   };
   const status = async () => {

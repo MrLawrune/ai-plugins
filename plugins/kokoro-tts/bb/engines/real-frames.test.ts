@@ -131,8 +131,8 @@ test("two cold engines: the backup's audio near the end of its 30 s still plays 
     })(),
   };
   const chain = new EngineChain({ engines: () => ({ main, backup }) });
-  chain.noteHealth("main", cold);
-  chain.noteHealth("backup", cold);
+  chain.noteHealth("main", cold, main.url);
+  chain.noteHealth("backup", cold, backup.url);
   const statuses: [number, EntryStatus, unknown][] = [];
   const hub = new PlayerHub({
     registry: new ClientRegistry(),

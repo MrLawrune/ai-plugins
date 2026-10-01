@@ -53,9 +53,11 @@ and failover, a remote synthesis node, or where data lives.
 - The plugin sends each reply to an engine one sentence group at a time and
   adds the lead-in silence and the sentence gap itself.
 - Failover happens only before a reply's first audio. Unreachable (refused
-  connection, HTTP 5xx, no first audio within 8 s, or 30 s while the model
-  loads): the backup takes the reply,
-  and the main engine is skipped for 30 s before one reply tries it again.
+  connection, HTTP 5xx, or no first audio in time): the backup takes the
+  reply, and the main engine is skipped for 30 s before one reply tries it
+  again. An engine gets 8 s to start speaking, or 30 s when it may be
+  loading its model (its health said not loaded, or it has not spoken in
+  10 minutes and its last attempt was answered).
   A refused request (HTTP 4xx, such as an unknown voice): the backup takes
   that reply; the main engine stays in use.
 - No engine could speak the reply (no backup, or the backup failed too):

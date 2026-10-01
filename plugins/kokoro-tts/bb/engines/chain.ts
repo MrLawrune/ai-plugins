@@ -19,6 +19,18 @@ const UNREACHABLE = "unreachable: ";
 /** First-frame budget per attempt, and for an engine whose model is not loaded. */
 export const FIRST_FRAME_MS = 8_000;
 export const FIRST_FRAME_COLD_MS = 30_000;
+/** An engine that has not spoken for this long may have unloaded its model. */
+export const WARM_FOR_MS = 10 * 60_000;
+
+/** What the chain knows about one slot's engine, for picking its first-frame budget. */
+interface SlotState {
+  /** The engine's model is loaded: from /health, or true once it produced audio. */
+  loaded: boolean | null;
+  /** When it last produced a reply's first audio. */
+  audioAt: number | null;
+  /** Its last attempt went unanswered; a retry gets the short budget. */
+  unanswered: boolean;
+}
 
 function silence(ms: number): Uint8Array {
   return new Uint8Array(Math.round((SAMPLE_RATE * ms) / 1000) * 4);
@@ -114,7 +126,9 @@ export class EngineChain {
   private readonly deps: ChainDeps;
   private readonly now: () => number;
   private state: BreakerState = { state: "closed", until: null };
-  private readonly health = new Map<Slot, EngineHealth>();
+  private readonly slots = new Map<Slot, SlotState>();
+  /** Bumped by reset(): a reply started under an older configuration writes no state. */
+  private gen = 0;
 
   constructor(deps: ChainDeps) {
     this.deps = deps;
@@ -125,13 +139,36 @@ export class EngineChain {
     return { ...this.state };
   }
 
-  noteHealth(slot: Slot, h: EngineHealth): void {
-    this.health.set(slot, h);
+  /** A health probe of the engine at `url`; ignored when that slot now holds another engine. */
+  noteHealth(slot: Slot, h: EngineHealth, url: string): void {
+    const { main, backup } = this.deps.engines();
+    if ((slot === "main" ? main : backup)?.url !== url || !h.reachable) return;
+    this.slot(slot).loaded = h.loaded;
   }
 
+  /** The engines changed: forget the breaker and what was known about them. */
   reset(): void {
+    this.gen++;
     this.state = { state: "closed", until: null };
-    this.health.clear();
+    this.slots.clear();
+  }
+
+  private slot(slot: Slot): SlotState {
+    let s = this.slots.get(slot);
+    if (!s) this.slots.set(slot, (s = { loaded: null, audioAt: null, unanswered: false }));
+    return s;
+  }
+
+  /**
+   * The long budget for an engine that may be loading its model: its health
+   * said not loaded, or it has not spoken in WARM_FOR_MS (a GPU engine
+   * unloads when idle) and its last attempt did not go unanswered.
+   */
+  private cold(slot: Slot): boolean {
+    const s = this.slot(slot);
+    if (s.loaded === false) return true;
+    const recent = s.audioAt !== null && this.now() - s.audioAt < WARM_FOR_MS;
+    return !recent && !s.unanswered;
   }
 
   private candidates(only: Slot | undefined): Array<{ slot: Slot; engine: Engine }> {
@@ -163,6 +200,9 @@ export class EngineChain {
     const interFrameMs = this.deps.interFrameMs ?? 15_000;
     const cooldownMs = this.deps.cooldownMs ?? 30_000;
 
+    // State writes belong to the configuration this reply started under.
+    const gen = this.gen;
+    const current = () => gen === this.gen;
     // First chunk: try candidates in order until one produces audio.
     let won: { slot: Slot; engine: Engine; pull: Pull; first: Pcm } | undefined;
     let lastErr: EngineError | undefined;
@@ -170,7 +210,7 @@ export class EngineChain {
       let attempt: Pull | undefined;
       try {
         attempt = new Pull(engine, chunks[0], synth, signal);
-        const frame = await attempt.next(this.health.get(slot)?.loaded === false ? coldMs : firstFrameMs);
+        const frame = await attempt.next(this.cold(slot) ? coldMs : firstFrameMs);
         if (!frame) throw new EngineError("stream", "the engine returned no audio");
         won = { slot, engine, pull: attempt, first: frame };
         break;
@@ -184,8 +224,10 @@ export class EngineChain {
         if (err.kind === "unreachable" && !err.message.startsWith(UNREACHABLE)) {
           err = new EngineError("unreachable", `${UNREACHABLE}${err.message}`, err.status);
         }
-        if (!only && slot === "main" && err.kind === "unreachable") {
-          this.state = { state: "open", until: this.now() + cooldownMs };
+        if (err.kind === "unreachable" && current()) {
+          // What /health said no longer holds; the next attempt gets the short budget.
+          Object.assign(this.slot(slot), { loaded: null, unanswered: true });
+          if (!only && slot === "main") this.state = { state: "open", until: this.now() + cooldownMs };
         }
         lastErr = err;
       }
@@ -195,7 +237,10 @@ export class EngineChain {
     let pull = won.pull;
 
     try {
-      if (!only && won.slot === "main") this.state = { state: "closed", until: null };
+      if (current()) {
+        Object.assign(this.slot(won.slot), { loaded: true, audioAt: this.now(), unanswered: false });
+        if (!only && won.slot === "main") this.state = { state: "closed", until: null };
+      }
       onEngine?.(won.slot, committed.url);
       yield* pieces(silence(leadInMs), won.first);
       for (let i = 0; ; ) {
