@@ -50,11 +50,18 @@ class Pull {
     this.signal = signal;
     if (signal.aborted) this.attempt.abort();
     else signal.addEventListener("abort", this.onAbort, { once: true });
-    this.it = engine.synthesize(chunk, opts, this.attempt.signal)[Symbol.asyncIterator]();
+    try {
+      this.it = engine.synthesize(chunk, opts, this.attempt.signal)[Symbol.asyncIterator]();
+    } catch (e) {
+      signal.removeEventListener("abort", this.onAbort);
+      throw e;
+    }
   }
 
   /** Next frame, or null at the end. Throws Timeout (after aborting the attempt) when `ms` elapses first. */
   async next(ms: number): Promise<Pcm | null> {
+    // An abort listener added now would never fire; don't wait on the engine or the timer.
+    if (this.attempt.signal.aborted) throw new EngineError("cancelled", "cancelled");
     let timer: ReturnType<typeof setTimeout> | undefined;
     let stop: (() => void) | undefined;
     const pulled = this.it.next();
@@ -147,14 +154,15 @@ export class EngineChain {
     let won: { slot: Slot; engine: Engine; pull: Pull; first: Pcm } | undefined;
     let lastErr: EngineError | undefined;
     for (const { slot, engine } of this.candidates(only)) {
-      const attempt = new Pull(engine, chunks[0], synth, signal);
+      let attempt: Pull | undefined;
       try {
+        attempt = new Pull(engine, chunks[0], synth, signal);
         const frame = await attempt.next(this.health.get(slot)?.loaded === false ? coldMs : firstFrameMs);
         if (!frame) throw new EngineError("stream", "the engine returned no audio");
         won = { slot, engine, pull: attempt, first: frame };
         break;
       } catch (e) {
-        await attempt.close();
+        await attempt?.close();
         if (signal.aborted || (e instanceof EngineError && e.kind === "cancelled")) throw new EngineError("cancelled", "cancelled");
         let err: EngineError;
         if (e instanceof Timeout) err = new EngineError("unreachable", `${UNREACHABLE}no audio from ${engine.url} in time`);
@@ -174,7 +182,7 @@ export class EngineChain {
     let pull = won.pull;
 
     try {
-      if (!only && won.slot === "main" && this.state.state === "half-open") this.state = { state: "closed", until: null };
+      if (!only && won.slot === "main") this.state = { state: "closed", until: null };
       onEngine?.(won.slot, committed.url);
       yield concat(silence(leadInMs), won.first);
       for (let i = 0; ; ) {
@@ -193,7 +201,9 @@ export class EngineChain {
         } catch (e) {
           if (signal.aborted || (e instanceof EngineError && e.kind === "cancelled")) throw new EngineError("cancelled", "cancelled");
           if (e instanceof Timeout) throw new EngineError("stream", "engine stalled");
-          throw new EngineError("stream", message(e), e instanceof EngineError ? e.status : undefined);
+          // Only "nothing could be spoken" errors may carry the unreachable prefix.
+          const detail = message(e).replace(/^unreachable: /, "");
+          throw new EngineError("stream", `engine failed mid-reply: ${detail}`, e instanceof EngineError ? e.status : undefined);
         }
         yield frame;
       }

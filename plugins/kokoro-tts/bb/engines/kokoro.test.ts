@@ -88,3 +88,19 @@ test("voices parses the list", async () => {
   assert.deepEqual(await e.voices(new AbortController().signal), [v]);
   assert.equal(url, "http://h/voices");
 });
+
+const stalls = (async (_u: string, init?: RequestInit) => new Promise<Response>((_, rej) => {
+  init?.signal?.addEventListener("abort", () => rej(init.signal?.reason));
+})) as typeof fetch;
+
+test("health reports a timeout as a timeout", async () => {
+  const e = createKokoroEngine("http://h", stalls, { queryTimeoutMs: 20 });
+  const h = await e.health(new AbortController().signal);
+  assert.equal(h.reachable, false); assert.equal(h.error, "timed out after 20 ms");
+});
+
+test("health rethrows when the caller aborts", async () => {
+  const e = createKokoroEngine("http://h", stalls, { queryTimeoutMs: 5000 });
+  const ac = new AbortController(); setTimeout(() => ac.abort(), 10);
+  await assert.rejects(e.health(ac.signal), isKind("cancelled"));
+});

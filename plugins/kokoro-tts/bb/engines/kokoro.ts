@@ -16,13 +16,17 @@ function reason(cause: unknown): string {
   return String(cause);
 }
 
-export function createKokoroEngine(url: string, fetchImpl: typeof fetch = fetch): Engine {
+export function createKokoroEngine(
+  url: string,
+  fetchImpl: typeof fetch = fetch,
+  { queryTimeoutMs = QUERY_TIMEOUT_MS }: { queryTimeoutMs?: number } = {},
+): Engine {
   const base = url.replace(/\/+$/, "");
 
   /** GET a JSON endpoint; the deadline covers the body too. */
   async function getJson(path: string, signal: AbortSignal): Promise<unknown> {
     const deadline = new AbortController();
-    const timer = setTimeout(() => deadline.abort(), QUERY_TIMEOUT_MS);
+    const timer = setTimeout(() => deadline.abort(new Error(`timed out after ${queryTimeoutMs} ms`)), queryTimeoutMs);
     try {
       const res = await fetchImpl(`${base}${path}`, { signal: AbortSignal.any([signal, deadline.signal]) });
       if (!res.ok) {
@@ -30,6 +34,10 @@ export function createKokoroEngine(url: string, fetchImpl: typeof fetch = fetch)
         throw new Error(`HTTP ${res.status}`);
       }
       return await res.json();
+    } catch (cause) {
+      if (signal.aborted) throw new EngineError("cancelled", "cancelled");
+      if (deadline.signal.aborted) throw deadline.signal.reason;
+      throw cause;
     } finally {
       clearTimeout(timer);
     }
@@ -47,6 +55,7 @@ export function createKokoroEngine(url: string, fetchImpl: typeof fetch = fetch)
         error: null,
       };
     } catch (cause) {
+      if (cause instanceof EngineError && cause.kind === "cancelled") throw cause;
       return { reachable: false, loaded: null, version: null, forwards: null, error: reason(cause) };
     }
   }

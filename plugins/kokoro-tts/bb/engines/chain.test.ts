@@ -150,3 +150,49 @@ test("consumer return() closes the engine iterator", async () => {
   await it.return(undefined);
   assert.equal(closed, true);
 });
+
+// --- review fixes ---
+
+test("a refused later chunk is a stream error without the 'unreachable: ' prefix", async () => {
+  let n = 0;
+  const main = engine("m", () => (n++ === 0 ? ok() : (async function* (): AsyncGenerator<Pcm> {
+    throw new EngineError("unreachable", "unreachable: connect ECONNREFUSED 10.0.99.50:6789");
+  })()));
+  const chain = new EngineChain({ engines: () => ({ main, backup: null }) });
+  await assert.rejects(collect(chain.synthesize("One. " + "x".repeat(230) + ".", OPTS, new AbortController().signal)), (e: EngineError) =>
+    e.kind === "stream" && e.message === "engine failed mid-reply: connect ECONNREFUSED 10.0.99.50:6789");
+});
+test("main succeeding while the breaker is open (no backup) closes it", async () => {
+  let down = true;
+  const main = engine("m", () => (down ? fail("unreachable") : ok()));
+  const chain = new EngineChain({ engines: () => ({ main, backup: null }), now: () => 0, cooldownMs: 1000 });
+  await assert.rejects(collect(chain.synthesize("A.", OPTS, new AbortController().signal)));
+  assert.equal(chain.breaker().state, "open");
+  down = false;
+  await collect(chain.synthesize("B.", OPTS, new AbortController().signal));
+  assert.deepEqual(chain.breaker(), { state: "closed", until: null });
+});
+test("an already-aborted reply is cancelled at once even if the engine ignores its signal", async () => {
+  const deaf = engine("m", () => (async function* (): AsyncGenerator<Pcm> { await new Promise(() => {}); })());
+  const chain = new EngineChain({ engines: () => ({ main: deaf, backup: null }), firstFrameMs: 5000 });
+  const ac = new AbortController(); ac.abort();
+  const t0 = Date.now();
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, ac.signal)), (e: EngineError) => e.kind === "cancelled");
+  assert.ok(Date.now() - t0 < 1000);
+});
+test("an engine whose synthesize throws synchronously still fails over", async () => {
+  const main: Engine = { ...engine("m", ok), synthesize: () => { throw new EngineError("unreachable", "boom"); } };
+  const backup = engine("b", ok);
+  const chain = new EngineChain({ engines: () => ({ main, backup }) });
+  const used: string[] = [];
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal, (s) => used.push(s)));
+  assert.deepEqual(used, ["backup"]); assert.equal(chain.breaker().state, "open");
+});
+test("a stream failure before the first frame fails over with the breaker unchanged", async () => {
+  const main = engine("m", () => (async function* (): AsyncGenerator<Pcm> { throw new EngineError("stream", "bad frame length 6"); })());
+  const backup = engine("b", ok);
+  const chain = new EngineChain({ engines: () => ({ main, backup }) });
+  const used: string[] = [];
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal, (s) => used.push(s)));
+  assert.deepEqual(used, ["backup"]); assert.equal(chain.breaker().state, "closed");
+});
