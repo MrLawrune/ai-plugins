@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { applyCuePrefs, extractDirective, firstSentence, fullText, route, routeCue, routeTurn } from "./turn.ts";
+import { applyCuePrefs, capSpeech, extractDirective, firstSentence, FULL_MAX_CHARS, fullText, route, routeCue, routeTurn } from "./turn.ts";
 import type { Mode } from "../schemas.ts";
 
 const fx = JSON.parse(fs.readFileSync(new URL("./fixtures/turn.json", import.meta.url), "utf8"));
@@ -44,4 +44,23 @@ test("conversational and verbose route like brief (ceiling 4)", () => {
     assert.deepEqual(route('Done.\n::kokoro-tts{weight="sound:attention"}', mode, on), { action: "sound", sound: "attention" }, mode);
     assert.deepEqual(route('Done.\n::kokoro-tts{weight="speech" say="Tests pass."}', mode, on), route('Done.\n::kokoro-tts{weight="speech" say="Tests pass."}', "brief", on), mode);
   }
+});
+
+test("a directive say is capped at FULL_MAX_CHARS, cut at a sentence end", () => {
+  const sentence = "This sentence is exactly forty characters. ";
+  const say = sentence.repeat(500).trim(); // about 21,500 characters
+  const r = routeTurn(`Done.\n::kokoro-tts{weight="speech" say="${say}"}`, "brief");
+  assert.equal(r.action, "speech");
+  const text = (r as { text: string }).text;
+  assert.ok(Array.from(text).length <= FULL_MAX_CHARS);
+  assert.ok(Array.from(text).length > FULL_MAX_CHARS - sentence.length);
+  assert.ok(text.endsWith("characters."));
+});
+
+test("capSpeech leaves short text alone and cuts long text without a sentence end hard", () => {
+  assert.equal(capSpeech("Short."), "Short.");
+  const long = "x".repeat(FULL_MAX_CHARS + 50);
+  assert.equal(capSpeech(long), "x".repeat(FULL_MAX_CHARS));
+  // Code points, not UTF-16 units.
+  assert.equal(Array.from(capSpeech("😀".repeat(FULL_MAX_CHARS + 1))).length, FULL_MAX_CHARS);
 });

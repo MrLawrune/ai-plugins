@@ -7,7 +7,7 @@ import type { ClientRegistry } from "./clients.ts";
 import { MAX_PIECE_BYTES } from "./engines/types.ts";
 import type { SynthOptions } from "./kokoro-client.ts";
 import { encodeFrame, parseClientMsg, type ServerMsg, type SoundName } from "./protocol.ts";
-import type { PlayOn, PublicClientInfo } from "./schemas.ts";
+import type { Mode, PlayOn, PublicClientInfo } from "./schemas.ts";
 
 export interface SocketLike {
   send(data: string | Uint8Array): void;
@@ -15,20 +15,26 @@ export interface SocketLike {
 }
 
 export type EntryStatus = "playing" | "done" | "interrupted" | "error";
+/**
+ * What a status report carries. `errorCue` is set on an `error` that left the
+ * reply with no engine audio at all (not "no client"): the mode the reply was
+ * routed with, so the caller can play the error cue.
+ */
+export interface StatusExtra { firstAudioMs?: number; error?: string; errorCue?: Mode }
 
 export interface HubDeps {
   registry: ClientRegistry;
   routing: () => { playOn: PlayOn; pinnedDevice: string | null };
   synthesize: (text: string, signal: AbortSignal, opts: SynthOptions | undefined, entryId: number) => AsyncIterable<Uint8Array>;
-  reportStatus: (
-    entryId: number, status: EntryStatus, extra: { firstAudioMs?: number; error?: string } | undefined, sessionId: string,
-  ) => Promise<void>;
+  reportStatus: (entryId: number, status: EntryStatus, extra: StatusExtra | undefined, sessionId: string) => Promise<void>;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   /** How long a target has to ack playback, counted from the first audio frame it was sent. */
   ackTimeoutMs?: number;
   /** How long synthesis may take to produce the first audio frame, counted from when it starts. */
   backstopMs?: number;
+  /** Most PCM bytes one reply may produce; past it the reply ends as "reply too long". */
+  maxReplyBytes?: number;
   /** Most replies that may wait their turn; past it the oldest waiting one is dropped. */
   maxQueued?: number;
   /** A reply started synthesizing (it became the one being delivered). */
@@ -57,6 +63,10 @@ interface Job {
   gain: number;
   opts?: SynthOptions;
   frames: Uint8Array[];
+  /** PCM bytes synthesis has produced for this reply (kept when frames are released). */
+  bytes: number;
+  /** The mode the reply was routed with, when a failure with nothing heard plays the error cue. */
+  errorCue: Mode | null;
   complete: boolean;
   targets: Set<string>;
   tried: Set<string>;
@@ -82,6 +92,13 @@ const HOLD_MS = 15 * 60_000;
 /** Largest decoded PCM frame the hub forwards to a window. */
 export const MAX_FRAME_BYTES = MAX_PIECE_BYTES;
 const MAX_QUEUED = 16;
+/**
+ * First-frame backstop: past the chain's worst case of two cold attempts
+ * (30 s each) plus attempt cleanup, so the backup always gets its full budget.
+ */
+export const BACKSTOP_MS = 75_000;
+/** Per-reply audio budget: 64 MiB of float32 at 24 kHz is about 11.6 minutes. */
+export const MAX_REPLY_BYTES = 64 << 20;
 
 export class PlayerHub {
   #deps: HubDeps;
@@ -196,10 +213,12 @@ export class PlayerHub {
     this.#syncHolders();
   }
 
-  speak(entryId: number, text: string, sessionId: string, gain: number, opts?: SynthOptions): void {
+  /** `errorCue`: the reply's mode, when a failure that leaves it unheard should play the error cue. */
+  speak(entryId: number, text: string, sessionId: string, gain: number, opts?: SynthOptions, errorCue?: Mode): void {
     this.stop(sessionId);
     const job: Job = {
-      entryId, text, sessionId, gain, opts, frames: [], complete: false, targets: new Set(), tried: new Set(),
+      entryId, text, sessionId, gain, opts, frames: [], bytes: 0, errorCue: errorCue ?? null, complete: false,
+      targets: new Set(), tried: new Set(),
       attempts: 0, acked: false, finished: false, abort: new AbortController(), timer: null, pumping: false,
       backstop: null, report: Promise.resolve(), speaking: false, doneTimer: null,
     };
@@ -381,8 +400,7 @@ export class PlayerHub {
   /** The reply's full length plus slack; until synthesis completes, a generous minimum. */
   #armDoneWatch(job: Job): void {
     this.#clearTimer(job.doneTimer);
-    const bytes = job.frames.reduce((n, f) => n + f.length, 0);
-    const seconds = bytes / 4 / (this.#deps.sampleRate ?? 24_000);
+    const seconds = job.bytes / 4 / (this.#deps.sampleRate ?? 24_000);
     const ms = job.complete ? seconds * 1_000 + 30_000 : Math.max(120_000, seconds * 2_000);
     job.doneTimer = this.#setTimer(() => {
       if (job.finished) return;
@@ -476,7 +494,7 @@ export class PlayerHub {
         for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
         this.#finish(job, "error", "synthesis timeout");
       }
-    }, this.#deps.backstopMs ?? 60_000);
+    }, this.#deps.backstopMs ?? BACKSTOP_MS);
     this.#deps.onSynthStart?.(job.entryId);
     try {
       for await (const pcm of this.#deps.synthesize(job.text, job.abort.signal, job.opts, job.entryId)) {
@@ -485,6 +503,12 @@ export class PlayerHub {
         if (bad) {
           for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
           this.#finish(job, "error", bad);
+          return;
+        }
+        job.bytes += pcm.length;
+        if (job.bytes > (this.#deps.maxReplyBytes ?? MAX_REPLY_BYTES)) {
+          for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
+          this.#finish(job, "error", "reply too long");
           return;
         }
         job.frames.push(pcm);
@@ -548,7 +572,10 @@ export class PlayerHub {
     this.#clearTimer(job.backstop);
     this.#jobs.delete(job.entryId);
     job.abort.abort();
-    this.#report(job, status, error ? { error } : undefined);
+    job.frames = [];
+    // Nothing of the reply was synthesized, so nothing was heard: say so with a cue.
+    const cue = status === "error" && job.bytes === 0 && error !== "no client" && job.errorCue ? { errorCue: job.errorCue } : {};
+    this.#report(job, status, error ? { error, ...cue } : undefined);
     const held = this.#held.indexOf(job);
     if (held >= 0) this.#held.splice(held, 1);
     if (this.#current === job) {
@@ -558,7 +585,7 @@ export class PlayerHub {
   }
 
   /** Chains a reportStatus call after the job's previous one so entries land in order. */
-  #report(job: Job, status: EntryStatus, extra?: { firstAudioMs?: number; error?: string }): void {
+  #report(job: Job, status: EntryStatus, extra?: StatusExtra): void {
     job.report = job.report.then(() => this.#deps.reportStatus(job.entryId, status, extra, job.sessionId)).catch(() => undefined);
   }
 

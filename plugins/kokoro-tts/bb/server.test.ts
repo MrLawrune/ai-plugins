@@ -2,7 +2,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import * as net from "node:net";
 import * as path from "node:path";
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { NOTE_LOCAL_SWITCH_FAILED, NOTE_UNREADABLE } from "./coord/migrate.ts";
 import { DEFAULT_SETTINGS, type Settings } from "./schemas.ts";
 import plugin, { createPlugin, enginesChange, isLocalRequest } from "./server.ts";
@@ -34,9 +34,9 @@ async function load() {
   return host;
 }
 
-const waitFor = async (pred: () => boolean, ms = 3_000) => {
+const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 3_000) => {
   const end = Date.now() + ms;
-  while (!pred() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  while (!(await pred()) && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
 };
 
 test("with no Kokoro server reachable the plugin loads on defaults with a note, and registers its routes", async () => {
@@ -83,19 +83,61 @@ test("retention change prunes now", async () => {
   }
 });
 
+async function playerSocket(host: Awaited<ReturnType<typeof load>>) {
+  const socket = await host.harness.experimental_openWebSocket("/player");
+  await socket.receive(JSON.stringify({ type: "hello", clientId: "w1", deviceName: "Desk", focusedAt: 1, audioUnlocked: true }));
+  const messages = () => socket.sent.filter((d): d is string => typeof d === "string").map((d) => JSON.parse(d) as { type: string; sound?: string });
+  return { messages };
+}
+
+async function lastEntry(host: Awaited<ReturnType<typeof load>>, threadId: string) {
+  const log = (await host.harness.callRpc("speechLog", { threadId })) as { entries: { status: string; error?: string }[] };
+  return log.entries.at(-1);
+}
+
 test("no engine reachable and no backup: the reply is logged unreachable and the error cue plays", async () => {
   const host = await load();
   try {
-    const socket = await host.harness.experimental_openWebSocket("/player");
-    await socket.receive(JSON.stringify({ type: "hello", clientId: "w1", deviceName: "Desk", focusedAt: 1, audioUnlocked: true }));
-    assert.deepEqual(await host.harness.callRpc("replay", { threadId: "t1", text: "Hello there." }), { status: "playing" });
-    const messages = () => socket.sent.filter((d): d is string => typeof d === "string").map((d) => JSON.parse(d) as { type: string; sound?: string });
+    const { messages } = await playerSocket(host);
+    await host.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "t1", parentThreadId: null, projectId: "p1" }), lastAssistantText: "Hello there.",
+    });
     await waitFor(() => messages().some((m) => m.type === "sound"));
     assert.ok(messages().some((m) => m.type === "sound" && m.sound === "error"), JSON.stringify(messages()));
-    const log = (await host.harness.callRpc("speechLog", { threadId: "t1" })) as { entries: { status: string; error?: string }[] };
-    assert.equal(log.entries.length, 1);
-    assert.equal(log.entries[0]!.status, "error");
-    assert.match(log.entries[0]!.error ?? "", /^unreachable/);
+    const entry = await lastEntry(host, "t1");
+    assert.equal(entry?.status, "error");
+    assert.match(entry?.error ?? "", /^unreachable/);
+  } finally {
+    await host.harness.dispose();
+  }
+});
+
+test("the error cue follows the reply's own mode: global quiet, thread brief still cues", async () => {
+  const host = await load();
+  try {
+    await host.harness.callRpc("patchConfig", { mode: "quiet" });
+    await host.harness.callRpc("setVoiceScope", { threadId: "t1", projectId: "p1", scope: "thread", patch: { mode: "brief" } });
+    const { messages } = await playerSocket(host);
+    await host.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "t1", parentThreadId: null, projectId: "p1" }), lastAssistantText: "Hello there.",
+    });
+    await waitFor(() => messages().some((m) => m.type === "sound"));
+    assert.ok(messages().some((m) => m.type === "sound" && m.sound === "error"), JSON.stringify(messages()));
+  } finally {
+    await host.harness.dispose();
+  }
+});
+
+test("a failed replay returns playing, logs the error, and plays no cue", async () => {
+  const host = await load();
+  try {
+    const { messages } = await playerSocket(host);
+    assert.deepEqual(await host.harness.callRpc("replay", { threadId: "t1", text: "Hello there." }), { status: "playing" });
+    await waitFor(async () => (await lastEntry(host, "t1"))?.status === "error");
+    const entry = await lastEntry(host, "t1");
+    assert.equal(entry?.status, "error");
+    assert.match(entry?.error ?? "", /^unreachable/);
+    assert.ok(!messages().some((m) => m.type === "sound"), JSON.stringify(messages()));
   } finally {
     await host.harness.dispose();
   }

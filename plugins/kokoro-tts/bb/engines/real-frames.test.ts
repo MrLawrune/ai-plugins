@@ -2,10 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ClientRegistry } from "../clients.ts";
-import { MAX_FRAME_BYTES, PlayerHub, type EntryStatus, type SocketLike } from "../hub.ts";
-import { EngineChain, type ReplyOpts } from "./chain.ts";
+import { BACKSTOP_MS, MAX_FRAME_BYTES, PlayerHub, type EntryStatus, type SocketLike } from "../hub.ts";
+import { EngineChain, FIRST_FRAME_COLD_MS, type ReplyOpts } from "./chain.ts";
 import { createKokoroEngine } from "./kokoro.ts";
-import { MAX_PIECE_BYTES, type Pcm } from "./types.ts";
+import { MAX_PIECE_BYTES, type Engine, type Pcm } from "./types.ts";
 
 // Recorded: 452 characters, no sentence break, speed 1 -> 2,437,120 bytes;
 // 212 characters at speed 0.5 -> 2,328,576; 221 characters at speed 0.7 -> 1,918,976.
@@ -111,3 +111,47 @@ for (const [name, size, speed] of [["normal speed", LONG, 1], ["slow speed", SLO
     }
   });
 }
+
+test("two cold engines: the backup's audio near the end of its 30 s still plays through the hub", async (t) => {
+  assert.ok(BACKSTOP_MS >= 2 * FIRST_FRAME_COLD_MS + 10_000, "the hub backstop leaves room for attempt cleanup");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const cold = { reachable: true, loaded: false, version: null, forwards: false, error: null };
+  const base = { health: async () => cold, voices: async () => [] };
+  const main: Engine = {
+    ...base, url: "http://main",
+    synthesize: (_c, _o, signal) => (async function* (): AsyncGenerator<Pcm> {
+      await new Promise((_, rej) => signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true }));
+    })(),
+  };
+  const backup: Engine = {
+    ...base, url: "http://backup",
+    synthesize: () => (async function* (): AsyncGenerator<Pcm> {
+      await new Promise((r) => setTimeout(r, FIRST_FRAME_COLD_MS - 100));
+      yield new Uint8Array(400);
+    })(),
+  };
+  const chain = new EngineChain({ engines: () => ({ main, backup }) });
+  chain.noteHealth("main", cold);
+  chain.noteHealth("backup", cold);
+  const statuses: [number, EntryStatus, unknown][] = [];
+  const hub = new PlayerHub({
+    registry: new ClientRegistry(),
+    routing: () => ({ playOn: "follow", pinnedDevice: null }),
+    synthesize: (text, signal) => chain.synthesize(text, OPTS, signal),
+    reportStatus: async (id, s, extra) => { statuses.push([id, s, extra]); },
+  });
+  try {
+    const sock = new FakeSocket();
+    hub.onMessage(sock, JSON.stringify({ type: "hello", clientId: "c", deviceName: "c", focusedAt: 1, audioUnlocked: true }));
+    hub.speak(7, "Hi.", "t1", 1);
+    for (let ms = 0; ms < 2 * FIRST_FRAME_COLD_MS && !sock.json.some((m) => m.type === "end"); ms += 100) {
+      t.mock.timers.tick(100);
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    }
+    assert.ok(sock.json.some((m) => m.type === "end"), JSON.stringify(sock.json));
+    assert.equal(sock.frames.length, 1);
+    assert.equal(statuses.length, 0);
+  } finally {
+    hub.dispose();
+  }
+});

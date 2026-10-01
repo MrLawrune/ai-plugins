@@ -112,14 +112,22 @@ export function fullText(text: string): string | null {
     .replace(INLINE_CODE, (_, code: string) => speakInlineCode(code));
   text = pyStrip(text);
   if (!text) return null;
+  const capped = capSpeech(text);
+  return capped === text ? text : capped + "\n\nThe rest is on screen.";
+}
+
+/**
+ * Speech text cut to at most FULL_MAX_CHARS code points, at the last sentence
+ * or line end past the halfway point when there is one. Every spoken text
+ * goes through it, so no reply asks an engine for more than about six minutes.
+ */
+export function capSpeech(text: string): string {
   const chars = codePoints(text);
-  if (chars.length > FULL_MAX_CHARS) {
-    let cut = chars.slice(0, FULL_MAX_CHARS);
-    const end = Math.max(rfind(cut, ". "), rfind(cut, "\n"));
-    if (end > Math.floor(FULL_MAX_CHARS / 2)) cut = cut.slice(0, end + 1);
-    text = cut.join("").replace(new RegExp(`${S}+$`, "u"), "") + "\n\nThe rest is on screen.";
-  }
-  return text;
+  if (chars.length <= FULL_MAX_CHARS) return text;
+  let cut = chars.slice(0, FULL_MAX_CHARS);
+  const end = Math.max(rfind(cut, ". "), rfind(cut, "\n"));
+  if (end > Math.floor(FULL_MAX_CHARS / 2)) cut = cut.slice(0, end + 1);
+  return cut.join("").replace(new RegExp(`${S}+$`, "u"), "");
 }
 
 /** Decide what a finished turn sounds like, before the cue switches. */
@@ -140,7 +148,7 @@ export function routeTurn(text: string, mode: Mode): Routed {
   if (weight === "silent") return { action: "silent" };
   if (weight.startsWith("sound:")) return { action: "sound", sound: weight.slice("sound:".length) as Sound };
   if (!content) return { action: "sound", sound: "done" };
-  return { action: "speech", text: content };
+  return { action: "speech", text: capSpeech(content) };
 }
 
 /** Gate the standalone attention ping an agent's pending prompt plays. */

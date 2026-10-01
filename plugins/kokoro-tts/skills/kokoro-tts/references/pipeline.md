@@ -58,8 +58,14 @@ and failover, a remote synthesis node, or where data lives.
   and the main engine is skipped for 30 s before one reply tries it again.
   A refused request (HTTP 4xx, such as an unknown voice): the backup takes
   that reply; the main engine stays in use.
-- No backup and the main engine unreachable: an error cue plays (not in
-  quiet mode or while muted) and the log entry reads `unreachable`.
+- No engine could speak the reply (no backup, or the backup failed too):
+  an error cue plays and the log entry gives the reason (`unreachable ...`
+  when no engine answered). The cue uses the reply's own mode (thread,
+  project, or global), so quiet mode and mute silence it. A failure after
+  some audio played, and a replay, play no cue.
+- A reply speaks at most 6000 characters, cut at a sentence or line end,
+  and at most 64 MiB of audio (about 11 minutes); past that it stops and
+  is logged `reply too long`.
 - An engine that would forward to another server is refused; point it at
   the synthesizing server directly.
 

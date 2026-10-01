@@ -16,6 +16,9 @@ export interface ChainDeps {
 }
 
 const UNREACHABLE = "unreachable: ";
+/** First-frame budget per attempt, and for an engine whose model is not loaded. */
+export const FIRST_FRAME_MS = 8_000;
+export const FIRST_FRAME_COLD_MS = 30_000;
 
 function silence(ms: number): Uint8Array {
   return new Uint8Array(Math.round((SAMPLE_RATE * ms) / 1000) * 4);
@@ -155,8 +158,8 @@ export class EngineChain {
     const chunks = sentenceChunks(text);
     if (chunks.length === 0) return;
     const { leadInMs, gapMs, only, ...synth } = opts;
-    const firstFrameMs = this.deps.firstFrameMs ?? 8_000;
-    const coldMs = this.deps.firstFrameColdMs ?? 30_000;
+    const firstFrameMs = this.deps.firstFrameMs ?? FIRST_FRAME_MS;
+    const coldMs = this.deps.firstFrameColdMs ?? FIRST_FRAME_COLD_MS;
     const interFrameMs = this.deps.interFrameMs ?? 15_000;
     const cooldownMs = this.deps.cooldownMs ?? 30_000;
 

@@ -57,7 +57,7 @@ test("speaks the directive and logs the unstripped say", async () => {
   await turns.idle("t", 'Done.\n::kokoro-tts{weight="speech" say="Tests **pass**."}', brief);
   assert.deepEqual(calls, [
     ["add", "Tests **pass**.", "t", "af_sky"],
-    ["speak", 1, "Tests pass.", "t", 1],
+    ["speak", 1, "Tests pass.", "t", 1, undefined, "brief"],
   ]);
   assert.deepEqual(published, [
     { threadId: "t", pending: true },
@@ -138,7 +138,7 @@ test("empty after strip plays done and logs empty", async () => {
 test("strip_markdown off speaks the say as written", async () => {
   const { turns, speaks } = harness({ settings: { strip_markdown: false, speech_gain: 0.8 } });
   await turns.idle("t", 'x\n::kokoro-tts{weight="speech" say="**Yes**."}', brief);
-  assert.deepEqual(speaks(), [["speak", 1, "**Yes**.", "t", 0.8]]);
+  assert.deepEqual(speaks(), [["speak", 1, "**Yes**.", "t", 0.8, undefined, "brief"]]);
 });
 
 test("ambient caps speech to a sound", async () => {
@@ -195,7 +195,7 @@ test("replay bypasses mute and repeat", async () => {
   await h.turns.idle("t", A, brief);
   assert.equal(h.speaks().length, 0);
   assert.deepEqual(await h.turns.replay("t", ` **${A}** `), { status: "playing" });
-  assert.deepEqual(h.calls, [["add", `**${A}**`, "t", "af_sky"], ["speak", 1, A, "t", 1]]);
+  assert.deepEqual(h.calls, [["add", `**${A}**`, "t", "af_sky"], ["speak", 1, A, "t", 1, undefined, undefined]]);
 });
 
 test("replay caps text at 2000 code points and reports empty after strip", async () => {
@@ -294,4 +294,13 @@ test("delete drops rows and state even when stop throws", async () => {
   failHub.clear();
   await h.turns.idle("t", A, brief);
   assert.equal(h.speaks().length, 2, "repeat key forgotten");
+});
+
+test("every spoken text is capped at FULL_MAX_CHARS before it reaches the hub", async () => {
+  const { turns, speaks } = harness();
+  const say = "Twenty character set. ".repeat(1000).trim();
+  await turns.idle("t", `x\n::kokoro-tts{weight="speech" say="${say}"}`, brief);
+  const spoken = speaks()[0][2] as string;
+  assert.ok(Array.from(spoken).length <= 6000);
+  assert.ok(spoken.endsWith("set."));
 });

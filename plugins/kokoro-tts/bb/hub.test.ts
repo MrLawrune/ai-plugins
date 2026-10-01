@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ClientRegistry } from "./clients.ts";
-import { MAX_FRAME_BYTES, PlayerHub, type EntryStatus, type HubDeps, type SocketLike } from "./hub.ts";
+import { BACKSTOP_MS, MAX_FRAME_BYTES, MAX_REPLY_BYTES, PlayerHub, type EntryStatus, type HubDeps, type SocketLike } from "./hub.ts";
 import type { PlayOn } from "./schemas.ts";
 
 class FakeSocket implements SocketLike {
@@ -46,7 +46,7 @@ function fakeClock() {
 function setup(opts: {
   frames?: number; gate?: Promise<void>; gateAt?: number; playOn?: PlayOn; throwAfter?: number; registry?: ClientRegistry;
   clock?: ReturnType<typeof fakeClock>; routing?: () => { playOn: PlayOn; pinnedDevice: string | null };
-  synthesize?: HubDeps["synthesize"]; maxQueued?: number;
+  synthesize?: HubDeps["synthesize"]; maxQueued?: number; maxReplyBytes?: number;
 } = {}) {
   const clock = opts.clock ?? fakeClock();
   const registry = opts.registry ?? new ClientRegistry();
@@ -74,6 +74,7 @@ function setup(opts: {
     },
     reportStatus: async (id, s, extra, sessionId) => { statuses.push([id, s, extra]); sessions.push([id, sessionId]); },
     maxQueued: opts.maxQueued,
+    maxReplyBytes: opts.maxReplyBytes,
     onSynthStart: (id) => { synthStarts.push(id); },
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
@@ -175,7 +176,7 @@ test("no audio within the synthesis deadline -> error synthesis timeout", async 
   const b = connect("b", 20);
   hub.speak(7, "Hello.", "t1", 1);
   await tick();
-  clock.advance(59_999);
+  clock.advance(74_999);
   await tick();
   assert.equal(statuses.length, 0);
   clock.advance(1);
@@ -768,7 +769,7 @@ test("the queue holds 16 by default", async () => {
   assert.deepEqual(statuses, [[1, "interrupted", undefined]]);
 });
 
-test("backstop is 60 s from dispatch", async () => {
+test("backstop is 75 s from dispatch", async () => {
   const never = new Promise<void>(() => {});
   const { hub, connect, status, clock, statuses } = setup({
     async *synthesize(text) {
@@ -784,13 +785,13 @@ test("backstop is 60 s from dispatch", async () => {
   clock.advance(50_000);
   status(b, 1, "done");
   await tick();
-  clock.advance(10_000); // 60 s after speak(A)
+  clock.advance(25_000); // 75 s after speak(A)
   await tick();
   assert.deepEqual(statuses.filter(([id]) => id === 2), []);
   clock.advance(49_999);
   await tick();
   assert.deepEqual(statuses.filter(([id]) => id === 2), []);
-  clock.advance(1); // 60 s after A started synthesizing
+  clock.advance(1); // 75 s after A started synthesizing
   await tick();
   assert.deepEqual(statuses.filter(([id]) => id === 2), [[2, "error", { error: "synthesis timeout" }]]);
   assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "ta" });
@@ -820,3 +821,76 @@ test("a frame that is not whole float32 samples ends the job", async () => {
   assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "t1" });
   assert.deepEqual(statuses, [[7, "error", { error: "bad frame length 6" }]]);
 });
+
+test("an error before any engine audio carries the reply's mode for the error cue", async () => {
+  const { hub, connect, statuses } = setup({ async *synthesize() { throw new Error("unreachable: connect ECONNREFUSED"); } });
+  connect("b", 20);
+  hub.speak(7, "Hi.", "t1", 1, undefined, "conversational");
+  await tick();
+  assert.deepEqual(statuses, [[7, "error", { error: "unreachable: connect ECONNREFUSED", errorCue: "conversational" }]]);
+});
+
+test("any pre-audio error cues, not only unreachable: a backup that answered 4xx last", async () => {
+  const { hub, connect, statuses } = setup({ async *synthesize() { throw new Error("this server forwards to another one"); } });
+  connect("b", 20);
+  hub.speak(7, "Hi.", "t1", 1, undefined, "brief");
+  await tick();
+  assert.deepEqual(statuses, [[7, "error", { error: "this server forwards to another one", errorCue: "brief" }]]);
+});
+
+test("the synthesis backstop with nothing heard cues too", async () => {
+  const { hub, connect, clock, statuses } = setup({ gate: new Promise<void>(() => {}), gateAt: 0 });
+  connect("b", 20);
+  hub.speak(7, "Hi.", "t1", 1, undefined, "brief");
+  await tick();
+  clock.advance(BACKSTOP_MS);
+  await tick();
+  assert.deepEqual(statuses, [[7, "error", { error: "synthesis timeout", errorCue: "brief" }]]);
+});
+
+test("no error cue mid-reply, for no client, or without a mode (replay, preview)", async () => {
+  const mid = setup({ throwAfter: 1 });
+  mid.connect("b", 20);
+  mid.hub.speak(7, "Hi.", "t1", 1, undefined, "brief");
+  await tick();
+  assert.deepEqual(mid.statuses, [[7, "error", { error: "synth failed" }]]);
+
+  const nobody = setup({ async *synthesize() { throw new Error("unreachable: x"); } });
+  nobody.hub.speak(8, "Hi.", "t1", 1, undefined, "brief");
+  await tick();
+  assert.deepEqual(nobody.statuses, [[8, "error", { error: "no client" }]]);
+
+  const replay = setup({ async *synthesize() { throw new Error("unreachable: x"); } });
+  replay.connect("b", 20);
+  replay.hub.speak(9, "Hi.", "t1", 1);
+  await tick();
+  assert.deepEqual(replay.statuses, [[9, "error", { error: "unreachable: x" }]]);
+});
+
+test("a reply past its audio budget stops synthesis and its windows and ends as too long", async () => {
+  assert.equal(MAX_REPLY_BYTES, 64 << 20);
+  let pulled = 0;
+  const { hub, connect, statuses, aborted } = setup({
+    maxReplyBytes: 40,
+    async *synthesize(_t, signal) {
+      for (;;) {
+        if (signal.aborted) { aborted.push(true); return; }
+        pulled++;
+        yield new Uint8Array(16);
+      }
+    },
+  });
+  const b = connect("b", 20);
+  hub.speak(7, "Hello.", "t1", 1, undefined, "brief");
+  await tick();
+  assert.equal(b.frames(), 2, "two 16-byte pieces fit, the third would pass 40");
+  assert.ok(pulled <= 4, "synthesis stopped");
+  assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "t1" });
+  // Audio was heard, so no error cue.
+  assert.deepEqual(statuses, [[7, "error", { error: "reply too long" }]]);
+  // The next reply is not held behind it.
+  hub.speak(8, "Next.", "t2", 1);
+  await tick();
+  assert.ok(b.json().some((m) => m.type === "speak" && m.entryId === 8));
+});
+

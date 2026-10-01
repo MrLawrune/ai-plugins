@@ -7,7 +7,7 @@ import type { Mode, Settings } from "../schemas.ts";
 import { LruMap, LruSet } from "./lru.ts";
 import { stripMarkdown } from "./speakable.ts";
 import type { SpeechLogStore } from "./speech-log.ts";
-import { extractDirective, route, routeCue } from "./turn.ts";
+import { capSpeech, extractDirective, route, routeCue } from "./turn.ts";
 
 export interface TurnDeps {
   settings: () => Settings;
@@ -157,14 +157,18 @@ export class TurnCoordinator {
       hub.sound("done", s.sound_volume, threadId);
       return { action: "sound", text: entry.text };
     }
-    this.#speak(entry.id, spoken, threadId, s.speech_gain);
+    this.#speak(entry.id, spoken, threadId, s.speech_gain, mode);
     return { action: "speech", text: entry.text };
   }
 
-  /** hub.speak for a logged row; a throw marks the row `error` so it never stays `queued`. */
-  #speak(entryId: number, spoken: string, threadId: string, gain: number): void {
+  /**
+   * hub.speak for a logged row; a throw marks the row `error` so it never stays
+   * `queued`. `mode`: the reply's mode, for the error cue when nothing could be
+   * spoken (a replay is the user's own action and gets none).
+   */
+  #speak(entryId: number, spoken: string, threadId: string, gain: number, mode?: Mode): void {
     try {
-      this.#deps.hub.speak(entryId, spoken, threadId, gain);
+      this.#deps.hub.speak(entryId, capSpeech(spoken), threadId, gain, undefined, mode);
     } catch (cause) {
       this.#deps.log.setStatus(entryId, "error", { error: message(cause) });
       throw cause;

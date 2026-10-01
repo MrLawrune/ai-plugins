@@ -47,10 +47,16 @@ takes over when the main one fails before the reply's first audio:
   it again.
 - Main engine refuses the request (HTTP 4xx, such as an unknown voice): the
   reply goes to the backup, and the main engine stays in use.
-- No backup: an unreachable main engine ends the reply with an error cue
-  (silent in quiet mode or while muted) and logs it as `unreachable`.
+- No engine could speak the reply (no backup, or the backup failed too):
+  the reply ends with an error cue and its log entry gives the reason
+  (`unreachable ...` when no engine answered). The cue follows the reply's
+  own mode, as set for its thread or project or globally, so it is silent
+  in quiet mode, and while muted. A reply that fails after some of it
+  played, and a replay, get no cue.
 
-Once a reply has played audio it stays on that engine. Both engines use the
+Once a reply has played audio it stays on that engine. A reply speaks at
+most 6000 characters (cut at a sentence or line end) and at most about 11
+minutes of audio; past that it stops and is logged `reply too long`. Both engines use the
 voice settings. The settings page shows each engine's reachability and
 whether the main engine is being skipped.
 

@@ -209,10 +209,10 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     reportStatus: async (id, status, extra, sessionId) => {
       if (id >= PREVIEW_ID_BASE) return;
       speechLog.setStatus(id, status, { first_audio_ms: extra?.firstAudioMs, error: extra?.error });
-      // Nothing could be spoken: a cue says so (an error mid-reply was already heard).
-      const s = settings.get();
-      if (status === "error" && extra?.error?.startsWith("unreachable") && !mute.get() && s.mode !== "quiet") {
-        hub.sound("error", s.sound_volume, sessionId);
+      // No engine could speak the reply: a cue says so, in the mode the reply was
+      // routed with (an error mid-reply was already heard, and replays get none).
+      if (status === "error" && extra?.errorCue && extra.errorCue !== "quiet" && !mute.get()) {
+        hub.sound("error", settings.get().sound_volume, sessionId);
       }
     },
   });

@@ -8,6 +8,7 @@ import type { TurnCoordinator } from "./coord/turns.ts";
 import type { EngineChain, Slot } from "./engines/chain.ts";
 import type { Engine, EngineHealth } from "./engines/types.ts";
 import type { PlayerHub } from "./hub.ts";
+import { capSpeech } from "./coord/turn.ts";
 import { createKokoroClient } from "./kokoro-client.ts";
 import type { LoadScope } from "./lifecycle.ts";
 import { PREVIEW_ID_BASE } from "./protocol.ts";
@@ -235,7 +236,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     preview: async (input) => {
       if (!deps.hub.hasReadyClient()) return { status: "no_window" };
       const s = deps.settings.get();
-      deps.hub.speak(nextPreviewId(), input.text?.trim() || PREVIEW_TEXT, "preview", input.speech_gain ?? s.speech_gain, {
+      deps.hub.speak(nextPreviewId(), capSpeech(input.text?.trim() || PREVIEW_TEXT), "preview", input.speech_gain ?? s.speech_gain, {
         voice: input.voice, speed: input.speed, lang: input.lang, slot: input.slot ?? "main",
       });
       return { status: "playing" };

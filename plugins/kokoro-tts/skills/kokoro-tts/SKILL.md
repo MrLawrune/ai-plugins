@@ -104,8 +104,9 @@ No audio:
    (Route). A pinned device that dropped off holds replies for up to 15
    minutes; a phone with its screen locked plays them when reopened.
 4. The reply card's status: "Error: unreachable ..." means no engine
-   answered (an error cue plays unless the mode is quiet or muted); other
-   errors name the engine's reason, such as an unknown voice.
+   answered; other errors name the engine's reason, such as an unknown
+   voice. When no engine could speak any of a reply an error cue plays,
+   unless the thread's mode is quiet or Kokoro is muted.
 5. Plugin log in bb: engine and player lines, and the local server's output
    tagged `[server]`.
 
