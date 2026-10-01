@@ -129,3 +129,11 @@ test("synthesize asks for terminated frames, forwards options, and rejects an em
   assert.equal((sent.headers as Record<string, string>)["X-Kokoro-Frames"], "2");
   assert.deepEqual(JSON.parse(String(sent.body)), { text: "Hi.", voice: "af_sky", speed: 1.2 });
 });
+
+test("readFrames rejects a frame length that is not float32 or over 1 MiB", async () => {
+  for (const n of [6, (1 << 20) + 4]) {
+    await assert.rejects(async () => {
+      for await (const _ of readFrames(streamOf([marker(n)]), { markers: true })) { /* drain */ }
+    }, new RegExp(`bad frame length ${n}`));
+  }
+});

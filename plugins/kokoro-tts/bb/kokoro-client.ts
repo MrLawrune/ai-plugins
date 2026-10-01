@@ -16,6 +16,8 @@ export interface SynthOptions {
   voice?: string | Record<string, number>;
   speed?: number;
   lang?: string;
+  /** Previews pick one engine: no failover. */
+  slot?: "main" | "backup";
 }
 
 export interface KokoroClient {
@@ -26,6 +28,7 @@ export interface KokoroClient {
 
 const FRAME_END = 0;
 const FRAME_ERROR = 0xffffffff;
+const FRAME_MAX = 1 << 20;
 
 export function createKokoroClient(
   baseUrl: string,
@@ -77,10 +80,11 @@ export function createKokoroClient(
   }
 
   async function* synthesize(text: string, signal: AbortSignal, opts: SynthOptions = {}): AsyncGenerator<Uint8Array> {
+    const { slot: _slot, ...params } = opts;
     const res = await fetchImpl(`${base}/synthesize`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Kokoro-Frames": "2" },
-      body: JSON.stringify({ text, ...opts }),
+      body: JSON.stringify({ text, ...params }),
       signal,
     });
     if (!res.ok || !res.body) {
@@ -122,7 +126,7 @@ export async function* readFrames(
         const n = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0, true);
         if (opts.markers && n === FRAME_END) { ended = true; return; }
         if (opts.markers && n === FRAME_ERROR) throw new ServerError("synthesis failed mid-reply");
-        if (n % 4 !== 0) throw new ServerError(`frame of ${n} bytes is not float32 audio`);
+        if (n % 4 !== 0 || n > FRAME_MAX) throw new ServerError(`bad frame length ${n}`);
         if (buf.length < 4 + n) break;
         yield buf.slice(4, 4 + n);
         buf = buf.slice(4 + n);
