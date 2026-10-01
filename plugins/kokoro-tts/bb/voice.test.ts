@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import type { KokoroClient } from "./kokoro-client.ts";
@@ -25,6 +25,12 @@ interface Options {
   /** Paths whose call rejects. */
   fail?: string[];
 }
+
+// Every host a test makes is disposed after it, pass or fail.
+const hosts: ReturnType<typeof createFakePluginHost>[] = [];
+afterEach(async () => {
+  for (const host of hosts.splice(0)) await host.harness.dispose();
+});
 
 async function seed(s: VoiceScopes, d: Partial<ScopesData>) {
   for (const [id, v] of Object.entries(d.threads ?? {})) await s.set("thread", id, v);
@@ -62,6 +68,7 @@ async function harness(o: Options = {}) {
   await seed(scopes, o.scopes ?? {});
   failing = true;
   const host = createFakePluginHost();
+  hosts.push(host);
   registerVoice(host.bb, {
     scopes,
     client: () => client,

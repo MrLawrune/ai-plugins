@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { ensureModels, type ModelFile } from "./models.ts";
+import { tmpDir } from "../test-tmp.ts";
 
 const BODY = Buffer.from("kokoro-model-bytes-".repeat(500));
 const SHA = createHash("sha256").update(BODY).digest("hex");
@@ -29,7 +29,7 @@ async function serve(opts: { honorRange: boolean }) {
   return { url: `http://127.0.0.1:${port}/m.bin`, requests, close: () => server.close() };
 }
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "kokoro-models-"));
+const tmp = () => tmpDir("kokoro-models-");
 const file = (url: string, sha = SHA): ModelFile => ({ name: "m.bin", url, size: BODY.length, sha256: sha });
 
 test("fresh download verifies and writes a marker", async () => {

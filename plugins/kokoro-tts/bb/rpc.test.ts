@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { ConfigCache } from "./config-cache.ts";
@@ -12,6 +12,12 @@ import { CONFIG_RESPONSE, HEALTH } from "./page/fixtures.ts";
 interface HarnessExtra {
   threadParent?: (threadId: string) => Promise<string | null | undefined>;
 }
+
+// Every host a test makes is disposed after it, pass or fail.
+const hosts: ReturnType<typeof createFakePluginHost>[] = [];
+afterEach(async () => {
+  for (const host of hosts.splice(0)) await host.harness.dispose();
+});
 
 async function harness(
   playback: "client" | "server" = "server",
@@ -38,6 +44,7 @@ async function harness(
     async *synthesize() {},
   };
   const host = createFakePluginHost();
+  hosts.push(host);
   const prefs = new PrefsStore(host.bb.storage.kv);
   const config = new ConfigCache(() => client.call<ConfigResponse>("GET", "/config"));
   const scopes = new VoiceScopes(host.bb.storage.kv);

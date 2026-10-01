@@ -5,12 +5,16 @@ import plugin, { isLocalRequest } from "./server.ts";
 
 test("server registers the player socket and sound routes", async () => {
   const host = createFakePluginHost();
-  await plugin(host.bb);
-  const routes = host.harness.registrations.httpRoutes.map((r) => `${r.method} ${r.path}`);
-  assert.ok(routes.includes("GET /sound/attention"), routes.join(", "));
-  assert.deepEqual(host.harness.registrations.websocketRoutes.map((r) => r.path), ["/player"]);
-  const res = await host.harness.fetchHttp("GET", "/sound/done");
-  assert.equal(res.headers.get("content-type"), "audio/wav");
+  try {
+    await plugin(host.bb);
+    const routes = host.harness.registrations.httpRoutes.map((r) => `${r.method} ${r.path}`);
+    assert.ok(routes.includes("GET /sound/attention"), routes.join(", "));
+    assert.deepEqual(host.harness.registrations.websocketRoutes.map((r) => r.path), ["/player"]);
+    const res = await host.harness.fetchHttp("GET", "/sound/done");
+    assert.equal(res.headers.get("content-type"), "audio/wav");
+  } finally {
+    await host.harness.dispose();
+  }
 });
 
 test("a player socket is local when its browser's address is this computer's", () => {
