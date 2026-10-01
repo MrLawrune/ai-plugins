@@ -220,3 +220,68 @@ export const turnResultSchema = z.object({
   say_text: z.string().optional(),
 });
 export type TurnResult = z.infer<typeof turnResultSchema>;
+
+export const engineRefSchema = z.union([z.literal("local"), z.object({ url: z.string().trim().url().max(512) }).strict()]);
+export type EngineRef = z.infer<typeof engineRefSchema>;
+
+export const retentionSchema = z
+  .object({
+    maxAgeDays: z.number().int().min(1).max(90),
+    maxEntries: z.number().int().min(100).max(10000),
+  })
+  .strict();
+
+/** Plugin-owned speech settings (the `settings` KV row). */
+export const settingsSchema = z
+  .object({
+    v: z.literal(1),
+    mode: modeSchema,
+    voice: voiceSchema,
+    speed: z.number().min(0.5).max(2),
+    lang: z.string().trim().min(1).max(16),
+    trim: z.boolean(),
+    strip_markdown: z.boolean(),
+    speech_gain: z.number().min(0).max(2),
+    sound_volume: z.number().min(0).max(2),
+    working_sound: z.boolean(),
+    attention_sound: z.boolean(),
+    lead_in_ms: z.number().int().min(0).max(2000),
+    gap_ms: z.number().int().min(0).max(1000),
+    other_audio: z.enum(["keep", "pause"]),
+    engines: z.object({ main: engineRefSchema, backup: engineRefSchema.nullable() }).strict(),
+    retention: retentionSchema,
+  })
+  .strict();
+export type Settings = z.infer<typeof settingsSchema>;
+
+export const DEFAULT_SETTINGS: Settings = {
+  v: 1,
+  mode: "brief",
+  voice: "af_sky",
+  speed: 1,
+  lang: "en-us",
+  trim: true,
+  strip_markdown: true,
+  speech_gain: 1,
+  sound_volume: 1,
+  working_sound: true,
+  attention_sound: true,
+  lead_in_ms: 300,
+  gap_ms: 60,
+  other_audio: "keep",
+  engines: { main: "local", backup: null },
+  retention: { maxAgeDays: 7, maxEntries: 1000 },
+};
+
+export const settingsPatchSchema = settingsSchema.omit({ v: true }).partial().strict();
+export type SettingsPatch = z.infer<typeof settingsPatchSchema>;
+
+/** The local engine's runtime knobs, which stay server-owned. */
+export const runtimeConfigSchema = z.object({
+  provider: z.enum(["cpu", "cuda", "openvino"]),
+  idle_unload_minutes: z.number().int().min(0),
+  intra_op_threads: z.number().int().min(0),
+  gpu_mem_limit_mb: z.number().int().min(0),
+});
+export const runtimePatchSchema = runtimeConfigSchema.partial().strict();
+export type RuntimePatch = z.infer<typeof runtimePatchSchema>;
