@@ -27,6 +27,8 @@ export const NOTE_SERVER_PLAYBACK = "Speech now always plays in a bb window; pla
 export const NOTE_UNREADABLE = "Your previous Kokoro settings could not be read, so defaults are in use.";
 export const NOTE_LOCAL_SWITCH_FAILED =
   "The local Kokoro server could not be switched to synthesize by itself; as a backup it may forward to the main server first.";
+export const NOTE_BAD_ENGINE_URL =
+  "Your previous remote Kokoro server address could not be used, so this computer's server is the main engine.";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -48,9 +50,9 @@ function readOldFile(d: MigrateDeps): Record<string, unknown> | null {
   }
 }
 
-/** A `{ url }` engine ref, or null when the url would not pass the settings schema. */
+/** A `{ url }` engine ref with trailing slashes trimmed, or null when the url would not pass the settings schema. */
 function urlRef(url: string): Settings["engines"]["main"] | null {
-  const parsed = engineRefSchema.safeParse({ url });
+  const parsed = engineRefSchema.safeParse({ url: url.replace(/\/+$/, "") });
   return parsed.success ? parsed.data : null;
 }
 
@@ -66,12 +68,14 @@ export async function migrate(d: MigrateDeps): Promise<MigrationResult> {
 
     settings.engines = { main: "local", backup: null };
     if (!isLoopback(d.serverUrl)) {
-      const main = urlRef(d.serverUrl.replace(/\/+$/, ""));
+      const main = urlRef(d.serverUrl);
       if (main) settings.engines = { main, backup: null };
+      else notes.push(NOTE_BAD_ENGINE_URL);
     } else if (old?.provider === "remote" && typeof old.remote_url === "string") {
       const main = urlRef(old.remote_url);
       const backup = old.fallback_to_cpu === false ? null : "local";
       if (main) settings.engines = { main, backup };
+      else notes.push(NOTE_BAD_ENGINE_URL);
       if (main && backup === "local") {
         try {
           await d.setLocalProvider(d.runtime === "gpu" ? "cuda" : "cpu");

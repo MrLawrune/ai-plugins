@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from "../schemas.ts";
 import {
   migrate,
   oldConfigPath,
+  NOTE_BAD_ENGINE_URL,
   NOTE_LOCAL_SWITCH_FAILED,
   NOTE_SERVER_PLAYBACK,
   NOTE_UNREADABLE,
@@ -144,6 +145,19 @@ test("a remote_url the settings schema rejects falls back to main local", async 
   const r = await migrate(d);
   assert.deepEqual(r.settings.engines, { main: "local", backup: null });
   assert.deepEqual(d.providers, []);
+  assert.equal(r.note, NOTE_BAD_ENGINE_URL);
+});
+
+test("an invalid non-loopback serverUrl falls back to main local with a note", async () => {
+  const r = await migrate(deps({ serverUrl: "not a url", fetchConfig: async () => ({ voice: "bm_george" }) }));
+  assert.deepEqual(r.settings.engines, { main: "local", backup: null });
+  assert.equal(r.settings.voice, "bm_george");
+  assert.equal(r.note, NOTE_BAD_ENGINE_URL);
+});
+
+test("remote_url trailing slashes are trimmed", async () => {
+  const r = await migrate(deps({ fetchConfig: async () => ({ provider: "remote", remote_url: "http://gpu:6789/" }) }));
+  assert.deepEqual(r.settings.engines.main, { url: "http://gpu:6789" });
 });
 
 test("custom loopback port maps to main local", async () => {
