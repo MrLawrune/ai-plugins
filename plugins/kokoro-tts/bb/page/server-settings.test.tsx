@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { CONFIG_RESPONSE, HEALTH, READY, RUNTIME, rpcStubs } from "./fixtures.ts";
+import { CONFIG_RESPONSE, HEALTH, PREFS, READY, RUNTIME, rpcStubs } from "./fixtures.ts";
 
 async function settings(overrides = {}) {
   const app = await loadPluginApp(() => import("../app.tsx"));
@@ -25,8 +25,24 @@ test("recovery controls work while the server is down", async () => {
   expect(await screen.findByRole("radiogroup", { name: "Main engine" })).toBeTruthy();
 });
 
-test("the runtime picker is hidden when there is no local runtime", async () => {
-  await settings({ getConfig: () => ({ ...CONFIG_RESPONSE, runtime: null }) });
+test("while the managed engine is down, the runtime can still be switched", async () => {
+  const slot = await settings({
+    status: () => ({ ...READY, health: { up: false, error: "down" },
+      setup: { ...READY.setup, state: "error", gpuAvailable: true } }),
+    getConfig: () => ({ ...CONFIG_RESPONSE, runtime: null }),
+    getPrefs: () => ({ ...PREFS, runtime: "gpu" }),
+  });
+  const runtime = await screen.findByRole("radiogroup", { name: "Runtime" });
+  expect(within(runtime).getByRole("radio", { name: "NVIDIA GPU" }).getAttribute("aria-checked")).toBe("true");
+  expect(within(runtime).queryByRole("radio", { name: "OpenVINO" })).toBeNull();
+  expect(screen.queryByText("Tuning")).toBeNull();
+  fireEvent.click(within(runtime).getByRole("radio", { name: "CPU" }));
+  await waitFor(() => expect(slot.inspection.rpcCalls.find((c) => c.method === "setPrefs")?.input).toEqual({ runtime: "cpu" }));
+  expect(patches(slot)).toEqual([]);
+});
+
+test("the runtime picker is hidden when no engine runs on this computer", async () => {
+  await settings({ getConfig: () => ({ ...engines({ url: "http://192.0.2.10:6789" }), runtime: null }) });
   await screen.findByRole("radiogroup", { name: "Main engine" });
   expect(screen.queryByRole("radiogroup", { name: "Runtime" })).toBeNull();
   expect(screen.queryByText("Diagnostics")).toBeNull();
@@ -47,6 +63,19 @@ test("choosing Another server for the main engine saves the URL on blur", async 
   fireEvent.change(url, { target: { value: "http://192.0.2.10:6789" } });
   fireEvent.blur(url);
   await waitFor(() => expect(patches(slot)).toEqual([{ engines: { main: { url: "http://192.0.2.10:6789" }, backup: null } }]));
+});
+
+test("Enter then leaving the URL field saves once", async () => {
+  const slot = await settings();
+  const main = await screen.findByRole("radiogroup", { name: "Main engine" });
+  fireEvent.click(within(main).getByRole("radio", { name: "Another server" }));
+  const url = await screen.findByLabelText("Main engine URL");
+  fireEvent.change(url, { target: { value: "http://192.0.2.10:6789" } });
+  fireEvent.keyDown(url, { key: "Enter" });
+  fireEvent.blur(url);
+  await waitFor(() => expect(patches(slot)).toHaveLength(1));
+  await new Promise((r) => setTimeout(r, 50));
+  expect(patches(slot)).toHaveLength(1);
 });
 
 test("an engine URL that is not http(s) is not saved", async () => {
@@ -82,6 +111,19 @@ test("each engine shows its status, and an open breaker says the backup is in us
   expect(await screen.findByText("Unreachable: connection refused")).toBeTruthy();
   expect(screen.getByText("Breaker open — using backup")).toBeTruthy();
   expect(screen.getByText("Reachable · v1.2.0")).toBeTruthy();
+});
+
+test("with no backup, an open breaker says main is being retried", async () => {
+  await settings({
+    getConfig: () => engines({ url: "http://192.0.2.10:6789" }),
+    status: () => ({
+      ...READY,
+      health: { up: false, error: "connection refused" },
+      engines: [{ slot: "main", url: "http://192.0.2.10:6789", local: false, health: { up: false, error: "connection refused" }, breaker: "open" }],
+    }),
+  });
+  expect(await screen.findByText("Main engine unreachable — retrying shortly")).toBeTruthy();
+  expect(screen.queryByText("Breaker open — using backup")).toBeNull();
 });
 
 test("the latency line reads the plugin's median", async () => {

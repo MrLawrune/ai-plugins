@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -30,12 +30,14 @@ function engineStatusText(e: EngineStatus): string {
 }
 
 /** One engine slot: where it runs, its URL when it is another server, and how it is doing. */
-function EngineSlot({ label, value, optional, status, note, onSave }: {
+function EngineSlot({ label, value, optional, status, note, disabled, onSave }: {
   label: string;
   value: EngineRef | null;
   optional: boolean;
   status: EngineStatus | undefined;
   note: string | null;
+  /** A save is applying: no second save may start from this (stale) snapshot. */
+  disabled: boolean;
   onSave: (ref: EngineRef | null) => Promise<boolean>;
 }) {
   const saved = choiceOf(value);
@@ -43,6 +45,8 @@ function EngineSlot({ label, value, optional, status, note, onSave }: {
   const [draft, setDraft] = useState<EngineChoice | null>(null);
   const [url, setUrl] = useState(savedUrl);
   const [urlError, setUrlError] = useState<string | null>(null);
+  /** Enter then blur must not send the same URL twice. */
+  const savingUrl = useRef(false);
   useEffect(() => setUrl(savedUrl), [savedUrl]);
   const selected = draft ?? saved;
 
@@ -62,7 +66,13 @@ function EngineSlot({ label, value, optional, status, note, onSave }: {
       return;
     }
     setUrlError(null);
-    if (next !== savedUrl && (await onSave({ url: next }))) setDraft(null);
+    if (next === savedUrl || savingUrl.current) return;
+    savingUrl.current = true;
+    try {
+      if (await onSave({ url: next })) setDraft(null);
+    } finally {
+      savingUrl.current = false;
+    }
   };
   const id = `${label.toLowerCase().replace(/\W+/g, "-")}-url`;
 
@@ -73,6 +83,7 @@ function EngineSlot({ label, value, optional, status, note, onSave }: {
           label={label}
           value={selected}
           onChange={(v) => void choose(v)}
+          disabled={disabled}
           options={[
             ...(optional ? [{ value: "none" as const, label: "None", hint: "With the main engine unreachable, replies play an error cue." }] : []),
             { value: "local" as const, label: "This computer (managed)", hint: "The Kokoro server on the computer running bb." },
@@ -82,7 +93,7 @@ function EngineSlot({ label, value, optional, status, note, onSave }: {
       </Row>
       {selected === "url" ? (
         <Row label={`${label} URL`} htmlFor={id}>
-          <Input id={id} value={url} onChange={(e) => setUrl(e.target.value)} onBlur={() => void saveUrl()}
+          <Input id={id} value={url} disabled={disabled} onChange={(e) => setUrl(e.target.value)} onBlur={() => void saveUrl()}
             onKeyDown={(e) => { if (e.key === "Enter") void saveUrl(); }}
             placeholder="http://192.0.2.10:6789" className="font-mono text-xs" aria-invalid={urlError !== null} />
           {urlError ? <p role="alert" className="mt-1 text-xs text-destructive">{urlError}</p> : null}
@@ -114,8 +125,11 @@ export function ServerSettings() {
   const managed = prefs.manageServer && !external;
   const engines = data?.config.engines ?? null;
   const runtime = data?.runtime ?? null;
-  const provider = runtime?.config.provider ?? null;
+  // Without the engine's /config, the runtime bb will start is the best answer.
+  const provider: Provider = runtime?.config.provider ?? (prefs.runtime === "gpu" ? "cuda" : "cpu");
   const usesLocal = engines !== null && (engines.main === "local" || engines.backup === "local");
+  // A managed engine that cannot start can still be moved to the other runtime.
+  const showRuntime = runtime !== null || (usesLocal && managed);
   const gpuOffered = status.setup.gpuAvailable || runtime?.providers_available.cuda === true;
   const openvinoOffered = runtime?.providers_available.openvino === true || provider === "openvino";
   const h = up && status.health.up ? status.health.health : null;
@@ -151,7 +165,7 @@ export function ServerSettings() {
       }
       return;
     }
-    await apply({ provider: next });
+    if (runtime) await apply({ provider: next });
   };
 
   const installUv = () => rpc.call("installUv").then(
@@ -190,18 +204,19 @@ export function ServerSettings() {
       {engines ? (
         <div className="space-y-4">
           <EngineSlot label="Main engine" value={engines.main} optional={false} status={slotStatus("main")}
-            note={slotStatus("main")?.breaker === "open" && engines.backup !== null ? "Breaker open — using backup" : null}
-            onSave={(ref) => saveEngines({ main: ref ?? "local" })} />
+            note={slotStatus("main")?.breaker !== "open" ? null
+              : engines.backup !== null ? "Breaker open — using backup" : "Main engine unreachable — retrying shortly"}
+            disabled={applying} onSave={(ref) => saveEngines({ main: ref ?? "local" })} />
           <EngineSlot label="Backup engine" value={engines.backup} optional status={slotStatus("backup")} note={null}
-            onSave={(ref) => saveEngines({ backup: ref })} />
+            disabled={applying} onSave={(ref) => saveEngines({ backup: ref })} />
         </div>
       ) : null}
 
-      {runtime ? (
+      {showRuntime ? (
         <Row label="Runtime">
           <ChoiceGroup
             label="Runtime"
-            value={runtime.config.provider}
+            value={provider}
             onChange={(v) => void chooseRuntime(v)}
             disabled={applying}
             options={[
