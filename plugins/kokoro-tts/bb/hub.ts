@@ -17,16 +17,21 @@ export type EntryStatus = "playing" | "done" | "interrupted" | "error";
 
 export interface HubDeps {
   registry: ClientRegistry;
-  /** With `playback: "server"` no window holds the output. */
-  routing: () => { playOn: PlayOn; pinnedDevice: string | null; playback?: "client" | "server" };
-  synthesize: (text: string, signal: AbortSignal, opts?: SynthOptions) => AsyncIterable<Uint8Array>;
-  reportStatus: (entryId: number, status: EntryStatus, extra?: { firstAudioMs?: number; error?: string }) => Promise<void>;
+  routing: () => { playOn: PlayOn; pinnedDevice: string | null };
+  synthesize: (text: string, signal: AbortSignal, opts: SynthOptions | undefined, entryId: number) => AsyncIterable<Uint8Array>;
+  reportStatus: (
+    entryId: number, status: EntryStatus, extra: { firstAudioMs?: number; error?: string } | undefined, sessionId: string,
+  ) => Promise<void>;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
   /** How long a target has to ack playback, counted from the first audio frame it was sent. */
   ackTimeoutMs?: number;
-  /** How long synthesis may take to produce the first audio frame, counted from speak(). */
-  synthTimeoutMs?: number;
+  /** How long synthesis may take to produce the first audio frame, counted from when it starts. */
+  backstopMs?: number;
+  /** Most replies that may wait their turn; past it the oldest waiting one is dropped. */
+  maxQueued?: number;
+  /** A reply started synthesizing (it became the one being delivered). */
+  onSynthStart?: (entryId: number) => void;
   sampleRate?: number;
   now?: () => number;
   /** How long replies wait for a holder that dropped off before normal routing resumes. */
@@ -60,8 +65,10 @@ interface Job {
   abort: AbortController;
   /** Ack deadline; armed only once the current targets have been sent audio. */
   timer: unknown;
-  /** First-frame deadline; cleared when synthesis produces its first frame. */
-  synthTimer: unknown;
+  /** Synthesis has started; it runs once per job, from when the job is first dispatched. */
+  pumping: boolean;
+  /** First-frame deadline, armed when synthesis starts; cleared on its first frame. */
+  backstop: unknown;
   /** Chain that serializes reportStatus calls for this entry so "done" can never be sent before "playing" resolves. */
   report: Promise<void>;
   /** A window reported it playing and speaking({on: true}) went out. */
@@ -71,6 +78,9 @@ interface Job {
 }
 
 const HOLD_MS = 15 * 60_000;
+/** Largest decoded PCM frame the hub forwards to a window. */
+export const MAX_FRAME_BYTES = 1 << 20;
+const MAX_QUEUED = 16;
 
 export class PlayerHub {
   #deps: HubDeps;
@@ -189,26 +199,21 @@ export class PlayerHub {
     this.stop(sessionId);
     const job: Job = {
       entryId, text, sessionId, gain, opts, frames: [], complete: false, targets: new Set(), tried: new Set(),
-      attempts: 0, acked: false, finished: false, abort: new AbortController(), timer: null, synthTimer: null,
-      report: Promise.resolve(), speaking: false, doneTimer: null,
+      attempts: 0, acked: false, finished: false, abort: new AbortController(), timer: null, pumping: false,
+      backstop: null, report: Promise.resolve(), speaking: false, doneTimer: null,
     };
     this.#jobs.set(entryId, job);
-    job.synthTimer = this.#setTimer(() => {
-      if (!job.finished && job.frames.length === 0) {
-        for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
-        this.#finish(job, "error", "synthesis timeout");
-      }
-    }, this.#deps.synthTimeoutMs ?? 30_000);
     this.#noticeLostHolders();
     if (this.#awayActive() || this.#current) {
       // Wait for the holder to come back or for the reply playing now to end;
-      // synthesize meanwhile so it starts right away.
+      // only the text waits: synthesis starts once it is dispatched.
+      const max = this.#deps.maxQueued ?? MAX_QUEUED;
+      while (this.#held.length >= max) this.#finish(this.#held.shift()!, "interrupted");
       this.#held.push(job);
-      void this.#pump(job);
       return;
     }
     this.#current = job;
-    if (this.#target(job)) void this.#pump(job);
+    if (this.#target(job)) this.#startPump(job);
   }
 
   sound(sound: SoundName, volume: number, sessionId: string): void {
@@ -286,8 +291,8 @@ export class PlayerHub {
   #awayActive(): boolean {
     const away = this.#away;
     if (!away || this.#now() >= away.until) return false;
-    const { playOn, pinnedDevice, playback } = this.#deps.routing();
-    if (playOn === "all" || playback === "server") return false;
+    const { playOn, pinnedDevice } = this.#deps.routing();
+    if (playOn === "all") return false;
     if (playOn === "pinned" && pinnedDevice && pinnedDevice !== away.deviceName) return false;
     return true;
   }
@@ -335,7 +340,7 @@ export class PlayerHub {
       const job = this.#held.shift()!;
       if (job.finished) continue;
       this.#current = job;
-      this.#target(job);
+      if (this.#target(job)) this.#startPump(job);
     }
   }
 
@@ -358,9 +363,8 @@ export class PlayerHub {
   /** Recomputes which windows hold the output (would get the next reply). */
   #syncHolders(): void {
     this.#noticeLostHolders();
-    const { playOn, pinnedDevice, playback } = this.#deps.routing();
-    const idle = playback === "server" || this.#awayActive();
-    const next = new Set(idle ? [] : this.#deps.registry.select(playOn, pinnedDevice));
+    const { playOn, pinnedDevice } = this.#deps.routing();
+    const next = new Set(this.#awayActive() ? [] : this.#deps.registry.select(playOn, pinnedDevice));
     const names = (ids: Iterable<string>) => [...ids].map((id) => this.#infoOf(id)?.deviceName ?? id).sort().join(", ");
     if (names(next) !== names(this.#holders)) this.#deps.log?.(`output held by: ${names(next) || "nobody"}`);
     this.#holders = next;
@@ -451,14 +455,33 @@ export class PlayerHub {
     this.#target(job);
   }
 
+  /** Starts synthesis for a job that was just dispatched, unless it already ran (a held job's replay). */
+  #startPump(job: Job): void {
+    if (job.pumping || job.finished) return;
+    job.pumping = true;
+    void this.#pump(job);
+  }
+
   async #pump(job: Job): Promise<void> {
+    job.backstop = this.#setTimer(() => {
+      if (!job.finished && job.frames.length === 0) {
+        for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
+        this.#finish(job, "error", "synthesis timeout");
+      }
+    }, this.#deps.backstopMs ?? 60_000);
+    this.#deps.onSynthStart?.(job.entryId);
     try {
-      for await (const pcm of this.#deps.synthesize(job.text, job.abort.signal, job.opts)) {
+      for await (const pcm of this.#deps.synthesize(job.text, job.abort.signal, job.opts, job.entryId)) {
         if (job.finished) return;
+        if (pcm.length > MAX_FRAME_BYTES || pcm.length % 4 !== 0) {
+          for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
+          this.#finish(job, "error", "frame too large");
+          return;
+        }
         job.frames.push(pcm);
         for (const id of job.targets) this.#sendFrame(id, job.entryId, pcm);
         if (job.frames.length === 1) {
-          this.#clearTimer(job.synthTimer);
+          this.#clearTimer(job.backstop);
           if (!job.acked && job.targets.size > 0) this.#armAck(job);
         }
       }
@@ -469,7 +492,7 @@ export class PlayerHub {
     } catch (cause) {
       if (!job.finished) {
         for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
-        this.#finish(job, "error", String(cause).slice(0, 200));
+        this.#finish(job, "error", (cause instanceof Error ? cause.message : String(cause)).slice(0, 200));
       }
     }
   }
@@ -513,7 +536,7 @@ export class PlayerHub {
     this.#stopSpeaking(job);
     this.#clearTimer(job.doneTimer);
     this.#clearTimer(job.timer);
-    this.#clearTimer(job.synthTimer);
+    this.#clearTimer(job.backstop);
     this.#jobs.delete(job.entryId);
     job.abort.abort();
     this.#report(job, status, error ? { error } : undefined);
@@ -527,7 +550,7 @@ export class PlayerHub {
 
   /** Chains a reportStatus call after the job's previous one so entries land in order. */
   #report(job: Job, status: EntryStatus, extra?: { firstAudioMs?: number; error?: string }): void {
-    job.report = job.report.then(() => this.#deps.reportStatus(job.entryId, status, extra)).catch(() => undefined);
+    job.report = job.report.then(() => this.#deps.reportStatus(job.entryId, status, extra, job.sessionId)).catch(() => undefined);
   }
 
   #send(clientId: string, msg: ServerMsg): void {

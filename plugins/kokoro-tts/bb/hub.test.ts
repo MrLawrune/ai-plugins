@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ClientRegistry } from "./clients.ts";
-import { PlayerHub, type EntryStatus, type SocketLike } from "./hub.ts";
+import { MAX_FRAME_BYTES, PlayerHub, type EntryStatus, type HubDeps, type SocketLike } from "./hub.ts";
 import type { PlayOn } from "./schemas.ts";
 
 class FakeSocket implements SocketLike {
@@ -45,25 +45,36 @@ function fakeClock() {
 
 function setup(opts: {
   frames?: number; gate?: Promise<void>; gateAt?: number; playOn?: PlayOn; throwAfter?: number; registry?: ClientRegistry;
-  clock?: ReturnType<typeof fakeClock>; routing?: () => { playOn: PlayOn; pinnedDevice: string | null; playback?: "client" | "server" };
+  clock?: ReturnType<typeof fakeClock>; routing?: () => { playOn: PlayOn; pinnedDevice: string | null };
+  synthesize?: HubDeps["synthesize"]; maxQueued?: number;
 } = {}) {
   const clock = opts.clock ?? fakeClock();
   const registry = opts.registry ?? new ClientRegistry();
   const statuses: [number, EntryStatus, unknown][] = [];
   const speaking: { key: string; on: boolean; title?: string }[] = [];
   const aborted: boolean[] = [];
+  /** Entry ids passed to synthesize, in call order. */
+  const synthCalls: number[] = [];
+  const synthStarts: number[] = [];
+  const sessions: [number, string][] = [];
+  async function* fakeSynth(_text: string, signal: AbortSignal) {
+    for (let i = 0; i < (opts.frames ?? 2); i++) {
+      if (i === (opts.gateAt ?? 1) && opts.gate) await opts.gate;
+      if (signal.aborted) { aborted.push(true); return; }
+      if (opts.throwAfter !== undefined && i === opts.throwAfter) throw new Error("synth failed");
+      yield new Uint8Array(new Float32Array([i]).buffer);
+    }
+  }
   const hub = new PlayerHub({
     registry,
     routing: opts.routing ?? (() => ({ playOn: opts.playOn ?? "follow", pinnedDevice: null })),
-    async *synthesize(_text, signal) {
-      for (let i = 0; i < (opts.frames ?? 2); i++) {
-        if (i === (opts.gateAt ?? 1) && opts.gate) await opts.gate;
-        if (signal.aborted) { aborted.push(true); return; }
-        if (opts.throwAfter !== undefined && i === opts.throwAfter) throw new Error("synth failed");
-        yield new Uint8Array(new Float32Array([i]).buffer);
-      }
+    synthesize(text, signal, synthOpts, entryId) {
+      synthCalls.push(entryId);
+      return (opts.synthesize ?? fakeSynth)(text, signal, synthOpts, entryId);
     },
-    reportStatus: async (id, s, extra) => { statuses.push([id, s, extra]); },
+    reportStatus: async (id, s, extra, sessionId) => { statuses.push([id, s, extra]); sessions.push([id, sessionId]); },
+    maxQueued: opts.maxQueued,
+    onSynthStart: (id) => { synthStarts.push(id); },
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
     now: clock.now,
@@ -78,7 +89,7 @@ function setup(opts: {
   };
   const status = (s: FakeSocket, entryId: number, st: string) =>
     hub.onMessage(s, JSON.stringify({ type: "status", entryId, status: st, firstAudioMs: 300 }));
-  return { hub, registry, statuses, clock, aborted, connect, status, speaking };
+  return { hub, registry, statuses, clock, aborted, connect, status, speaking, synthCalls, synthStarts, sessions };
 }
 
 test("speak streams frames and end to the followed window only", async () => {
@@ -164,7 +175,8 @@ test("no audio within the synthesis deadline -> error synthesis timeout", async 
   const b = connect("b", 20);
   hub.speak(7, "Hello.", "t1", 1);
   await tick();
-  clock.advance(29_999);
+  clock.advance(59_999);
+  await tick();
   assert.equal(statuses.length, 0);
   clock.advance(1);
   await tick();
@@ -375,7 +387,7 @@ test("a synthesis failure mid-stream sends stop to the target before reporting e
   await tick();
   assert.equal(b.frames(), 1);
   assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "t1" });
-  assert.equal(statuses.at(-1)?.[1], "error");
+  assert.deepEqual(statuses.at(-1), [7, "error", { error: "synth failed" }]);
 });
 
 test("stop aborts synthesis and sends no further frames even when the generator ignores the abort signal", async () => {
@@ -458,11 +470,6 @@ test("a locked window does not hold the output until it unlocks", () => {
   assert.equal(tab.holding(), true);
 });
 
-test("server playback: nobody holds the output", () => {
-  const { connect } = setup({ routing: () => ({ playOn: "follow", pinnedDevice: null, playback: "server" }) });
-  assert.equal(connect("tab", 10).holding(), false);
-});
-
 test("pinning moves the holder", () => {
   let pinnedDevice: string | null = null;
   const { hub, connect } = setup({ routing: () => ({ playOn: pinnedDevice ? "pinned" : "follow", pinnedDevice }) });
@@ -487,8 +494,9 @@ test("the holder drops off: replies wait for it, then play when it reconnects", 
   assert.equal(statuses.length, 0);
   const back = connect("tab", 0); // same tab reconnects; screen still off so no focus
   assert.equal(back.holding(), true);
+  await tick();
   assert.deepEqual(back.json().map((m) => m.type), ["speak", "end"]);
-  assert.equal(back.frames(), 2, "the reply was synthesized while waiting");
+  assert.equal(back.frames(), 2, "the reply was synthesized once dispatched");
   status(back, 7, "playing");
   status(back, 7, "done");
   await tick();
@@ -638,7 +646,8 @@ test("replies from different threads play one after another, never over each oth
   status(b, 7, "playing");
   status(b, 7, "done");
   assert.deepEqual(speaks(), [7, 8]);
-  assert.equal(b.frames(), 4, "the queued reply was synthesized while waiting");
+  await tick();
+  assert.equal(b.frames(), 4, "the queued reply was synthesized once dispatched");
   status(b, 8, "playing");
   status(b, 8, "done");
   await tick();
@@ -701,4 +710,98 @@ test("speak forwards synthesis options", async () => {
   hub.speak(7, "Hi.", "preview", 1, { voice: "af_bella", speed: 1.3 });
   await tick();
   assert.deepEqual(seen, [{ voice: "af_bella", speed: 1.3 }]);
+});
+
+test("held jobs do not synthesize until dispatched", async () => {
+  const { hub, connect, status, synthCalls, synthStarts, sessions } = setup();
+  const b = connect("b", 20);
+  hub.speak(7, "One.", "t1", 1);
+  hub.speak(8, "Two.", "t2", 1);
+  await tick();
+  assert.deepEqual(synthCalls, [7]);
+  status(b, 7, "playing");
+  status(b, 7, "done");
+  await tick();
+  assert.deepEqual(synthCalls, [7, 8]);
+  assert.deepEqual(synthStarts, [7, 8]);
+  assert.deepEqual(sessions, [[7, "t1"], [7, "t1"]]);
+});
+
+test("queue cap drops the oldest held job as interrupted", async () => {
+  const { hub, connect, status, statuses } = setup({ maxQueued: 2 });
+  const b = connect("b", 20);
+  hub.speak(1, "A.", "ta", 1);
+  hub.speak(2, "B.", "tb", 1);
+  hub.speak(3, "C.", "tc", 1);
+  hub.speak(4, "D.", "td", 1);
+  await tick();
+  assert.deepEqual(statuses, [[2, "interrupted", undefined]]);
+  const speaks = () => b.json().filter((m) => m.type === "speak").map((m) => m.entryId);
+  status(b, 1, "playing");
+  status(b, 1, "done");
+  assert.deepEqual(speaks(), [1, 3]);
+  await tick();
+  status(b, 3, "playing");
+  status(b, 3, "done");
+  assert.deepEqual(speaks(), [1, 3, 4]);
+});
+
+test("the queue holds 16 by default", async () => {
+  const { hub, connect, statuses } = setup();
+  connect("b", 20);
+  for (let i = 0; i <= 17; i++) hub.speak(i, "Hi.", `t${i}`, 1);
+  await tick();
+  assert.deepEqual(statuses, [[1, "interrupted", undefined]]);
+});
+
+test("backstop is 60 s from dispatch", async () => {
+  const never = new Promise<void>(() => {});
+  const { hub, connect, status, clock, statuses } = setup({
+    async *synthesize(text) {
+      if (text === "B.") yield new Uint8Array(4); // B plays; its synthesis never completes
+      await never;
+    },
+  });
+  const b = connect("b", 20);
+  hub.speak(1, "B.", "tb", 1);
+  hub.speak(2, "A.", "ta", 1); // held behind B
+  await tick();
+  status(b, 1, "playing");
+  clock.advance(50_000);
+  status(b, 1, "done");
+  await tick();
+  clock.advance(10_000); // 60 s after speak(A)
+  await tick();
+  assert.deepEqual(statuses.filter(([id]) => id === 2), []);
+  clock.advance(49_999);
+  await tick();
+  assert.deepEqual(statuses.filter(([id]) => id === 2), []);
+  clock.advance(1); // 60 s after A started synthesizing
+  await tick();
+  assert.deepEqual(statuses.filter(([id]) => id === 2), [[2, "error", { error: "synthesis timeout" }]]);
+  assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "ta" });
+});
+
+test("oversized frame ends the job", async () => {
+  assert.equal(MAX_FRAME_BYTES, 1 << 20);
+  const { hub, connect, statuses } = setup({
+    async *synthesize() { yield new Uint8Array((1 << 20) + 4); },
+  });
+  const b = connect("b", 20);
+  hub.speak(7, "Hi.", "t1", 1);
+  await tick();
+  assert.equal(b.frames(), 0);
+  assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "t1" });
+  assert.deepEqual(statuses, [[7, "error", { error: "frame too large" }]]);
+});
+
+test("a frame that is not whole float32 samples ends the job", async () => {
+  const { hub, connect, statuses } = setup({
+    async *synthesize() { yield new Uint8Array(4); yield new Uint8Array(6); },
+  });
+  const b = connect("b", 20);
+  hub.speak(7, "Hi.", "t1", 1);
+  await tick();
+  assert.equal(b.frames(), 1);
+  assert.deepEqual(statuses, [[7, "error", { error: "frame too large" }]]);
 });
