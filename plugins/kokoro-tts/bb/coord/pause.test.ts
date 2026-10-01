@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MediaPauser, pauseSupported, runCmd, type Runner } from "./pause.ts";
+import { createRunCmd, MediaPauser, pauseSupported, runCmd, type Runner } from "./pause.ts";
 
 function fake(players: Record<string, string>) {
   const calls: string[] = [];
@@ -124,4 +124,41 @@ test("runCmd kills the child on abort, including an already-aborted signal", asy
 test("runCmd caps stdout at 64 KiB", async () => {
   const r = await runCmd(["sh", "-c", "head -c 200000 /dev/zero | tr '\\0' a"], 2000, new AbortController().signal);
   assert.equal(r.out.length, 64 * 1024);
+});
+
+test("a rejecting runner during a timer-fired resume is not an unhandled rejection", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (e: unknown) => { unhandled.push(e); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const f = fake({ spotify: "Playing" });
+    const run: Runner = async (args, ms, s) => { if (args[3] === "play") throw new Error("boom"); return f.run(args, ms, s); };
+    const p = new MediaPauser({ run, setTimer: f.setTimer, clearTimer: f.clearTimer });
+    await p.start("a", "pause"); await p.end("a");
+    f.timers.find((t) => t.ms === 500)!.fn();
+    f.timers.find((t) => t.ms === 600_000)!.fn();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+test("start after dispose does nothing", async () => {
+  const f = fake({ spotify: "Playing" });
+  const p = new MediaPauser({ run: f.run, setTimer: f.setTimer, clearTimer: f.clearTimer });
+  await p.dispose();
+  assert.equal(await p.start("a", "pause"), false);
+  assert.equal(p.applied, false); assert.equal(f.calls.length, 0); assert.equal(f.timers.length, 0);
+});
+test("createRunCmd spawns the resolved path, resolving each name once", async () => {
+  const asked: string[] = [];
+  const run = createRunCmd((name) => { asked.push(name); return name === "my-sh" ? "/bin/sh" : null; });
+  const signal = new AbortController().signal;
+  assert.deepEqual(await run(["my-sh", "-c", "echo ok"], 2000, signal), { code: 0, out: "ok\n" });
+  assert.deepEqual(await run(["my-sh", "-c", "exit 4"], 2000, signal), { code: 4, out: "" });
+  assert.deepEqual(await run(["missing"], 2000, signal), { code: 127, out: "" });
+  assert.deepEqual(asked, ["my-sh", "missing"]);
+});
+test("runCmd turns a synchronous spawn failure into code 1", async () => {
+  assert.deepEqual(await runCmd(["/bin/sh", "-c", "echo \0"], 2000, new AbortController().signal), { code: 1, out: "" });
 });
