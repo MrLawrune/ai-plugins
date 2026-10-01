@@ -87,14 +87,12 @@ export function registerVoice(bb: BbPluginApi, deps: VoiceDeps): void {
   });
 
   bb.events.on("thread.deleted", async ({ thread }) => {
-    // Resolved before forgetting, so a child voiced by its own mode still gets its cleanup.
-    const v = resolveOnly(thread);
     try {
       await deps.scopes.forget(thread.id);
     } catch (cause) {
       warn("scopes", cause);
     }
-    if (ignorable(thread, v)) return;
+    // Always: a deleted thread's log rows go even when nothing here remembers it speaking.
     await deps.turns.deleted(thread.id);
   });
 

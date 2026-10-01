@@ -26,6 +26,8 @@ export interface TurnDeps {
 
 type Outcome = { action: "speech" | "sound" | "silent"; text?: string; muted?: boolean };
 
+const message = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
 const REPEAT_THREADS = 500;
 const SPOKE_THREADS = 2000;
 const REPLAY_MAX_CHARS = 2000;
@@ -73,9 +75,15 @@ export class TurnCoordinator {
   }
 
   deleted(threadId: string): Promise<void> {
+    // State and log rows go first, so a failing stop never keeps a deleted thread's text.
     return this.#enqueue(threadId, () => {
-      this.#forget(threadId);
-      this.#deps.log.deleteThread(threadId);
+      this.#repeats.delete(threadId);
+      this.#spoke.delete(threadId);
+      try {
+        this.#deps.log.deleteThread(threadId);
+      } finally {
+        this.#deps.hub.stop(threadId);
+      }
     });
   }
 
@@ -87,7 +95,8 @@ export class TurnCoordinator {
     const spoken = s.strip_markdown ? stripMarkdown(t) : t;
     if (!spoken) return { status: "empty_after_strip" };
     const entry = log.add(t, threadId, voiceLabel(s.voice));
-    hub.speak(entry.id, spoken, threadId, s.speech_gain);
+    this.#spoke.add(threadId);
+    this.#speak(entry.id, spoken, threadId, s.speech_gain);
     return { status: "playing" };
   }
 
@@ -115,12 +124,17 @@ export class TurnCoordinator {
         return;
       }
       const key = createHash("sha1").update(text).digest("hex");
-      const repeat = this.#repeats.get(threadId) === key;
+      if (this.#repeats.get(threadId) === key) return;
+      try {
+        outcome = this.#play(threadId, text, mode);
+      } catch (cause) {
+        // A failed turn is not heard, so the same text may try again.
+        this.#repeats.delete(threadId);
+        throw cause;
+      }
       this.#repeats.set(threadId, key);
-      if (repeat) return;
-      outcome = this.#play(threadId, text, mode);
     } catch (cause) {
-      this.#deps.warn(`turn ${threadId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      this.#deps.warn(`turn ${threadId}: ${message(cause)}`);
     } finally {
       publish(outcome);
     }
@@ -143,14 +157,24 @@ export class TurnCoordinator {
       hub.sound("done", s.sound_volume, threadId);
       return { action: "sound", text: entry.text };
     }
-    hub.speak(entry.id, spoken, threadId, s.speech_gain);
+    this.#speak(entry.id, spoken, threadId, s.speech_gain);
     return { action: "speech", text: entry.text };
   }
 
+  /** hub.speak for a logged row; a throw marks the row `error` so it never stays `queued`. */
+  #speak(entryId: number, spoken: string, threadId: string, gain: number): void {
+    try {
+      this.#deps.hub.speak(entryId, spoken, threadId, gain);
+    } catch (cause) {
+      this.#deps.log.setStatus(entryId, "error", { error: message(cause) });
+      throw cause;
+    }
+  }
+
   #forget(threadId: string): void {
-    this.#deps.hub.stop(threadId);
     this.#repeats.delete(threadId);
     this.#spoke.delete(threadId);
+    this.#deps.hub.stop(threadId);
   }
 
   /** Runs step after the thread's earlier calls settle; a step that throws is warned and never breaks the chain. */
@@ -159,7 +183,7 @@ export class TurnCoordinator {
       try {
         step();
       } catch (cause) {
-        this.#deps.warn(`${threadId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+        this.#deps.warn(`${threadId}: ${message(cause)}`);
       }
     };
     const next = (this.#chains.get(threadId) ?? Promise.resolve()).then(run);

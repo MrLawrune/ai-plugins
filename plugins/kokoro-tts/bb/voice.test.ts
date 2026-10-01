@@ -155,13 +155,18 @@ test("thread.active stops a root thread even when it is off", async () => {
   assert.deepEqual(calls, [["interrupt", "t1"]]);
 });
 
-test("thread.active, failed, archive and delete ignore unvoiced children that never spoke", async () => {
+test("thread.active, failed and archive ignore unvoiced children that never spoke", async () => {
   const { host, calls } = await harness();
   await host.harness.emitThreadEvent("thread.active", { thread: child() });
   await host.harness.emitThreadEvent("thread.failed", { thread: child(), error: null });
   await host.harness.emitThreadEvent("thread.archived", { thread: child() });
-  await host.harness.emitThreadEvent("thread.deleted", { thread: child() });
   assert.deepEqual(calls, []);
+});
+
+test("delete always reaches the coordinator, even for an unvoiced child", async () => {
+  const { host, calls } = await harness();
+  await host.harness.emitThreadEvent("thread.deleted", { thread: child() });
+  assert.deepEqual(calls, [["deleted", "c1"]]);
 });
 
 test("a child switched off after it spoke still stops", async () => {

@@ -8,6 +8,8 @@ interface Options {
   ready?: boolean;
   /** Make the named log method throw. */
   failLog?: "add";
+  /** Hub methods that throw while listed; tests may change it. */
+  failHub?: Set<string>;
 }
 
 function harness(o: Options = {}) {
@@ -16,6 +18,9 @@ function harness(o: Options = {}) {
   const warnings: string[] = [];
   let muted = false;
   let nextId = 1;
+  const hubFail = (name: string) => {
+    if (o.failHub?.has(name)) throw new Error("hub down");
+  };
   const turns = new TurnCoordinator({
     settings: () => ({ ...DEFAULT_SETTINGS, ...o.settings }),
     muted: () => muted,
@@ -29,9 +34,9 @@ function harness(o: Options = {}) {
       deleteThread: (...a) => { calls.push(["deleteThread", ...a]); return 0; },
     },
     hub: {
-      speak: (...a) => { calls.push(["speak", ...a]); },
-      sound: (...a) => { calls.push(["sound", ...a]); },
-      stop: (...a) => { calls.push(["stop", ...a]); },
+      speak: (...a) => { calls.push(["speak", ...a]); hubFail("speak"); },
+      sound: (...a) => { calls.push(["sound", ...a]); hubFail("sound"); },
+      stop: (...a) => { calls.push(["stop", ...a]); hubFail("stop"); },
       hasReadyClient: () => o.ready ?? true,
     },
     publish: (channel, payload) => {
@@ -119,7 +124,7 @@ test("archive and delete forget the repeat key; only delete drops log rows", asy
   await h.turns.idle("t", A, brief);
   assert.equal(h.speaks().length, 3);
   assert.deepEqual(h.calls.filter((c) => c[0] === "stop" || c[0] === "deleteThread"), [
-    ["stop", "t"], ["stop", "t"], ["deleteThread", "t"],
+    ["stop", "t"], ["deleteThread", "t"], ["stop", "t"],
   ]);
 });
 
@@ -232,4 +237,61 @@ test("voiceLabel names a voice or a blend", () => {
   assert.equal(voiceLabel("af_sky"), "af_sky");
   assert.equal(voiceLabel({ af_sky: 0.6, am_adam: 0.4 }), "af_sky + am_adam");
   assert.equal(voiceLabel({}), null);
+});
+
+test("a speak that throws marks the row error and settles the card", async () => {
+  const { turns, calls, published, warnings } = harness({ failHub: new Set(["speak"]) });
+  await turns.idle("t", A, brief);
+  assert.deepEqual(calls.at(-1), ["setStatus", 1, "error", { error: "hub down" }]);
+  assert.deepEqual(published.at(-1), { threadId: "t", action: "silent" });
+  assert.match(warnings[0] ?? "", /hub down/u);
+});
+
+test("a replay whose speak throws marks the row error", async () => {
+  const { turns, calls } = harness({ failHub: new Set(["speak"]) });
+  await assert.rejects(turns.replay("t", A), /hub down/u);
+  assert.deepEqual(calls.at(-1), ["setStatus", 1, "error", { error: "hub down" }]);
+});
+
+test("a failed turn sets no repeat key, so the same text tries again", async () => {
+  for (const method of ["speak", "sound"]) {
+    const failHub = new Set([method]);
+    const h = harness({ failHub });
+    const text = method === "speak" ? A : 'x\n::kokoro-tts{weight="sound:done"}';
+    await h.turns.idle("t", text, brief);
+    failHub.clear();
+    await h.turns.idle("t", text, brief);
+    assert.equal(h.calls.filter((c) => c[0] === method).length, 2, method);
+  }
+});
+
+test("a failed turn forgets an earlier key too", async () => {
+  const failHub = new Set<string>();
+  const h = harness({ failHub });
+  await h.turns.idle("t", A, brief);
+  failHub.add("speak");
+  await h.turns.idle("t", "Other.", brief);
+  failHub.clear();
+  await h.turns.idle("t", A, brief);
+  assert.equal(h.speaks().length, 3);
+});
+
+test("replay marks the thread spoken, so it can be stopped", async () => {
+  const { turns } = harness();
+  await turns.replay("c", A);
+  assert.equal(turns.hasSpoken("c"), true);
+});
+
+test("delete drops rows and state even when stop throws", async () => {
+  const failHub = new Set<string>();
+  const h = harness({ failHub });
+  await h.turns.idle("t", A, brief);
+  failHub.add("stop");
+  await h.turns.deleted("t");
+  assert.deepEqual(h.calls.filter((c) => c[0] === "deleteThread"), [["deleteThread", "t"]]);
+  assert.equal(h.turns.hasSpoken("t"), false);
+  assert.match(h.warnings[0] ?? "", /hub down/u);
+  failHub.clear();
+  await h.turns.idle("t", A, brief);
+  assert.equal(h.speaks().length, 2, "repeat key forgotten");
 });
