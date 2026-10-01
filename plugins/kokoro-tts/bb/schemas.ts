@@ -131,6 +131,7 @@ export const speechLogEntrySchema = z.object({
   first_audio_ms: z.number().optional(),
   voice: z.string().optional(),
   error: z.string().optional(),
+  engine: z.string().optional(),
 });
 export type SpeechLogEntry = z.infer<typeof speechLogEntrySchema>;
 
