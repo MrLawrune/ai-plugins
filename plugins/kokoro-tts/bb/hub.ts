@@ -128,6 +128,8 @@ export class PlayerHub {
   #held: Job[] = [];
   /** The reply being delivered now; one at a time, so threads never talk over each other. */
   #current: Job | null = null;
+  /** The plugin is unloading: nothing new plays. */
+  #disposed = false;
 
   constructor(deps: HubDeps) {
     this.#deps = deps;
@@ -225,6 +227,7 @@ export class PlayerHub {
 
   /** `errorCue`: the reply's mode, when a failure that leaves it unheard should play the error cue. */
   speak(entryId: number, text: string, sessionId: string, gain: number, opts?: SynthOptions, errorCue?: Mode): void {
+    if (this.#disposed) return;
     this.stop(sessionId);
     const job: Job = {
       entryId, text, sessionId, gain, opts, frames: [], bytes: 0, errorCue: errorCue ?? null, complete: false,
@@ -247,6 +250,7 @@ export class PlayerHub {
   }
 
   sound(sound: SoundName, volume: number, sessionId: string): void {
+    if (this.#disposed) return;
     this.#noticeLostHolders();
     if (this.#awayActive()) return;
     const { playOn, pinnedDevice } = this.#deps.routing();
@@ -302,6 +306,7 @@ export class PlayerHub {
   }
 
   dispose(): void {
+    this.#disposed = true;
     if (this.#away) this.#clearTimer(this.#away.timer);
     this.#away = null;
     this.stop(null);

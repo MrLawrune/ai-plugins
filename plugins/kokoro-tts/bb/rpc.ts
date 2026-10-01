@@ -132,7 +132,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   };
   const localRuntime = async (): Promise<ConfigResponse["runtime"]> => {
     try {
-      return toRuntime(await local().call("GET", "/config"));
+      return toRuntime(await local().call("GET", "/config", undefined, scope.signal));
     } catch {
       return null;
     }
@@ -182,7 +182,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
     }
     let next: ConfigResponse;
     if (runtimeKeys.length > 0) {
-      const body = await scope.track(local().call("PATCH", "/config", runtimePatchSchema.parse(patch)));
+      const body = await scope.track(local().call("PATCH", "/config", runtimePatchSchema.parse(patch), scope.signal));
       next = await getConfig(toRuntime(body));
     } else {
       await deps.settings.update(patch as SettingsPatch);

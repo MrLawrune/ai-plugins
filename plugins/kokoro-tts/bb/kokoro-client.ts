@@ -22,7 +22,8 @@ export interface SynthOptions {
 
 export interface KokoroClient {
   readonly baseUrl: string;
-  call<T>(method: HttpMethod, path: string, body?: unknown): Promise<T>;
+  /** `signal` cancels the call too (it also has its own timeout). */
+  call<T>(method: HttpMethod, path: string, body?: unknown, signal?: AbortSignal): Promise<T>;
   synthesize(text: string, signal: AbortSignal, opts?: SynthOptions): AsyncGenerator<Uint8Array>;
 }
 
@@ -41,11 +42,12 @@ export function createKokoroClient(
 ): KokoroClient {
   const base = baseUrl.replace(/\/+$/, "");
 
-  async function call<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: HttpMethod, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const controller = new AbortController();
     // The deadline covers the body too: a server that sends headers and then
     // stalls (a model load blocking its loop) must not hang the caller.
     const timer = setTimeout(() => controller.abort(), method === "PATCH" ? timeouts.patch : timeouts.default);
+    const cancelled = () => (signal?.aborted ? new ServerError(`cancelled: ${method} ${path}`) : null);
     let response: Response;
     let text: string;
     try {
@@ -54,17 +56,17 @@ export function createKokoroClient(
           method,
           headers: body === undefined ? undefined : { "Content-Type": "application/json" },
           body: body === undefined ? undefined : JSON.stringify(body),
-          signal: controller.signal,
+          signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
         });
       } catch (cause) {
         const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new ServerError(`Kokoro server unreachable at ${base} (${reason})`);
+        throw cancelled() ?? new ServerError(`Kokoro server unreachable at ${base} (${reason})`);
       }
       try {
         text = await response.text();
       } catch (cause) {
         const reason = cause instanceof Error ? cause.message : String(cause);
-        throw new ServerError(`Kokoro server stopped responding at ${base} (${reason})`);
+        throw cancelled() ?? new ServerError(`Kokoro server stopped responding at ${base} (${reason})`);
       }
     } finally {
       clearTimeout(timer);

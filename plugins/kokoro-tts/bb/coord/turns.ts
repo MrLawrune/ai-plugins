@@ -47,6 +47,8 @@ export class TurnCoordinator {
   #repeats = new LruMap<string, string>(REPEAT_THREADS);
   /** Threads that have made a sound here; a child among them still needs stopping after it is switched off. */
   #spoke = new LruSet<string>(SPOKE_THREADS);
+  /** The plugin is unloading: queued and later steps do nothing. */
+  #disposed = false;
 
   constructor(deps: TurnDeps) {
     this.#deps = deps;
@@ -88,6 +90,7 @@ export class TurnCoordinator {
   }
 
   async replay(threadId: string, text: string): Promise<{ status: "playing" | "no_window" | "empty_after_strip" }> {
+    if (this.#disposed) throw new Error("the Kokoro plugin is unloading");
     const { hub, log } = this.#deps;
     if (!hub.hasReadyClient()) return { status: "no_window" };
     const s = this.#deps.settings();
@@ -105,6 +108,7 @@ export class TurnCoordinator {
   }
 
   dispose(): void {
+    this.#disposed = true;
     this.#chains.clear();
     this.#repeats = new LruMap(REPEAT_THREADS);
     this.#spoke = new LruSet(SPOKE_THREADS);
@@ -183,7 +187,9 @@ export class TurnCoordinator {
 
   /** Runs step after the thread's earlier calls settle; a step that throws is warned and never breaks the chain. */
   #enqueue(threadId: string, step: () => void): Promise<void> {
+    if (this.#disposed) return Promise.resolve();
     const run = () => {
+      if (this.#disposed) return;
       try {
         step();
       } catch (cause) {

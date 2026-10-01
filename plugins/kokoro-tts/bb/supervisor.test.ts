@@ -261,15 +261,23 @@ test("CPU runtime switches a cuda engine back to cpu", async () => {
   assert.deepEqual(log, ["provider:cpu"]);
 });
 
-test("remote and openvino providers are never touched", async () => {
+test("openvino is never touched", async () => {
   for (const runtime of ["cpu", "gpu"] as const) {
-    for (const provider of ["remote", "openvino"]) {
-      const { log } = await runUntilRunning({
-        prefs: { runtime },
-        engineProvider: async () => ({ provider, cudaAvailable: true }),
-      });
-      assert.deepEqual(log, [], `${runtime}/${provider}`);
-    }
+    const { log } = await runUntilRunning({
+      prefs: { runtime },
+      engineProvider: async () => ({ provider: "openvino", cudaAvailable: true }),
+    });
+    assert.deepEqual(log, [], runtime);
+  }
+});
+
+test("a remote provider (a failed migration left it forwarding) switches to the runtime's own", async () => {
+  for (const [runtime, cudaAvailable, want] of [["cpu", true, "cpu"], ["gpu", true, "cuda"], ["gpu", false, "cpu"]] as const) {
+    const { log } = await runUntilRunning({
+      prefs: { runtime },
+      engineProvider: async () => ({ provider: "remote", cudaAvailable }),
+    });
+    assert.deepEqual(log, [`provider:${want}`], `${runtime}/${cudaAvailable}`);
   }
 });
 
@@ -282,16 +290,68 @@ test("a failed provider switch still runs and explains why on the card", async (
   assert.match(status.detail ?? "", /Could not switch the engine provider: engine change failed/);
 });
 
-test("the provider is not aligned for an adopted external server", async () => {
-  let asked = false;
-  const { d } = deps({ healthSeq: [true], engineProvider: async () => { asked = true; return { provider: "cpu", cudaAvailable: true }; } });
+test("an adopted external server keeps its cpu/cuda provider", async () => {
+  const { d, log } = deps({ healthSeq: [true], prefs: { runtime: "gpu" }, engineProvider: async () => ({ provider: "cpu", cudaAvailable: true }) });
   const sup = new Supervisor(d);
   const ctl = new AbortController();
   const run = sup.start(ctl.signal);
   await until(() => sup.status().state === "external");
   ctl.abort();
   await run;
-  assert.equal(asked, false);
+  assert.deepEqual(log, []);
+});
+
+test("an adopted server that forwards is switched to synthesize by itself", async () => {
+  const { d, log } = deps({ healthSeq: [true], engineProvider: async () => ({ provider: "remote", cudaAvailable: false }) });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "external");
+  assert.deepEqual(log, ["provider:cpu"]);
+  assert.equal(sup.status().detail, null);
+  ctl.abort();
+  await run;
+});
+
+test("an adopted forwarding server that refuses the switch says so on the card", async () => {
+  const { d } = deps({
+    healthSeq: [true],
+    engineProvider: async () => ({ provider: "remote", cudaAvailable: false }),
+    setProvider: async () => { throw new Error("HTTP 500"); },
+  });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "external");
+  assert.match(sup.status().detail ?? "", /Could not switch the engine provider: HTTP 500/);
+  ctl.abort();
+  await run;
+});
+
+test("abort while the provider PATCH is pending: the PATCH is cancelled, the child killed, the service settles", async () => {
+  let patchSignal: AbortSignal | null = null;
+  const { d, procs } = deps({
+    prefs: { runtime: "gpu" },
+    engineProvider: async () => ({ provider: "cpu", cudaAvailable: true }),
+    // Like a real request: settles only when its signal aborts.
+    setProvider: (_p, signal) => new Promise<void>((_, reject) => {
+      patchSignal = signal;
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+  });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => patchSignal !== null);
+  assert.equal(sup.status().state, "starting");
+  ctl.abort();
+  let settled = false;
+  void run.then(() => { settled = true; });
+  await until(() => settled);
+  assert.equal(settled, true);
+  assert.equal(patchSignal!.aborted, true);
+  assert.deepEqual(procs[0].kills, ["SIGTERM"]);
+  assert.notEqual(sup.status().state, "running");
 });
 
 test("a failed uv install shows the installer error and the manual command while waiting", async () => {

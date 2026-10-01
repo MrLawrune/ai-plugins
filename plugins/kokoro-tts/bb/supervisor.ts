@@ -24,9 +24,9 @@ export interface SupervisorDeps {
   spawnServer(o: { runtime: "cpu" | "gpu"; headless: boolean }): ServerProcess;
   gpuAvailable(): boolean;
   /** The running server's configured engine provider and whether it can build a CUDA session. */
-  engineProvider(): Promise<{ provider: string; cudaAvailable: boolean }>;
+  engineProvider(signal: AbortSignal): Promise<{ provider: string; cudaAvailable: boolean }>;
   /** Switches the running server's engine provider (PATCH /config). */
-  setProvider(provider: "cpu" | "cuda"): Promise<void>;
+  setProvider(provider: "cpu" | "cuda", signal: AbortSignal): Promise<void>;
   sleep(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
 }
@@ -112,7 +112,7 @@ export class Supervisor {
       return;
     }
     this.#set({ state: "checking", detail: null, progress: null, fixCommand: null, headless: null });
-    if (await d.health()) return this.#watchExternal(signal);
+    if (await d.health()) return this.#adopt(signal);
 
     const url = d.serverUrl();
     const { manageServer, runtime } = d.prefs();
@@ -120,7 +120,7 @@ export class Supervisor {
       this.#set({ state: "error", detail: `Kokoro server not reachable at ${url}` });
       while (!signal.aborted) {
         await d.sleep(10_000, signal);
-        if (!signal.aborted && (await d.health())) return this.#watchExternal(signal);
+        if (!signal.aborted && (await d.health())) return this.#adopt(signal);
       }
       return;
     }
@@ -148,58 +148,75 @@ export class Supervisor {
 
     this.#set({ state: "starting", detail: null, headless: true });
     const proc = d.spawnServer({ runtime, headless: true });
-
-    const result = await this.#waitHealthy(proc, signal);
-
-    if (result.kind === "exited") {
-      if (signal.aborted) return;
-      throw new Error(`Kokoro server exited with code ${result.code} during startup (see plugin logs)`);
-    }
-
-    // Abort could have landed exactly as the final health() check resolved true (or as
-    // the deadline was reached): don't claim "running" for a server we're about to kill,
-    // and don't leave it orphaned by registering an abort listener for an event that
-    // already fired (it will never call back).
-    if (signal.aborted) {
-      await this.#stopProc(proc);
-      return;
-    }
-
-    if (result.kind === "timeout") {
-      proc.kill("SIGKILL");
-      throw new Error("Kokoro server did not become healthy within 60 s");
-    }
-
-    const providerNote = await this.#alignProvider(runtime);
-    if (signal.aborted) {
-      await this.#stopProc(proc);
-      return;
-    }
-
-    this.#set({ state: "running", detail: providerNote });
-
-    const onAbort = () => { void this.#stopProc(proc); };
+    // From here until this run ends, an abort stops the child, whatever step is pending.
+    let stopping: Promise<void> | null = null;
+    const stop = () => (stopping ??= this.#stopProc(proc));
+    const onAbort = () => { void stop(); };
     signal.addEventListener("abort", onAbort, { once: true });
-    const code = await proc.exited;
-    signal.removeEventListener("abort", onAbort);
+    try {
+      const result = await this.#waitHealthy(proc, signal);
+
+      if (result.kind === "exited") {
+        if (signal.aborted) return;
+        throw new Error(`Kokoro server exited with code ${result.code} during startup (see plugin logs)`);
+      }
+
+      // Abort could have landed exactly as the final health() check resolved true (or as
+      // the deadline was reached): don't claim "running" for a server being stopped.
+      if (signal.aborted) {
+        await stop();
+        return;
+      }
+
+      if (result.kind === "timeout") {
+        proc.kill("SIGKILL");
+        throw new Error("Kokoro server did not become healthy within 60 s");
+      }
+
+      const providerNote = await this.#alignProvider(runtime, signal, false);
+      if (signal.aborted) {
+        await stop();
+        return;
+      }
+
+      this.#set({ state: "running", detail: providerNote });
+
+      const code = await proc.exited;
+      if (signal.aborted) return;
+      throw new Error(`Kokoro server exited with code ${code}`);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /** A server already answers at the URL: use it, after making sure it synthesizes by itself. */
+  async #adopt(signal: AbortSignal): Promise<void> {
+    const note = await this.#alignProvider(this.#deps.prefs().runtime, signal, true);
     if (signal.aborted) return;
-    throw new Error(`Kokoro server exited with code ${code}`);
+    return this.#watchExternal(signal, note);
   }
 
   /**
-   * Matches the engine provider to the runtime just installed: the GPU runtime
-   * switches a "cpu" engine to "cuda" when CUDA is usable, the CPU runtime
-   * switches a "cuda" engine back to "cpu". "remote" and "openvino" are the
-   * user's explicit choice and never touched. Returns a note for the Server
-   * card when the switch failed, else null.
+   * Matches the engine provider to the runtime: the GPU runtime switches a
+   * "cpu" engine to "cuda" when CUDA is usable, the CPU runtime switches a
+   * "cuda" engine back to "cpu". A "remote" engine (it forwards to another
+   * server, which the plugin's engine slots do not allow) always switches to
+   * the runtime's provider, also on a server bb did not start (`adopted`),
+   * which is otherwise left as it is. "openvino" is the user's explicit
+   * choice and never touched. Returns a note for the Server card when the
+   * switch failed, else null.
    */
-  async #alignProvider(runtime: "cpu" | "gpu"): Promise<string | null> {
+  async #alignProvider(runtime: "cpu" | "gpu", signal: AbortSignal, adopted: boolean): Promise<string | null> {
     try {
-      const { provider, cudaAvailable } = await this.#deps.engineProvider();
-      if (runtime === "gpu" && provider === "cpu" && cudaAvailable) await this.#deps.setProvider("cuda");
-      else if (runtime === "cpu" && provider === "cuda") await this.#deps.setProvider("cpu");
+      const { provider, cudaAvailable } = await this.#deps.engineProvider(signal);
+      const own = runtime === "gpu" && cudaAvailable ? "cuda" : "cpu";
+      if (provider === "remote") await this.#deps.setProvider(own, signal);
+      else if (adopted) return null;
+      else if (runtime === "gpu" && provider === "cpu" && cudaAvailable) await this.#deps.setProvider("cuda", signal);
+      else if (runtime === "cpu" && provider === "cuda") await this.#deps.setProvider("cpu", signal);
       return null;
     } catch (cause) {
+      if (signal.aborted) return null;
       return `Could not switch the engine provider: ${cause instanceof Error ? cause.message : String(cause)}`;
     }
   }
@@ -231,8 +248,8 @@ export class Supervisor {
     return { kind: "timeout" };
   }
 
-  async #watchExternal(signal: AbortSignal): Promise<void> {
-    this.#set({ state: "external", detail: null, progress: null, fixCommand: null });
+  async #watchExternal(signal: AbortSignal, detail: string | null = null): Promise<void> {
+    this.#set({ state: "external", detail, progress: null, fixCommand: null });
     let consecutiveFailures = 0;
     while (!signal.aborted) {
       await this.#deps.sleep(10_000, signal);

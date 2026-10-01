@@ -60,6 +60,8 @@ interface Options {
   local?: typeof LOCAL_CONFIG | null;
   /** Answer for PATCH /config on the local server. */
   patchReply?: (body: unknown) => Response;
+  /** PATCH /config never answers; it settles only when its request is aborted. */
+  hangPatch?: boolean;
   threadParent?: (threadId: string) => Promise<string | null | undefined>;
   threadExists?: (threadId: string) => Promise<boolean>;
   replay?: RpcDeps["turns"]["replay"];
@@ -90,6 +92,11 @@ async function harness(o: Options = {}) {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     fetches.push({ method, url, body });
     if (o.local === null) throw new TypeError("fetch failed");
+    if (method === "PATCH" && o.hangPatch) {
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }
     if (method === "PATCH" && o.patchReply) return o.patchReply(body);
     const local = o.local ?? LOCAL_CONFIG;
     const config = method === "PATCH" ? { ...local, config: { ...local.config, ...(body as object) } } : local;
@@ -142,7 +149,7 @@ async function harness(o: Options = {}) {
     kv,
   });
   const call = <T>(name: string, input: unknown = null) => host.harness.callRpc(name, input) as Promise<T>;
-  return { host, kv, settings, mute, speechLog, chain, fetches, stops, spoken, sounds, published, replays, scopes, call, db, uvEvents };
+  return { host, kv, settings, mute, speechLog, chain, fetches, stops, spoken, sounds, published, replays, scopes, call, db, uvEvents, scope };
 }
 
 test("getConfig answers with runtime: null when the local server is down", async () => {
@@ -452,4 +459,15 @@ test("getVoiceScope reads the global mode from the plugin's settings", async () 
   assert.equal(r.globalMode, "verbose");
   assert.equal(r.effective.mode, "verbose");
   assert.deepEqual(h.fetches, [], "never calls a server");
+});
+
+test("disposing the load scope aborts an in-flight runtime PATCH at once", async () => {
+  const h = await harness({ hangPatch: true });
+  const pending = h.call("patchConfig", { provider: "cpu" });
+  pending.catch(() => undefined);
+  for (let i = 0; i < 50 && !h.fetches.some((f) => f.method === "PATCH"); i++) await new Promise((r) => setImmediate(r));
+  const t0 = Date.now();
+  await h.scope.dispose(10_000);
+  assert.ok(Date.now() - t0 < 1_000, "dispose did not wait for the 30 s PATCH timeout");
+  await assert.rejects(pending, /cancelled/);
 });

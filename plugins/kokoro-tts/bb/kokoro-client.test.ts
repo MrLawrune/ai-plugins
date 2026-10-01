@@ -157,3 +157,16 @@ test("readFrames accepts a real multi-megabyte model frame split across many rea
   assert.equal(got[0].length, n);
   assert.ok(got[0].every((b) => b === 7));
 });
+
+test("call is cancelled by an external signal, before its own timeout", async () => {
+  const fake = (async (_url: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  })) as typeof fetch;
+  const client = createKokoroClient("http://127.0.0.1:6789", fake);
+  const ac = new AbortController();
+  const call = client.call("PATCH", "/config", { provider: "cpu" }, ac.signal);
+  setTimeout(() => ac.abort(), 10);
+  const t0 = Date.now();
+  await assert.rejects(call, (e: unknown) => e instanceof ServerError && e.message === "cancelled: PATCH /config");
+  assert.ok(Date.now() - t0 < 1_000);
+});

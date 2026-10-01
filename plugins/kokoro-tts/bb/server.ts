@@ -114,7 +114,7 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
       runtime: prefs.get().runtime,
       fetchConfig: async (base) => {
         try {
-          const body = await createKokoroClient(base, fetchImpl).call<{ config?: unknown } | null>("GET", "/config");
+          const body = await createKokoroClient(base, fetchImpl).call<{ config?: unknown } | null>("GET", "/config", undefined, scope.signal);
           const config = body?.config;
           return config && typeof config === "object" && !Array.isArray(config) ? (config as Record<string, unknown>) : null;
         } catch {
@@ -132,7 +132,7 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
       home: os.homedir(),
       setLocalProvider: async (provider) => {
         const patchMs = opts.migrationPatchMs ?? MIGRATION_PATCH_MS;
-        await createKokoroClient(localUrl, fetchImpl, { default: 4_000, patch: patchMs }).call("PATCH", "/config", { provider });
+        await createKokoroClient(localUrl, fetchImpl, { default: 4_000, patch: patchMs }).call("PATCH", "/config", { provider }, scope.signal);
       },
     }));
     await settings.replace(result.settings);
@@ -290,6 +290,10 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     kv: bb.storage.kv,
   });
 
+  // Registered last so it runs first (LIFO): in-flight requests are cancelled at
+  // the start of disposal; scope.dispose(), registered first, awaits them at the end.
+  bb.onDispose(() => scope.abort());
+
   const root = locatePluginRoot(path.dirname(fileURLToPath(import.meta.url)));
   if (!root) {
     bb.log.error(`plugin files incomplete: no server/ next to ${fileURLToPath(import.meta.url)}`);
@@ -325,11 +329,15 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
         log: (line) => bb.log.info(`[server] ${line}`),
       }),
     gpuAvailable: () => findExecutable("nvidia-smi") !== null,
-    engineProvider: async () => {
-      const r = await localClient().call<{ config: { provider: string }; providers_available: { cuda?: boolean } }>("GET", "/config");
+    engineProvider: async (signal) => {
+      const r = await localClient().call<{ config: { provider: string }; providers_available: { cuda?: boolean } }>(
+        "GET", "/config", undefined, AbortSignal.any([signal, scope.signal]),
+      );
       return { provider: r.config.provider, cudaAvailable: r.providers_available.cuda === true };
     },
-    setProvider: async (provider) => { await localClient().call("PATCH", "/config", { provider }); },
+    setProvider: async (provider, signal) => {
+      await localClient().call("PATCH", "/config", { provider }, AbortSignal.any([signal, scope.signal]));
+    },
     sleep,
     now: Date.now,
   });

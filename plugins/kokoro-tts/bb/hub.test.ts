@@ -964,3 +964,14 @@ test("liveEntryIds lists the replies playing or waiting, not finished ones", asy
   status(b, 7, "done");
   assert.deepEqual(hub.liveEntryIds(), [8]);
 });
+
+test("after dispose the hub ignores speak and sound", async () => {
+  const { hub, connect, statuses, synthCalls } = setup();
+  const b = connect("b", 20);
+  hub.dispose();
+  hub.speak(7, "Hi.", "t1", 1, undefined, "brief");
+  hub.sound("done", 1, "t1");
+  await tick();
+  assert.deepEqual([statuses, synthCalls], [[], []]);
+  assert.ok(!b.json().some((m) => m.type === "speak" || m.type === "sound"));
+});

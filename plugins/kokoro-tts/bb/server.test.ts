@@ -215,3 +215,31 @@ test("a player socket is local when its browser's address is this computer's", (
   assert.equal(isLocalRequest(url, h({ "x-forwarded-for": "192.0.2.77" }), ours), false, "a phone via the proxy");
   assert.equal(isLocalRequest(new URL("https://bb.example.com/x"), h(), ours), false);
 });
+
+test("unloading cancels an in-flight runtime PATCH at the start of disposal", async () => {
+  let patchStarted = false;
+  const fakeFetch: typeof fetch = async (_input, init) => {
+    if (init?.method === "PATCH") {
+      patchStarted = true;
+      return new Promise<Response>((_, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    }
+    throw new TypeError("fetch failed");
+  };
+  const host = createFakePluginHost({ settings: { serverUrl: deadUrl } });
+  let disposed = false;
+  try {
+    await createPlugin({ fetch: fakeFetch })(host.bb);
+    const pending = host.harness.callRpc("patchConfig", { provider: "cpu" });
+    pending.catch(() => undefined);
+    await waitFor(() => patchStarted);
+    const t0 = Date.now();
+    await host.harness.dispose();
+    disposed = true;
+    assert.ok(Date.now() - t0 < 2_000, `disposal took ${Date.now() - t0} ms`);
+    await assert.rejects(pending);
+  } finally {
+    if (!disposed) await host.harness.dispose();
+  }
+});

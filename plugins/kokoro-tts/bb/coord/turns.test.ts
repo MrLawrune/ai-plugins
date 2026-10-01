@@ -230,7 +230,7 @@ test("dispose drops repeat keys and spoken threads", async () => {
   h.turns.dispose();
   assert.equal(h.turns.hasSpoken("t"), false);
   await h.turns.idle("t", A, brief);
-  assert.equal(h.speaks().length, 2);
+  assert.equal(h.speaks().length, 1, "nothing speaks after dispose");
 });
 
 test("voiceLabel names a voice or a blend", () => {
@@ -303,4 +303,16 @@ test("every spoken text is capped at FULL_MAX_CHARS before it reaches the hub", 
   const spoken = speaks()[0][2] as string;
   assert.ok(Array.from(spoken).length <= 6000);
   assert.ok(spoken.endsWith("set."));
+});
+
+test("after dispose, events and replays do nothing", async () => {
+  const { turns, calls } = harness();
+  const queued = turns.idle("t", 'x\n::kokoro-tts{weight="speech" say="Queued."}', brief);
+  turns.dispose();
+  await queued;
+  await turns.idle("t", 'x\n::kokoro-tts{weight="speech" say="Late."}', brief);
+  await turns.attention("t", brief);
+  await turns.interrupt("t");
+  await assert.rejects(turns.replay("t", "Again."), /unloading/);
+  assert.deepEqual(calls, []);
 });

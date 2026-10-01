@@ -18,6 +18,11 @@ export class LoadScope {
     return p;
   }
 
+  /** Cancels in-flight work; dispose() then waits for it. */
+  abort(): void {
+    this.#ctl.abort();
+  }
+
   /** Abort, then wait for tracked work (at most timeoutMs, default 4000). */
   async dispose(timeoutMs = 4_000): Promise<void> {
     this.#ctl.abort();
