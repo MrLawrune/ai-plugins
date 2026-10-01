@@ -31,6 +31,7 @@ const message = (cause: unknown) => (cause instanceof Error ? cause.message : St
 const REPEAT_THREADS = 500;
 const SPOKE_THREADS = 2000;
 const REPLAY_MAX_CHARS = 2000;
+const TOMBSTONES = 2000;
 
 /** The log's voice name: the voice, or a blend's voices joined " + "; null for an empty blend. */
 export function voiceLabel(voice: Settings["voice"]): string | null {
@@ -49,6 +50,11 @@ export class TurnCoordinator {
   #spoke = new LruSet<string>(SPOKE_THREADS);
   /** The plugin is unloading: queued and later steps do nothing. */
   #disposed = false;
+  /**
+   * Bumped for a thread each time it is deleted, so a replay whose existence
+   * lookup began before the deletion cannot log the deleted thread's text again.
+   */
+  #deletions = new LruMap<string, number>(TOMBSTONES);
 
   constructor(deps: TurnDeps) {
     this.#deps = deps;
@@ -78,6 +84,7 @@ export class TurnCoordinator {
 
   deleted(threadId: string): Promise<void> {
     // State and log rows go first, so a failing stop never keeps a deleted thread's text.
+    this.#deletions.set(threadId, (this.#deletions.get(threadId) ?? 0) + 1);
     return this.#enqueue(threadId, () => {
       this.#repeats.delete(threadId);
       this.#spoke.delete(threadId);
@@ -89,8 +96,33 @@ export class TurnCoordinator {
     });
   }
 
-  async replay(threadId: string, text: string): Promise<{ status: "playing" | "no_window" | "empty_after_strip" }> {
+  /**
+   * Speaks text again, logged under the thread. `exists` (false only for a
+   * thread known to be gone) is asked first; the insert runs in the thread's
+   * chain and is refused if the thread was deleted since the lookup began.
+   */
+  async replay(
+    threadId: string, text: string, exists: (threadId: string) => Promise<boolean> = async () => true,
+  ): Promise<{ status: "playing" | "no_window" | "empty_after_strip" | "unsupported" }> {
     if (this.#disposed) throw new Error("the Kokoro plugin is unloading");
+    if (!this.#deps.hub.hasReadyClient()) return { status: "no_window" };
+    const deletions = this.#deletions.get(threadId) ?? 0;
+    if (!(await exists(threadId))) return { status: "unsupported" };
+    // Deleted (or unloading) while the lookup ran: nothing is logged or spoken.
+    let run: () => ReturnType<TurnCoordinator["replay"]> = async () => ({ status: "unsupported" });
+    await this.#enqueue(threadId, () => {
+      if ((this.#deletions.get(threadId) ?? 0) !== deletions) return;
+      try {
+        const result = this.#replay(threadId, text);
+        run = async () => result;
+      } catch (cause) {
+        run = async () => { throw cause; };
+      }
+    });
+    return run();
+  }
+
+  #replay(threadId: string, text: string): { status: "playing" | "no_window" | "empty_after_strip" } {
     const { hub, log } = this.#deps;
     if (!hub.hasReadyClient()) return { status: "no_window" };
     const s = this.#deps.settings();

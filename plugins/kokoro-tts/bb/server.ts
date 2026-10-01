@@ -283,7 +283,9 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
         await bb.sdk.threads.get({ threadId, signal: scope.signal });
         return true;
       } catch (cause) {
-        // Only a thread known to be gone is refused; a failed lookup does not block a replay.
+        // Only a thread known to be gone is refused; a failed lookup does not block a replay,
+        // but one cut off by unloading is no proof the thread exists.
+        if (scope.signal.aborted) return false;
         return !isNotFound(cause);
       }
     },

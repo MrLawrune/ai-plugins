@@ -245,10 +245,7 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
       return { status: "playing" };
     },
     // Logged under the thread so its chat card follows it; a deleted thread gets no new rows.
-    replay: async ({ threadId, text }) => {
-      if (!(await deps.threadExists(threadId))) return { status: "unsupported" };
-      return deps.turns.replay(threadId, text);
-    },
+    replay: ({ threadId, text }) => deps.turns.replay(threadId, text, deps.threadExists),
     setMuted: async ({ muted }) => {
       if (muted) deps.hub.stop(null);
       await deps.mute.set(muted);

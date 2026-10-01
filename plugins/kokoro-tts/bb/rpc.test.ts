@@ -129,7 +129,13 @@ async function harness(o: Options = {}) {
     localUrl: () => LOCAL,
     fetch: fetchImpl,
     scope,
-    turns: { replay: o.replay ?? (async (threadId, text) => { replays.push([threadId, text]); return { status: "playing" as const }; }) },
+    turns: {
+      replay: o.replay ?? (async (threadId, text, exists) => {
+        if (exists && !(await exists(threadId))) return { status: "unsupported" as const };
+        replays.push([threadId, text]);
+        return { status: "playing" as const };
+      }),
+    },
     supervisor: () => (o.installUv ? supervisor : null),
     installUv: o.installUv,
     prefs: new PrefsStore(kv),
@@ -335,7 +341,7 @@ test("replay hands an existing thread's text to the coordinator", async () => {
   assert.deepEqual(h.replays, [["t1", "Again."]]);
 });
 
-test("replay of a deleted thread is unsupported and logs nothing", async () => {
+test("replay gives the coordinator the thread lookup: a deleted thread is unsupported", async () => {
   const h = await harness({ threadExists: async () => false });
   assert.deepEqual(await h.call("replay", { threadId: "gone", text: "Again." }), { status: "unsupported" });
   assert.deepEqual(h.replays, []);

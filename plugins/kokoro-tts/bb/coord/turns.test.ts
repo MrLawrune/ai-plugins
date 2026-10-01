@@ -316,3 +316,21 @@ test("after dispose, events and replays do nothing", async () => {
   await assert.rejects(turns.replay("t", "Again."), /unloading/);
   assert.deepEqual(calls, []);
 });
+
+test("a replay looked up before its thread was deleted inserts nothing", async () => {
+  const { turns, calls } = harness();
+  let answer!: (exists: boolean) => void;
+  const replay = turns.replay("t", A, () => new Promise<boolean>((r) => { answer = r; }));
+  await turns.deleted("t");
+  answer(true);
+  assert.deepEqual(await replay, { status: "unsupported" });
+  assert.deepEqual(calls.filter((c) => c[0] === "add" || c[0] === "speak"), []);
+  // A later replay of the same thread id (say it was recreated) works again.
+  assert.deepEqual(await turns.replay("t", A, async () => true), { status: "playing" });
+});
+
+test("a thread known to be gone is not replayed", async () => {
+  const { turns, calls } = harness();
+  assert.deepEqual(await turns.replay("t", A, async () => false), { status: "unsupported" });
+  assert.deepEqual(calls, []);
+});

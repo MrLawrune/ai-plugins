@@ -243,3 +243,24 @@ test("unloading cancels an in-flight runtime PATCH at the start of disposal", as
     if (!disposed) await host.harness.dispose();
   }
 });
+
+test("a replay whose thread is deleted while its lookup runs logs and speaks nothing", async () => {
+  const host = await load();
+  try {
+    const { messages } = await playerSocket(host);
+    let answer!: () => void;
+    host.harness.sdk.stub("threads.get", () => new Promise((resolve) => {
+      answer = () => resolve(makeThreadResponse({ id: "t1", parentThreadId: null, projectId: "p1" }));
+    }));
+    const replay = host.harness.callRpc("replay", { threadId: "t1", text: "Secret text." });
+    await waitFor(() => answer !== undefined);
+    await host.harness.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "t1", parentThreadId: null, projectId: "p1" }) });
+    assert.deepEqual((await host.harness.callRpc("speechLog", { threadId: "t1" }) as { entries: unknown[] }).entries, []);
+    answer(); // the lookup that began before the deletion says the thread exists
+    assert.deepEqual(await replay, { status: "unsupported" });
+    assert.deepEqual((await host.harness.callRpc("speechLog", { threadId: "t1" }) as { entries: unknown[] }).entries, []);
+    assert.ok(!messages().some((m) => m.type === "speak"));
+  } finally {
+    await host.harness.dispose();
+  }
+});
