@@ -267,3 +267,34 @@ test("clearing the history refetches every mounted card's log", async () => {
   await waitFor(() => expect(speechLogCalls(t2)).toBe(2));
   expect(speechLogCalls(t1)).toBe(before + 1);
 });
+
+test("clearing the history during an in-flight fetch drops its answer and fetches again", async () => {
+  const answers: ((r: { entries: SpeechLogEntry[] }) => void)[] = [];
+  const slot = await card(SPEECH, {
+    speechLog: () => new Promise<{ entries: SpeechLogEntry[] }>((resolve) => { answers.push(resolve); }),
+  });
+  await waitFor(() => expect(answers.length).toBe(1));
+  // The history is cleared while the first fetch (from before the clear) is still out.
+  await slot.emitRealtime("kokoro-log-cleared", {});
+  expect(answers.length).toBe(1);
+  await act(async () => { answers[0]!({ entries: [done()] }); });
+  await waitFor(() => expect(answers.length).toBe(2));
+  expect(screen.queryByText(/^Spoken/)).toBeNull();
+  await act(async () => { answers[1]!({ entries: [] }); });
+  expect(await screen.findByText("No record")).toBeTruthy();
+  expect(speechLogCalls(slot)).toBe(2);
+});
+
+test("clearing the history empties a card's shown entry at once", async () => {
+  let entries = [done()];
+  let answer: (() => void) | null = null;
+  const slot = await card(SPEECH, {
+    speechLog: () => (answer === null && entries.length === 0
+      ? new Promise<{ entries: SpeechLogEntry[] }>((resolve) => { answer = () => resolve({ entries }); })
+      : { entries }),
+  });
+  await screen.findByText(/^Spoken/);
+  entries = [];
+  await slot.emitRealtime("kokoro-log-cleared", {});
+  expect(await screen.findByText("No record")).toBeTruthy();
+});

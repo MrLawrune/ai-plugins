@@ -20,6 +20,10 @@ class ThreadLog {
   rpc: Rpc | null = null;
   timer: ReturnType<typeof setTimeout> | null = null;
   inflight = false;
+  /** A refresh came in while a fetch was in flight: fetch again once it settles. */
+  dirty = false;
+  /** Bumped by refresh(): a response to an older request is dropped. */
+  gen = 0;
   failed = false;
   /** When the last fetch succeeded; 0 before the first. */
   fetchedAt = 0;
@@ -37,28 +41,51 @@ class ThreadLog {
 
   async fetch(): Promise<void> {
     this.timer = null;
-    if (this.inflight || !this.rpc) return;
+    if (!this.rpc) return;
+    if (this.inflight) {
+      this.dirty = true;
+      return;
+    }
     this.inflight = true;
+    this.dirty = false;
     const gen = generation;
+    const mine = this.gen;
     try {
       const r = await this.rpc.call("speechLog", { threadId: this.threadId });
       if (gen !== generation) return;
-      this.entries = r.entries;
-      this.failed = false;
-      this.fetchedAt = Date.now();
+      if (mine === this.gen) {
+        this.entries = r.entries;
+        this.failed = false;
+        this.fetchedAt = Date.now();
+      }
     } catch {
       if (gen !== generation) return;
-      this.failed = true; // keep the last entries; cards keep their last state
+      if (mine === this.gen) this.failed = true; // keep the last entries; cards keep their last state
     }
     this.inflight = false;
+    // Asked again while this one ran (the history was cleared, say): its answer may predate that.
+    if (this.dirty) {
+      void this.fetch();
+      return;
+    }
     for (const notify of this.listeners) notify();
     this.schedule();
   }
 
+  /** Fetches now; an answer still in flight is dropped and a new fetch follows it. */
   refresh(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.gen++;
     void this.fetch();
+  }
+
+  /** The history was cleared: show no entries now, then refetch. */
+  cleared(): void {
+    this.entries = [];
+    this.fetchedAt = 0;
+    for (const notify of this.listeners) notify();
+    this.refresh();
   }
 
   stop(): void {
@@ -83,9 +110,14 @@ export function refreshSpeechLog(threadId: string): void {
   logs.get(threadId)?.refresh();
 }
 
-/** Refetch every thread's log that still has a card mounted (after the history is cleared). */
+/** Refetch every thread's log that still has a card mounted. */
 export function refreshAllSpeechLogs(): void {
   for (const log of logs.values()) if (log.listeners.size > 0) log.refresh();
+}
+
+/** The history was cleared: every mounted card's log empties now and is refetched. */
+export function clearAllSpeechLogs(): void {
+  for (const log of logs.values()) if (log.listeners.size > 0) log.cleared();
 }
 
 const onVisible = () => {
@@ -103,7 +135,7 @@ export function useSpeechLog(threadId: string, pending: boolean): SpeechLogEntry
     log.rpc = rpc;
     if (mounted++ === 0) document.addEventListener("visibilitychange", onVisible);
     log.listeners.add(rerender);
-    if (Date.now() - log.fetchedAt >= FRESH_MS) log.refresh();
+    if (!log.inflight && Date.now() - log.fetchedAt >= FRESH_MS) log.refresh();
     return () => {
       log.listeners.delete(rerender);
       log.waiting.delete(token);
