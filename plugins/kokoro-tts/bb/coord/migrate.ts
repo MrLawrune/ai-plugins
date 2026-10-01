@@ -26,7 +26,7 @@ export interface MigrationResult {
 export const NOTE_SERVER_PLAYBACK = "Speech now always plays in a bb window; playing on the server's speakers was removed.";
 export const NOTE_UNREADABLE = "Your previous Kokoro settings could not be read, so defaults are in use.";
 export const NOTE_LOCAL_SWITCH_FAILED =
-  "The local Kokoro server could not be switched to synthesize by itself; as a backup it may forward to the main server first.";
+  "This computer's Kokoro server still forwards to your other server; bb switches it to synthesize by itself when it next starts or connects to it.";
 export const NOTE_BAD_ENGINE_URL =
   "Your previous remote Kokoro server address could not be used, so this computer's server is the main engine.";
 

@@ -136,6 +136,8 @@ test("a failed local provider switch adds a note and still returns settings", as
   });
   const r = await migrate(d);
   assert.ok(r.note!.includes(NOTE_LOCAL_SWITCH_FAILED));
+  // The supervisor switches a forwarding local server when it starts or adopts it; the note says so.
+  assert.match(NOTE_LOCAL_SWITCH_FAILED, /still forwards.*switches it to synthesize by itself when it next starts or connects/);
   assert.deepEqual(r.settings.engines, { main: { url: "http://gpu.example:6789" }, backup: "local" });
   assert.equal(r.settings.voice, "bm_george");
 });

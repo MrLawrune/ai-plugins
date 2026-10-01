@@ -164,3 +164,22 @@ test("paths are shown relative to home", async () => {
   fireEvent.click(await screen.findByText("Diagnostics"));
   expect(screen.getByText("~/.config/kokoro-tts/config.json")).toBeTruthy();
 });
+
+test("a forwarding local server shows no runtime as chosen, says so, and CPU switches it", async () => {
+  const slot = await settings({
+    getConfig: () => ({ ...CONFIG_RESPONSE, runtime: { ...RUNTIME, config: { ...RUNTIME.config, provider: "remote" } } }),
+  });
+  const runtime = await screen.findByRole("radiogroup", { name: "Runtime" });
+  for (const radio of within(runtime).getAllByRole("radio")) expect(radio.getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByText(/This server forwards to another one instead of synthesizing/)).toBeTruthy();
+  fireEvent.click(within(runtime).getByRole("radio", { name: "CPU" }));
+  await waitFor(() => expect(patches(slot)).toEqual([{ provider: "cpu" }]));
+});
+
+test("an engine that forwards says so instead of Reachable", async () => {
+  await settings({
+    status: () => ({ ...READY, engines: [{ ...READY.engines[0]!, health: { up: true, health: { ...HEALTH, forwards: true } } }] }),
+  });
+  expect(await screen.findByText(/This server forwards to another one, so it can't synthesize for bb/)).toBeTruthy();
+  expect(screen.queryByText("Reachable")).toBeNull();
+});

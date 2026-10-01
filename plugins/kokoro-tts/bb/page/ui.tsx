@@ -89,7 +89,7 @@ export function ChoiceGroup<V extends string>({ label, value, options, onChange,
             type="button"
             role="radio"
             aria-checked={o.value === value}
-            tabIndex={o.value === value ? 0 : -1}
+            tabIndex={i === index ? 0 : -1}
             variant={o.value === value ? "default" : "outline"}
             size="sm"
             disabled={disabled}

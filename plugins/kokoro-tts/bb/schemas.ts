@@ -25,6 +25,8 @@ const healthSchema = z.object({
   muted: z.boolean().optional(),
   uptime_s: z.number().optional(),
   started_by: z.string().nullable().optional(),
+  /** The engine forwards synthesis to another server instead of synthesizing. */
+  forwards: z.boolean().nullable().optional(),
   headless: z.boolean().optional(),
   latency: z
     .object({
@@ -188,7 +190,8 @@ export const runtimePatchSchema = runtimeConfigSchema.partial().strict();
 export type RuntimePatch = z.infer<typeof runtimePatchSchema>;
 
 export const runtimeInfoSchema = z.object({
-  config: runtimeConfigSchema,
+  /** "remote": the local server forwards to another one (bb switches it to cpu/cuda when it starts it). */
+  config: runtimeConfigSchema.extend({ provider: z.enum(["cpu", "cuda", "openvino", "remote"]) }),
   providers_available: availableSchema,
   restart_required: restartSchema,
   restart_command: z.string(),

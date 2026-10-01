@@ -162,11 +162,11 @@ test("getConfig answers with runtime: null when the local server is down", async
   assert.equal(typeof r.pause_other_audio_supported, "boolean");
 });
 
-test("getConfig maps the local runtime and shows a remote provider as cpu", async () => {
+test("getConfig maps the local runtime and shows a forwarding (remote) provider as it is", async () => {
   const h = await harness();
   const r = await h.call<ConfigResponse>("getConfig");
   assert.deepEqual(r.runtime, {
-    config: { provider: "cpu", idle_unload_minutes: 10, intra_op_threads: 0, gpu_mem_limit_mb: 0 },
+    config: { provider: "remote", idle_unload_minutes: 10, intra_op_threads: 0, gpu_mem_limit_mb: 0 },
     providers_available: LOCAL_CONFIG.providers_available,
     restart_required: LOCAL_CONFIG.restart_required,
     restart_command: LOCAL_CONFIG.restart_command,
@@ -253,7 +253,7 @@ test("status reports each engine's health and breaker, the main's health, mute a
     { slot: "main", url: "http://gpu:6789", local: false, health: { up: false, error: "ECONNREFUSED" }, breaker: "closed" },
     {
       slot: "backup", url: LOCAL, local: true, breaker: "closed",
-      health: { up: true, health: { status: "ok", version: "0.3.4", model: "", active_sessions: 0 } },
+      health: { up: true, health: { status: "ok", version: "0.3.4", model: "", active_sessions: 0, forwards: false } },
     },
   ]);
   assert.equal(s.setup.state, "error", "no supervisor in this harness");
@@ -470,4 +470,12 @@ test("disposing the load scope aborts an in-flight runtime PATCH at once", async
   await h.scope.dispose(10_000);
   assert.ok(Date.now() - t0 < 1_000, "dispose did not wait for the 30 s PATCH timeout");
   await assert.rejects(pending, /cancelled/);
+});
+
+test("status says when an engine forwards to another server", async () => {
+  const main = fakeEngine(LOCAL, { health: { ...UP, forwards: true } });
+  const h = await harness({ main });
+  const s = await h.call<KokoroStatus>("status");
+  const health = s.engines[0]!.health;
+  assert.equal(health.up && health.health.forwards, true);
 });

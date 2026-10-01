@@ -97,10 +97,8 @@ export function toRuntime(body: unknown): ConfigResponse["runtime"] {
   const parsed = localConfigSchema.safeParse(body);
   if (!parsed.success) return null;
   const { config: c, providers_available, restart_required, restart_command } = parsed.data;
-  // The local engine forwarding to a remote one is the old setup; it synthesizes on the CPU otherwise.
-  const provider = c.provider === "remote" ? "cpu" : c.provider;
   const runtime = runtimeInfoSchema.safeParse({
-    config: { provider, idle_unload_minutes: c.idle_unload_minutes, intra_op_threads: c.intra_op_threads, gpu_mem_limit_mb: c.gpu_mem_limit_mb },
+    config: { provider: c.provider, idle_unload_minutes: c.idle_unload_minutes, intra_op_threads: c.intra_op_threads, gpu_mem_limit_mb: c.gpu_mem_limit_mb },
     providers_available, restart_required, restart_command,
   });
   return runtime.success ? runtime.data : null;
@@ -109,7 +107,7 @@ export function toRuntime(body: unknown): ConfigResponse["runtime"] {
 /** An engine's health as the page shows it. */
 function healthResult(h: EngineHealth): HealthResult {
   return h.reachable
-    ? { up: true, health: { status: "ok", version: h.version, model: "", active_sessions: 0 } }
+    ? { up: true, health: { status: "ok", version: h.version, model: "", active_sessions: 0, forwards: h.forwards } }
     : { up: false, error: h.error ?? "unreachable" };
 }
 

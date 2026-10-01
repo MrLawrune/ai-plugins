@@ -5,26 +5,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatHomePathForDisplay } from "@/lib/utils";
 import type { rpcContract } from "../contract.ts";
-import type { EngineRef, EngineStatus, RuntimePatch, Settings } from "../schemas.ts";
+import type { ConfigResponse, EngineRef, EngineStatus, RuntimePatch, Settings } from "../schemas.ts";
 import { useConfig, usePrefs, useStatus } from "./state.ts";
 import { ownerText, statusLine } from "./status.ts";
 import { ChoiceGroup, Disclosure, errorText, Row, SaveIndicator, SliderRow, StatusDot, SwitchRow } from "./ui.tsx";
 
 type Provider = NonNullable<RuntimePatch["provider"]>;
+/** What the local server reports, including "remote" (it forwards instead of synthesizing). */
+type ShownProvider = NonNullable<ConfigResponse["runtime"]>["config"]["provider"];
+
+const FORWARDS = "This server forwards to another one";
 type Engines = Settings["engines"];
 type EngineChoice = "none" | "local" | "url";
 
 const choiceOf = (ref: EngineRef | null): EngineChoice => (ref === null ? "none" : ref === "local" ? "local" : "url");
 const isHttpUrl = (url: string) => /^https?:\/\/\S+$/.test(url);
 
-function formatUptime(s: number): string {
-  if (s < 3600) return `${Math.max(1, Math.floor(s / 60))} min`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h`;
-  return `${Math.floor(s / 86400)} d`;
-}
-
 function engineStatusText(e: EngineStatus): string {
   if (!e.health.up) return `Unreachable: ${e.health.error}`;
+  if (e.health.health.forwards) return `${FORWARDS}, so it can't synthesize for bb. Point this engine at the synthesizing server.`;
   const version = e.health.health.version;
   return version ? `Reachable · v${version}` : "Reachable";
 }
@@ -100,7 +99,9 @@ function EngineSlot({ label, value, optional, status, note, disabled, onSave }: 
         </Row>
       ) : null}
       {status && selected === saved && saved !== "none" ? (
-        <p className={status.health.up ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{engineStatusText(status)}</p>
+        <p className={status.health.up && !status.health.health.forwards ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
+          {engineStatusText(status)}
+        </p>
       ) : null}
       {note ? <p className="text-xs text-amber-600 dark:text-amber-400">{note}</p> : null}
     </div>
@@ -126,7 +127,7 @@ export function ServerSettings() {
   const engines = data?.config.engines ?? null;
   const runtime = data?.runtime ?? null;
   // Without the engine's /config, the runtime bb will start is the best answer.
-  const provider: Provider = runtime?.config.provider ?? (prefs.runtime === "gpu" ? "cuda" : "cpu");
+  const provider: ShownProvider = runtime?.config.provider ?? (prefs.runtime === "gpu" ? "cuda" : "cpu");
   const usesLocal = engines !== null && (engines.main === "local" || engines.backup === "local");
   // A managed engine that cannot start can still be moved to the other runtime.
   const showRuntime = runtime !== null || (usesLocal && managed);
@@ -151,11 +152,11 @@ export function ServerSettings() {
   };
   const saveEngines = (next: Partial<Engines>) => (engines ? apply({ engines: { ...engines, ...next } }) : Promise.resolve(false));
 
-  const chooseRuntime = async (next: Provider) => {
-    if (next === provider) return;
+  const chooseRuntime = async (next: ShownProvider) => {
+    if (next === provider || next === "remote") return;
     const wanted = next === "cuda" ? "gpu" : "cpu";
     if (managed && next !== "openvino" && prefs.runtime !== wanted) {
-      // The supervisor only aligns cpu <-> cuda, so leave OpenVINO first.
+      // The supervisor does not move a server off OpenVINO, so leave it first.
       if (provider === "openvino" && !(await apply({ provider: "cpu" }))) return;
       // The supervisor restarts into the new runtime and aligns the engine to it.
       if (await setPrefs({ runtime: wanted })) {
@@ -178,7 +179,7 @@ export function ServerSettings() {
       <div className="space-y-1">
         <p className="flex items-center gap-2 text-sm font-medium"><StatusDot tone={line.tone} />{line.text}</p>
         <p className="text-xs text-muted-foreground">
-          {[owner, h?.version ? `v${h.version}` : null, h?.uptime_s ? `up ${formatUptime(h.uptime_s)}` : null,
+          {[owner, h?.version ? `v${h.version}` : null,
             status.latency.median_ms != null ? `typical first audio ${Math.round(status.latency.median_ms)} ms` : null]
             .filter(Boolean).join(" · ")}
         </p>
@@ -214,7 +215,7 @@ export function ServerSettings() {
 
       {showRuntime ? (
         <Row label="Runtime">
-          <ChoiceGroup
+          <ChoiceGroup<ShownProvider>
             label="Runtime"
             value={provider}
             onChange={(v) => void chooseRuntime(v)}
@@ -226,6 +227,11 @@ export function ServerSettings() {
               ...(openvinoOffered ? [{ value: "openvino" as const, label: "OpenVINO", hint: "Intel CPU and GPU acceleration." }] : []),
             ]}
           />
+          {provider === "remote" ? (
+            <p className="mt-1.5 text-xs text-destructive">
+              {FORWARDS} instead of synthesizing. bb switches it when it next starts or connects to it; pick CPU or NVIDIA GPU to switch it now.
+            </p>
+          ) : null}
           {external ? (
             <p className="mt-1.5 text-xs text-muted-foreground">
               This server was started outside bb, so bb can't switch its runtime. Restart it with Manage server on to change it.
