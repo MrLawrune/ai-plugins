@@ -1,29 +1,54 @@
-import { DEFAULT_SETTINGS, settingsPatchSchema, settingsSchema, type Settings, type SettingsPatch } from "../schemas.ts";
+import {
+  DEFAULT_SETTINGS,
+  engineRefSchema,
+  retentionSchema,
+  settingsPatchSchema,
+  settingsSchema,
+  type Settings,
+  type SettingsPatch,
+} from "../schemas.ts";
 
 export interface KvLike {
   get<T>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
 }
 
-/** Field-by-field validation: each key of `raw` that parses under settingsSchema.shape[key] wins, others take defaults. */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Field-by-field validation: each key of `raw` that parses under settingsSchema.shape[key] wins, others take defaults.
+ * `engines` and `retention` are checked one level deeper, so one bad sub-field keeps its valid siblings. */
 export function coerceSettings(raw: unknown): Settings {
-  const out: Record<string, unknown> = { ...DEFAULT_SETTINGS };
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const src = raw as Record<string, unknown>;
-    for (const key of Object.keys(settingsSchema.shape) as (keyof Settings)[]) {
-      if (key === "v" || !(key in src)) continue;
-      const parsed = settingsSchema.shape[key].safeParse(src[key]);
-      if (parsed.success) out[key] = parsed.data;
-    }
+  const out: Settings = structuredClone(DEFAULT_SETTINGS);
+  if (!isRecord(raw)) return out;
+  const fields = out as Record<string, unknown>;
+  for (const key of Object.keys(settingsSchema.shape) as (keyof Settings)[]) {
+    if (key === "v" || !(key in raw)) continue;
+    const parsed = settingsSchema.shape[key].safeParse(raw[key]);
+    if (parsed.success) fields[key] = parsed.data;
   }
-  return out as Settings;
+  if (isRecord(raw.engines)) {
+    const main = engineRefSchema.safeParse(raw.engines.main);
+    const backup = engineRefSchema.nullable().safeParse(raw.engines.backup);
+    out.engines = { main: main.success ? main.data : "local", backup: backup.success ? backup.data : null };
+  }
+  if (isRecord(raw.retention)) {
+    const age = retentionSchema.shape.maxAgeDays.safeParse(raw.retention.maxAgeDays);
+    const entries = retentionSchema.shape.maxEntries.safeParse(raw.retention.maxEntries);
+    out.retention = {
+      maxAgeDays: age.success ? age.data : DEFAULT_SETTINGS.retention.maxAgeDays,
+      maxEntries: entries.success ? entries.data : DEFAULT_SETTINGS.retention.maxEntries,
+    };
+  }
+  return out;
 }
 
 type Listener = (next: Settings, prev: Settings) => void;
 
 export class SettingsStore {
   #kv: KvLike;
-  #cache: Settings = DEFAULT_SETTINGS;
+  #cache: Settings = structuredClone(DEFAULT_SETTINGS);
   #listeners = new Set<Listener>();
   #queue: Promise<unknown> = Promise.resolve();
 
@@ -50,7 +75,11 @@ export class SettingsStore {
 
   /** Validated patch, applied in call order, each on top of the last committed settings. Throws ZodError on invalid input. */
   update(patch: SettingsPatch): Promise<Settings> {
-    return this.#enqueue(() => settingsSchema.parse({ ...this.#cache, ...settingsPatchSchema.parse(patch) }));
+    return this.#enqueue(() => {
+      // A partial schema keeps `key: undefined`; drop those so they cannot clobber the current value.
+      const defined = Object.entries(settingsPatchSchema.parse(patch)).filter(([, v]) => v !== undefined);
+      return settingsSchema.parse({ ...this.#cache, ...Object.fromEntries(defined) });
+    });
   }
 
   onChange(listener: Listener): () => void {

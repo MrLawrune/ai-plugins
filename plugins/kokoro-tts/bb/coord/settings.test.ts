@@ -47,3 +47,25 @@ test("MuteStore notifies only on change", async () => {
   await m.set(true); await m.set(true); await m.set(false);
   assert.deepEqual(seen, [true, false]);
 });
+test("update ignores undefined-valued patch keys", async () => {
+  const s = new SettingsStore(memKv()); await s.replace({ ...DEFAULT_SETTINGS, speed: 1.3 });
+  const got = await s.update({ speed: undefined, voice: "bm_george" });
+  assert.equal(got.voice, "bm_george"); assert.equal(got.speed, 1.3);
+});
+test("coerceSettings validates engines main and backup independently", () => {
+  const main = { url: "http://engine.example:8880" };
+  assert.deepEqual(coerceSettings({ engines: { main, backup: { url: "not a url" } } }).engines, { main, backup: null });
+  const backup = { url: "http://backup.example:8880" };
+  assert.deepEqual(coerceSettings({ engines: { main: "bogus", backup } }).engines, { main: "local", backup });
+});
+test("coerceSettings validates retention fields independently", () => {
+  assert.deepEqual(coerceSettings({ retention: { maxAgeDays: 30, maxEntries: 5 } }).retention, { maxAgeDays: 30, maxEntries: 1000 });
+  assert.deepEqual(coerceSettings({ retention: { maxAgeDays: 0, maxEntries: 500 } }).retention, { maxAgeDays: 7, maxEntries: 500 });
+});
+test("defaults are never shared by reference", () => {
+  const coerced = coerceSettings({});
+  assert.notEqual(coerced.engines, DEFAULT_SETTINGS.engines); assert.notEqual(coerced.retention, DEFAULT_SETTINGS.retention);
+  const initial = new SettingsStore(memKv()).get();
+  assert.notEqual(initial, DEFAULT_SETTINGS); assert.notEqual(initial.engines, DEFAULT_SETTINGS.engines);
+  assert.deepEqual(initial, DEFAULT_SETTINGS);
+});
