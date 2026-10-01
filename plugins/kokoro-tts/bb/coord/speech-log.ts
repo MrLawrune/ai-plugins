@@ -22,7 +22,8 @@ CREATE INDEX speech_log_session ON speech_log(session_id, id);
 CREATE INDEX speech_log_ts ON speech_log(ts);`,
 ];
 
-const STALE_SECONDS = 60;
+/** Past a held reply's longest wait (15 min) and then some: older live rows are orphans. */
+const STALE_SECONDS = 20 * 60;
 const ERROR_MAX = 200;
 const LATENCY_WINDOW = 50;
 
@@ -65,11 +66,11 @@ export class SpeechLogStore {
     this.#now = deps.now ?? Date.now;
   }
 
-  /** Runs migrations, prunes to limits, reconciles stale rows. Call once at load. */
+  /** Runs migrations, prunes to limits, reconciles stale rows. Call once at load, before anything speaks. */
   init(): void {
     this.#migrate(this.#db(), MIGRATIONS);
     this.prune();
-    this.reconcile();
+    this.reconcile([]);
   }
 
   /** Inserts a row (status "queued", or the given terminal status) and enforces maxEntries in the same transaction. */
@@ -131,11 +132,16 @@ export class SpeechLogStore {
     )();
   }
 
-  /** queued/playing rows older than 60 s become interrupted. Returns rows changed. */
-  reconcile(): number {
+  /**
+   * queued/playing rows older than 20 minutes that no live reply owns become
+   * interrupted (a reload or crash left them). `live`: the entry ids the hub
+   * still holds or plays. Returns rows changed.
+   */
+  reconcile(live: Iterable<number>): number {
     return this.#db().prepare(
-      "UPDATE speech_log SET status = 'interrupted' WHERE status IN ('queued', 'playing') AND ts < ?",
-    ).run(this.#now() / 1000 - STALE_SECONDS).changes;
+      `UPDATE speech_log SET status = 'interrupted' WHERE status IN ('queued', 'playing') AND ts < ?
+         AND id NOT IN (SELECT value FROM json_each(?))`,
+    ).run(this.#now() / 1000 - STALE_SECONDS, JSON.stringify([...live])).changes;
   }
 
   /** Median first_audio_ms over the last 50 done rows that have one. */

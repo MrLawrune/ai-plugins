@@ -952,3 +952,15 @@ test("play on all: the last local window leaving ends the pause while a remote o
   assert.deepEqual(speaking.at(-1), { key: "7", on: false });
   assert.deepEqual(statuses.at(-1), [7, "done", undefined]);
 });
+
+test("liveEntryIds lists the replies playing or waiting, not finished ones", async () => {
+  const { hub, connect, status } = setup();
+  const b = connect("b", 20);
+  hub.speak(7, "One.", "t1", 1);
+  hub.speak(8, "Two.", "t2", 1);
+  await tick();
+  assert.deepEqual(hub.liveEntryIds().sort(), [7, 8]);
+  status(b, 7, "playing");
+  status(b, 7, "done");
+  assert.deepEqual(hub.liveEntryIds(), [8]);
+});

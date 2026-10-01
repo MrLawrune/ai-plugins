@@ -290,6 +290,11 @@ export class PlayerHub {
     return this.#awayActive() || this.#deps.registry.select("all", null).length > 0;
   }
 
+  /** Entry ids of the replies playing or waiting (their log rows are live). */
+  liveEntryIds(): number[] {
+    return [...this.#jobs.keys()];
+  }
+
   clients(): PublicClientInfo[] {
     return this.#deps.registry.live().map(({ clientId, deviceName, focusedAt, audioUnlocked }) => ({
       clientId, deviceName, focusedAt, audioUnlocked, local: this.#isLocal(clientId),

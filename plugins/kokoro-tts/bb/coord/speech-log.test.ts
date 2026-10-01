@@ -46,10 +46,45 @@ test("ids are not reused after clear", () => {
   const a = s.add("a", "t", null); s.clear(); const b = s.add("b", "t", null);
   assert.ok(b.id > a.id);
 });
-test("reconcile marks stale queued and playing rows interrupted", () => {
+test("reconcile marks orphaned queued and playing rows older than 20 minutes interrupted", () => {
   const { s, now } = store();
-  const a = s.add("a", "t", null); s.setStatus(a.id, "playing"); now.t += 61_000;
-  assert.equal(s.reconcile(), 1); assert.equal(s.list("t")[0].status, "interrupted");
+  const a = s.add("a", "t", null); s.setStatus(a.id, "playing");
+  s.add("b", "t", null);
+  now.t += 20 * 60_000 - 1_000;
+  assert.equal(s.reconcile([]), 0, "a long full-mode reply or a held one may still be live");
+  now.t += 2_000;
+  assert.equal(s.reconcile([]), 2);
+  assert.deepEqual(s.list("t").map((e) => e.status), ["interrupted", "interrupted"]);
+});
+test("reconcile leaves rows the hub still holds, however old", () => {
+  const { s, now } = store();
+  const held = s.add("held", "t", null);
+  const playing = s.add("playing", "t", null); s.setStatus(playing.id, "playing");
+  const orphan = s.add("orphan", "t", null);
+  now.t += 60 * 60_000;
+  assert.equal(s.reconcile([held.id, playing.id]), 1);
+  assert.deepEqual(s.list("t").map((e) => [e.id, e.status]), [[held.id, "queued"], [playing.id, "playing"], [orphan.id, "interrupted"]]);
+});
+test("init reconciles with the same 20-minute rule", () => {
+  const db = new Database(":memory:");
+  const now = { t: 1_800_000_000_000 };
+  let migrated = false;
+  const make = () => new SpeechLogStore({
+    db: () => db,
+    migrate: (d, stmts) => { if (!migrated) for (const sql of stmts) d.exec(sql); migrated = true; },
+    limits: () => ({ maxAgeDays: 7, maxEntries: 100 }),
+    now: () => now.t,
+  });
+  const first = make();
+  first.init();
+  const recent = first.add("recent", "t", null);
+  now.t += 5 * 60_000; // a reload 5 minutes later: the old load may still be playing it
+  make().init();
+  assert.equal(first.list("t").find((e) => e.id === recent.id)?.status, "queued");
+  now.t += 20 * 60_000;
+  make().init();
+  assert.equal(first.list("t").find((e) => e.id === recent.id)?.status, "interrupted");
+  db.close();
 });
 test("error is cut to 200 chars and engine recorded", () => {
   const { s } = store();

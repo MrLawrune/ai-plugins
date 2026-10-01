@@ -145,15 +145,6 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     limits: () => settings.get().retention,
   });
   speechLog.init();
-  bb.background.service("log-prune", {
-    async start(signal) {
-      while (!signal.aborted) {
-        speechLog.prune();
-        speechLog.reconcile();
-        await sleep(PRUNE_EVERY_MS, signal);
-      }
-    },
-  });
 
   /** One adapter per engine URL, so each keeps its connection reuse. */
   const engineCache = new Map<string, Engine>();
@@ -217,6 +208,16 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     },
   });
   bb.onDispose(() => hub.dispose());
+  // The hub's live replies are never stale, however long they wait or play.
+  bb.background.service("log-prune", {
+    async start(signal) {
+      while (!signal.aborted) {
+        speechLog.prune();
+        speechLog.reconcile(hub.liveEntryIds());
+        await sleep(PRUNE_EVERY_MS, signal);
+      }
+    },
+  });
   bb.background.service("player-keepalive", {
     async start(signal) {
       while (!signal.aborted) {
