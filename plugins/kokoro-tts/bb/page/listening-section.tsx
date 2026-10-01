@@ -1,9 +1,9 @@
-import type { KokoroConfig } from "../schemas.ts";
+import type { Settings, SettingsPatch } from "../schemas.ts";
 import { Row, Section, SliderRow, StopSlider, SwitchRow } from "./ui.tsx";
 
-type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;
+type Patch = (p: SettingsPatch, debounceMs?: number) => void;
 
-export const MODES: { value: KokoroConfig["mode"]; label: string; hint: string }[] = [
+export const MODES: { value: Settings["mode"]; label: string; hint: string }[] = [
   { value: "quiet", label: "Off (quiet)", hint: "No speech, sounds, or voice instructions." },
   { value: "ambient", label: "Ambient", hint: "Sounds only: a cue when a reply finishes or needs you." },
   { value: "brief", label: "Brief", hint: "One short spoken sentence per reply." },
@@ -12,7 +12,7 @@ export const MODES: { value: KokoroConfig["mode"]; label: string; hint: string }
   { value: "full", label: "Full", hint: "Reads the whole reply aloud and skips code." },
 ];
 
-export function ListeningSection({ config, patch }: { config: KokoroConfig; patch: Patch }) {
+export function ListeningSection({ config, patch }: { config: Settings; patch: Patch }) {
   return (
     <Section title="Listening" description="How much you hear when an agent finishes.">
       <Row label="Mode" htmlFor="mode">

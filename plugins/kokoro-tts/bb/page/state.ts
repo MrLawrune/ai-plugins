@@ -6,16 +6,39 @@ import type { rpcContract } from "../contract.ts";
 import {
   configResponseSchema,
   prefsSchema,
+  runtimeConfigSchema,
   type ConfigResponse,
-  type KokoroConfig,
   type KokoroStatus,
   type Prefs,
+  type RuntimePatch,
+  type SettingsPatch,
 } from "../schemas.ts";
 import { errorText } from "../util.ts";
 import { createPatchQueue, type SaveState } from "./patch-queue.ts";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
-type Patch = Partial<KokoroConfig>;
+/** Speech settings or engine-runtime keys; useConfig sends the two kinds in separate calls. */
+export type ConfigPatch = SettingsPatch & RuntimePatch;
+
+const RUNTIME_KEYS = new Set<string>(Object.keys(runtimeConfigSchema.shape));
+
+function split(p: ConfigPatch): { settings: SettingsPatch; runtime: RuntimePatch } {
+  const settings: Record<string, unknown> = {};
+  const runtime: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(p)) (RUNTIME_KEYS.has(k) ? runtime : settings)[k] = v;
+  return { settings, runtime };
+}
+
+const empty = (o: object) => Object.keys(o).length === 0;
+
+/** One indicator for both queues: an error wins, then saving, then saved. */
+function combine(a: SaveState, b: SaveState): SaveState {
+  for (const kind of ["error", "saving", "saved"] as const) {
+    if (a.kind === kind) return a;
+    if (b.kind === kind) return b;
+  }
+  return a;
+}
 
 // --- status: one poll shared by every mounted surface ---
 
@@ -114,48 +137,91 @@ const omit = <T extends object>(obj: T, keys: (keyof T)[]): T => {
   return out;
 };
 
+/**
+ * Settings are plugin-owned and load even while every engine is down; they
+ * reload when the main engine comes up, since only then is its runtime known.
+ */
 export function useConfig(up: boolean) {
   const rpc = useRpc<typeof rpcContract>();
   const [confirmed, setConfirmed] = useState<ConfigResponse | null>(null);
-  const [drafts, setDrafts] = useState<Patch>({});
-  const [save, setSave] = useState<SaveState>({ kind: "idle" });
-  const load = useCallback(() => rpc.call("getConfig"), [rpc]);
-  const loaded = useLoaded(load, up);
+  const [drafts, setDrafts] = useState<SettingsPatch>({});
+  const [runtimeDrafts, setRuntimeDrafts] = useState<RuntimePatch>({});
+  const [settingsSave, setSettingsSave] = useState<SaveState>({ kind: "idle" });
+  const [runtimeSave, setRuntimeSave] = useState<SaveState>({ kind: "idle" });
+  // `up` is a dependency only so the load reruns when the main engine comes up.
+  const load = useCallback(() => rpc.call("getConfig"), [rpc, up]);
+  const loaded = useLoaded(load, true);
   useEffect(() => { if (loaded.value) setConfirmed(loaded.value); }, [loaded.value]);
 
-  const queue = useMemo(() => createPatchQueue<KokoroConfig, ConfigResponse>({
+  // The server rejects a patch that mixes the two kinds, so each kind has its own queue.
+  const settingsQueue = useMemo(() => createPatchQueue<SettingsPatch, ConfigResponse>({
     send: (p) => rpc.call("patchConfig", p),
     onCommitted: (r, keys) => {
       setConfirmed(r);
       setDrafts((d) => omit(d, keys));
     },
     onFailed: (keys) => setDrafts((d) => omit(d, keys)),
-    onState: setSave,
+    onState: setSettingsSave,
   }), [rpc]);
+  const runtimeQueue = useMemo(() => createPatchQueue<RuntimePatch, ConfigResponse>({
+    send: (p) => rpc.call("patchConfig", p),
+    onCommitted: (r, keys) => {
+      setConfirmed(r);
+      setRuntimeDrafts((d) => omit(d, keys));
+    },
+    onFailed: (keys) => setRuntimeDrafts((d) => omit(d, keys)),
+    onState: setRuntimeSave,
+  }), [rpc]);
+  const flush = useCallback(
+    () => Promise.all([settingsQueue.flush(), runtimeQueue.flush()]).then(() => undefined),
+    [settingsQueue, runtimeQueue],
+  );
   // Leaving the page mid-drag still saves the last value.
-  useEffect(() => () => { void queue.flush(); }, [queue]);
+  useEffect(() => () => { void flush(); }, [flush]);
 
   useRealtime("kokoro-config", (payload) => {
     const r = configResponseSchema.safeParse(payload);
     if (r.success) setConfirmed(r.data);
   });
 
-  const patch = useCallback((p: Patch, debounceMs = 0) => {
-    setDrafts((d) => ({ ...d, ...p }));
-    queue.set(p, debounceMs);
-  }, [queue]);
+  const patch = useCallback((p: ConfigPatch, debounceMs = 0) => {
+    const { settings, runtime } = split(p);
+    if (!empty(settings)) {
+      setDrafts((d) => ({ ...d, ...settings }));
+      settingsQueue.set(settings, debounceMs);
+    }
+    if (!empty(runtime)) {
+      setRuntimeDrafts((d) => ({ ...d, ...runtime }));
+      runtimeQueue.set(runtime, debounceMs);
+    }
+  }, [settingsQueue, runtimeQueue]);
 
-  /** Apply now and throw on failure: for engine changes the caller reports inline. */
-  const commit = useCallback(async (p: Patch) => {
-    await queue.flush();
+  /** Apply now and throw on failure: for engine changes the caller reports inline. One kind per call. */
+  const commit = useCallback(async (p: SettingsPatch | RuntimePatch) => {
+    await flush();
     setConfirmed(await rpc.call("patchConfig", p));
-  }, [queue, rpc]);
+  }, [flush, rpc]);
 
-  const data = useMemo(
-    () => (confirmed ? { ...confirmed, config: { ...confirmed.config, ...drafts } } : null),
-    [confirmed, drafts],
-  );
-  return { data, error: loaded.error, reload: loaded.reload, patch, commit, save };
+  const dismissNote = useCallback(async () => {
+    try {
+      await rpc.call("dismissNote");
+      setConfirmed((c) => (c ? { ...c, note: null } : c));
+    } catch (cause) {
+      toast.error(`Kokoro: ${errorText(cause)}`);
+    }
+  }, [rpc]);
+
+  const data = useMemo((): ConfigResponse | null => {
+    if (!confirmed) return null;
+    const { runtime } = confirmed;
+    return {
+      ...confirmed,
+      config: { ...confirmed.config, ...drafts },
+      runtime: runtime ? { ...runtime, config: { ...runtime.config, ...runtimeDrafts } } : null,
+    };
+  }, [confirmed, drafts, runtimeDrafts]);
+  const save = combine(settingsSave, runtimeSave);
+  return { data, error: loaded.error, reload: loaded.reload, patch, commit, dismissNote, save };
 }
 
 // --- prefs (bb-side; the backend serializes writes) ---

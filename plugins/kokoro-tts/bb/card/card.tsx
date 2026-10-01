@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import type { rpcContract } from "../contract.ts";
 import { errorText } from "../util.ts";
 import { cardState, findEntry, needsPolling, normalizeSpoken, statusText, type CardState } from "./match.ts";
-import { refreshSpeechLog, useSpeechLog } from "./speech-log.ts";
+import { refreshAllSpeechLogs, refreshSpeechLog, useSpeechLog } from "./speech-log.ts";
 
 const SOUND_LABEL: Record<string, string> = {
   "sound:working": "Working sound",
@@ -88,6 +88,7 @@ function SpeechCard({ say, threadId }: { say: string; threadId: string }) {
   const [pendingAt, setPendingAt] = useState<number | null>(null);
   /** A turn for this card's reply that made no log entry: muted, not spoken (mode, repeat), or voice off. */
   const [skipped, setSkipped] = useState<"muted" | "unspoken" | "off" | null>(null);
+  useRealtime("kokoro-log-cleared", () => refreshAllSpeechLogs());
   useRealtime("kokoro-turn", (payload) => {
     const turn = payload as TurnSignal | null;
     if (turn?.threadId !== threadId) return;

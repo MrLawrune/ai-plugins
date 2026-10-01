@@ -5,24 +5,95 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatHomePathForDisplay } from "@/lib/utils";
 import type { rpcContract } from "../contract.ts";
-import { remoteEngineSchema, type KokoroConfig, type Prefs } from "../schemas.ts";
+import type { EngineRef, EngineStatus, RuntimePatch, Settings } from "../schemas.ts";
 import { useConfig, usePrefs, useStatus } from "./state.ts";
 import { ownerText, statusLine } from "./status.ts";
 import { ChoiceGroup, Disclosure, errorText, Row, SaveIndicator, SliderRow, StatusDot, SwitchRow } from "./ui.tsx";
 
-type Engine = "cpu" | "gpu" | "remote";
+type Provider = NonNullable<RuntimePatch["provider"]>;
+type Engines = Settings["engines"];
+type EngineChoice = "none" | "local" | "url";
 
-export function engineChoice(provider: KokoroConfig["provider"] | undefined, runtime: Prefs["runtime"]): Engine {
-  if (provider === "remote") return "remote";
-  if (provider === "cuda") return "gpu";
-  if (provider === "cpu" || provider === "openvino") return "cpu";
-  return runtime; // server down: the runtime bb will start is the best answer
-}
+const choiceOf = (ref: EngineRef | null): EngineChoice => (ref === null ? "none" : ref === "local" ? "local" : "url");
+const isHttpUrl = (url: string) => /^https?:\/\/\S+$/.test(url);
 
 function formatUptime(s: number): string {
   if (s < 3600) return `${Math.max(1, Math.floor(s / 60))} min`;
   if (s < 86400) return `${Math.floor(s / 3600)} h`;
   return `${Math.floor(s / 86400)} d`;
+}
+
+function engineStatusText(e: EngineStatus): string {
+  if (!e.health.up) return `Unreachable: ${e.health.error}`;
+  const version = e.health.health.version;
+  return version ? `Reachable · v${version}` : "Reachable";
+}
+
+/** One engine slot: where it runs, its URL when it is another server, and how it is doing. */
+function EngineSlot({ label, value, optional, status, note, onSave }: {
+  label: string;
+  value: EngineRef | null;
+  optional: boolean;
+  status: EngineStatus | undefined;
+  note: string | null;
+  onSave: (ref: EngineRef | null) => Promise<boolean>;
+}) {
+  const saved = choiceOf(value);
+  const savedUrl = value !== null && value !== "local" ? value.url : "";
+  const [draft, setDraft] = useState<EngineChoice | null>(null);
+  const [url, setUrl] = useState(savedUrl);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  useEffect(() => setUrl(savedUrl), [savedUrl]);
+  const selected = draft ?? saved;
+
+  const choose = async (next: EngineChoice) => {
+    setUrlError(null);
+    if (next === "url") {
+      setDraft(saved === "url" ? null : "url");
+      return;
+    }
+    setDraft(null);
+    if (next !== saved) await onSave(next === "local" ? "local" : null);
+  };
+  const saveUrl = async () => {
+    const next = url.trim();
+    if (!isHttpUrl(next)) {
+      setUrlError("Use an http:// or https:// address.");
+      return;
+    }
+    setUrlError(null);
+    if (next !== savedUrl && (await onSave({ url: next }))) setDraft(null);
+  };
+  const id = `${label.toLowerCase().replace(/\W+/g, "-")}-url`;
+
+  return (
+    <div className="space-y-2">
+      <Row label={label}>
+        <ChoiceGroup
+          label={label}
+          value={selected}
+          onChange={(v) => void choose(v)}
+          options={[
+            ...(optional ? [{ value: "none" as const, label: "None", hint: "With the main engine unreachable, replies play an error cue." }] : []),
+            { value: "local" as const, label: "This computer (managed)", hint: "The Kokoro server on the computer running bb." },
+            { value: "url" as const, label: "Another server", hint: "A Kokoro server elsewhere on your network synthesizes." },
+          ]}
+        />
+      </Row>
+      {selected === "url" ? (
+        <Row label={`${label} URL`} htmlFor={id}>
+          <Input id={id} value={url} onChange={(e) => setUrl(e.target.value)} onBlur={() => void saveUrl()}
+            onKeyDown={(e) => { if (e.key === "Enter") void saveUrl(); }}
+            placeholder="http://192.0.2.10:6789" className="font-mono text-xs" aria-invalid={urlError !== null} />
+          {urlError ? <p role="alert" className="mt-1 text-xs text-destructive">{urlError}</p> : null}
+        </Row>
+      ) : null}
+      {status && selected === saved && saved !== "none" ? (
+        <p className={status.health.up ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{engineStatusText(status)}</p>
+      ) : null}
+      {note ? <p className="text-xs text-amber-600 dark:text-amber-400">{note}</p> : null}
+    </div>
+  );
 }
 
 export function ServerSettings() {
@@ -32,17 +103,8 @@ export function ServerSettings() {
   const up = status?.health.up === true;
   const { prefs, setPrefs } = usePrefs();
   const { data, patch, commit, save } = useConfig(up);
-  const [draft, setDraft] = useState<Engine | null>(null);
-  const [url, setUrl] = useState("");
-  const [fallback, setFallback] = useState(true);
   const [engineError, setEngineError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
-
-  const cfg = data?.config;
-  useEffect(() => {
-    setUrl(cfg?.remote_url ?? "");
-    setFallback(cfg?.fallback_to_cpu ?? true);
-  }, [cfg?.remote_url, cfg?.fallback_to_cpu]);
 
   if (!status || !prefs) return <p className="text-sm text-muted-foreground">Checking…</p>;
 
@@ -50,65 +112,48 @@ export function ServerSettings() {
   const owner = ownerText(status);
   const external = status.setup.state === "external";
   const managed = prefs.manageServer && !external;
-  const gpuOffered = status.setup.gpuAvailable || data?.providers_available.cuda === true;
-  const current = engineChoice(cfg?.provider, prefs.runtime);
-  const selected = draft ?? current;
+  const engines = data?.config.engines ?? null;
+  const runtime = data?.runtime ?? null;
+  const provider = runtime?.config.provider ?? null;
+  const usesLocal = engines !== null && (engines.main === "local" || engines.backup === "local");
+  const gpuOffered = status.setup.gpuAvailable || runtime?.providers_available.cuda === true;
+  const openvinoOffered = runtime?.providers_available.openvino === true || provider === "openvino";
   const h = up && status.health.up ? status.health.health : null;
-  const remoteNode = cfg?.provider === "remote" ? remoteEngineSchema.safeParse(h?.engine) : null;
-  const remoteInfo = remoteNode?.success ? remoteNode.data : null;
+  const slotStatus = (slot: EngineStatus["slot"]) => status.engines.find((e) => e.slot === slot);
   const showSetup = !["running", "external"].includes(status.setup.state);
 
-  const chooseEngine = async (next: Engine) => {
+  const apply = async (p: Parameters<typeof commit>[0]): Promise<boolean> => {
+    setApplying(true);
     setEngineError(null);
-    if (next === "remote") {
-      setDraft(current === "remote" ? null : "remote");
-      return;
+    try {
+      await commit(p);
+      return true;
+    } catch (cause) {
+      setEngineError(errorText(cause));
+      return false;
+    } finally {
+      setApplying(false);
     }
-    setDraft(null);
-    const runtime: Prefs["runtime"] = next;
-    if (managed && prefs.runtime !== runtime) {
-      // The supervisor only aligns cpu <-> cuda, so leave a remote engine first.
-      if (cfg?.provider === "remote") {
-        try {
-          await commit({ provider: "cpu" });
-        } catch (cause) {
-          setEngineError(errorText(cause));
-          return;
-        }
-      }
+  };
+  const saveEngines = (next: Partial<Engines>) => (engines ? apply({ engines: { ...engines, ...next } }) : Promise.resolve(false));
+
+  const chooseRuntime = async (next: Provider) => {
+    if (next === provider) return;
+    const wanted = next === "cuda" ? "gpu" : "cpu";
+    if (managed && next !== "openvino" && prefs.runtime !== wanted) {
+      // The supervisor only aligns cpu <-> cuda, so leave OpenVINO first.
+      if (provider === "openvino" && !(await apply({ provider: "cpu" }))) return;
       // The supervisor restarts into the new runtime and aligns the engine to it.
-      if (await setPrefs({ runtime })) {
-        toast.message(runtime === "gpu"
+      if (await setPrefs({ runtime: wanted })) {
+        toast.message(wanted === "gpu"
           ? "Switching to the GPU runtime. The first switch downloads about 2.5 GB."
           : "Switching to the CPU runtime.");
       }
       return;
     }
-    if (!data) {
-      setEngineError("Start the server to change where synthesis runs.");
-      return;
-    }
-    try {
-      await commit({ provider: runtime === "gpu" ? "cuda" : "cpu" });
-    } catch (cause) {
-      setEngineError(errorText(cause));
-    }
+    await apply({ provider: next });
   };
 
-  const applyRemote = async () => {
-    setApplying(true);
-    setEngineError(null);
-    try {
-      await commit({ provider: "remote", remote_url: url.trim(), fallback_to_cpu: fallback });
-      setDraft(null);
-    } catch (cause) {
-      setEngineError(errorText(cause));
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const urlValid = /^https?:\/\/\S+$/.test(url.trim());
   const installUv = () => rpc.call("installUv").then(
     (r) => toast(r.started ? "Installing uv…" : "The uv installer is already running"),
     (e) => toast.error(errorText(e)),
@@ -120,7 +165,7 @@ export function ServerSettings() {
         <p className="flex items-center gap-2 text-sm font-medium"><StatusDot tone={line.tone} />{line.text}</p>
         <p className="text-xs text-muted-foreground">
           {[owner, h?.version ? `v${h.version}` : null, h?.uptime_s ? `up ${formatUptime(h.uptime_s)}` : null,
-            h?.latency?.median_ms != null ? `typical first audio ${Math.round(h.latency.median_ms)} ms` : null]
+            status.latency.median_ms != null ? `typical first audio ${Math.round(status.latency.median_ms)} ms` : null]
             .filter(Boolean).join(" · ")}
         </p>
         {status.setup.detail ? <p className="text-xs text-muted-foreground">{status.setup.detail}</p> : null}
@@ -139,83 +184,73 @@ export function ServerSettings() {
       ) : null}
 
       <SwitchRow id="manageServer" label="Manage server"
-        hint="bb installs, starts and restarts the server. Off: connect only to a server that is already running."
+        hint="bb installs, starts and restarts the server on this computer. Off: connect only to a server that is already running."
         checked={prefs.manageServer} onChange={(v) => void setPrefs({ manageServer: v })} />
 
-      <Row label="Synthesis">
-        <ChoiceGroup
-          label="Synthesis"
-          value={selected}
-          onChange={(v) => void chooseEngine(v)}
-          disabled={applying}
-          options={[
-            { value: "cpu" as const, label: "CPU", hint: "Runs on this server's processor. Always available." },
-            ...(gpuOffered ? [{ value: "gpu" as const, label: "NVIDIA GPU",
-              hint: prefs.runtime === "gpu" ? "Faster; holds video memory while loaded." : "Faster. The first switch downloads about 2.5 GB." }] : []),
-            { value: "remote" as const, label: "Remote node", hint: "Another Kokoro server synthesizes; this one plays the audio." },
-          ]}
-        />
-        {external ? (
-          <p className="mt-1.5 text-xs text-muted-foreground">
-            This server was started outside bb, so bb can't switch its runtime. Restart it with Manage server on to change it.
-          </p>
-        ) : null}
-      </Row>
-
-      {selected === "remote" ? (
-        <div className="space-y-3 rounded-md border border-border p-3">
-          <Row label="Remote node URL" htmlFor="remote_url">
-            <Input id="remote_url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.0.2.10:6789" className="font-mono text-xs" />
-          </Row>
-          <SwitchRow id="fallback_to_cpu" label="Fall back to this server's CPU" hint="Speak locally when the remote node is unreachable."
-            checked={fallback} onChange={setFallback} />
-          <div className="flex items-center gap-2">
-            <Button size="sm" disabled={!urlValid || applying || !data} onClick={() => void applyRemote()}>Apply</Button>
-            {draft === "remote" ? <Button size="sm" variant="ghost" onClick={() => setDraft(null)}>Cancel</Button> : null}
-          </div>
-          {remoteInfo?.last_error ? (
-            <p className="text-xs text-destructive">
-              Remote node: {remoteInfo.last_error}
-              {remoteInfo.last_latency_ms != null ? ` (last response ${Math.round(remoteInfo.last_latency_ms)} ms)` : ""}
-            </p>
-          ) : remoteInfo?.last_latency_ms != null ? (
-            <p className="text-xs text-muted-foreground">Remote node last responded in {Math.round(remoteInfo.last_latency_ms)} ms.</p>
-          ) : null}
+      {engines ? (
+        <div className="space-y-4">
+          <EngineSlot label="Main engine" value={engines.main} optional={false} status={slotStatus("main")}
+            note={slotStatus("main")?.breaker === "open" && engines.backup !== null ? "Breaker open — using backup" : null}
+            onSave={(ref) => saveEngines({ main: ref ?? "local" })} />
+          <EngineSlot label="Backup engine" value={engines.backup} optional status={slotStatus("backup")} note={null}
+            onSave={(ref) => saveEngines({ backup: ref })} />
         </div>
+      ) : null}
+
+      {runtime ? (
+        <Row label="Runtime">
+          <ChoiceGroup
+            label="Runtime"
+            value={runtime.config.provider}
+            onChange={(v) => void chooseRuntime(v)}
+            disabled={applying}
+            options={[
+              { value: "cpu" as const, label: "CPU", hint: "Runs on this computer's processor. Always available." },
+              ...(gpuOffered ? [{ value: "cuda" as const, label: "NVIDIA GPU",
+                hint: prefs.runtime === "gpu" ? "Faster; holds video memory while loaded." : "Faster. The first switch downloads about 2.5 GB." }] : []),
+              ...(openvinoOffered ? [{ value: "openvino" as const, label: "OpenVINO", hint: "Intel CPU and GPU acceleration." }] : []),
+            ]}
+          />
+          {external ? (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              This server was started outside bb, so bb can't switch its runtime. Restart it with Manage server on to change it.
+            </p>
+          ) : null}
+        </Row>
       ) : null}
       {engineError ? <p role="alert" className="text-xs text-destructive">{engineError}</p> : null}
 
-      {cfg ? (
+      {runtime ? (
         <Disclosure label="Tuning">
-          {cfg.provider === "cpu" || (cfg.provider === "remote" && cfg.fallback_to_cpu) ? (
-            <SliderRow id="intra_op_threads" label="CPU threads" hint="0 lets the runtime decide." value={cfg.intra_op_threads}
+          {runtime.config.provider === "cpu" ? (
+            <SliderRow id="intra_op_threads" label="CPU threads" hint="0 lets the runtime decide." value={runtime.config.intra_op_threads}
               min={0} max={32} step={1} format={(v) => (v === 0 ? "auto" : String(v))}
               onChange={(v) => patch({ intra_op_threads: Math.round(v) }, 600)} />
           ) : null}
-          {cfg.provider === "cuda" ? (
+          {runtime.config.provider === "cuda" ? (
             <>
               <SliderRow id="idle_unload_minutes" label="Release the GPU after" hint="Quiet minutes before unloading. 0 keeps it loaded."
-                value={cfg.idle_unload_minutes} min={0} max={60} step={1} format={(v) => (v === 0 ? "never" : `${v} min`)}
+                value={runtime.config.idle_unload_minutes} min={0} max={60} step={1} format={(v) => (v === 0 ? "never" : `${v} min`)}
                 onChange={(v) => patch({ idle_unload_minutes: Math.round(v) }, 600)} />
               <SliderRow id="gpu_mem_limit_mb" label="Video memory cap" hint="0 is unlimited; 512 MB is plenty for this model."
-                value={cfg.gpu_mem_limit_mb} min={0} max={4096} step={128} format={(v) => (v === 0 ? "none" : `${v} MB`)}
+                value={runtime.config.gpu_mem_limit_mb} min={0} max={4096} step={128} format={(v) => (v === 0 ? "none" : `${v} MB`)}
                 onChange={(v) => patch({ gpu_mem_limit_mb: Math.round(v) }, 600)} />
             </>
           ) : null}
           <SaveIndicator state={save} />
         </Disclosure>
-      ) : (
-        <p className="text-xs text-muted-foreground">Tuning and diagnostics appear when the server is running.</p>
-      )}
+      ) : usesLocal ? (
+        <p className="text-xs text-muted-foreground">Runtime options appear when this computer's engine is running.</p>
+      ) : null}
 
-      {data ? (
+      {runtime ? (
         <Disclosure label="Diagnostics">
           <dl className="grid grid-cols-1 gap-x-4 gap-y-2 text-sm sm:grid-cols-[minmax(0,10rem)_1fr]">
             {([
-              ["Model", formatHomePathForDisplay(data.restart_required.model_path)],
-              ["Voices", formatHomePathForDisplay(data.restart_required.voices_path)],
-              ["Config file", formatHomePathForDisplay(data.restart_required.config_path)],
-              ["Port", String(data.restart_required.port)],
+              ["Model", formatHomePathForDisplay(runtime.restart_required.model_path)],
+              ["Voices", formatHomePathForDisplay(runtime.restart_required.voices_path)],
+              ["Config file", formatHomePathForDisplay(runtime.restart_required.config_path)],
+              ["Port", String(runtime.restart_required.port)],
             ] as const).map(([k, v]) => (
               <div key={k} className="contents">
                 <dt className="text-muted-foreground">{k}</dt>
@@ -223,7 +258,7 @@ export function ServerSettings() {
               </div>
             ))}
           </dl>
-          <p className="text-xs text-muted-foreground">{data.restart_command}</p>
+          <p className="text-xs text-muted-foreground">{runtime.restart_command}</p>
         </Disclosure>
       ) : null}
 

@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import { act } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { READY } from "./fixtures.ts";
-import { refreshStatus, useStatus } from "./state.ts";
+import { READY, rpcStubs } from "./fixtures.ts";
+import { refreshStatus, useConfig, useStatus } from "./state.ts";
 
 function Probe() {
   const s = useStatus();
@@ -32,4 +32,25 @@ test("status drops to unknown after two consecutive failed polls, and recovers",
   fail = false;
   await act(async () => refreshStatus());
   expect(shown()).toBe("running");
+});
+
+function Patcher() {
+  const { data, patch } = useConfig(true);
+  return (
+    <button type="button" disabled={!data} onClick={() => { patch({ speed: 1.2 }, 50); patch({ intra_op_threads: 4 }, 50); }}>
+      patch
+    </button>
+  );
+}
+
+test("speech settings and engine runtime keys are saved in separate calls", async () => {
+  const view = renderSlot({ component: Patcher }, {}, { rpc: rpcStubs() });
+  const button = view.getByRole("button", { name: "patch" });
+  await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(button);
+  await waitFor(() => {
+    const calls = view.inspection.rpcCalls.filter((c) => c.method === "patchConfig").map((c) => c.input);
+    expect(calls).toEqual(expect.arrayContaining([{ speed: 1.2 }, { intra_op_threads: 4 }]));
+    expect(calls).toHaveLength(2);
+  });
 });

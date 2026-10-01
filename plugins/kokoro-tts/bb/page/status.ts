@@ -22,7 +22,7 @@ export function statusLine(s: KokoroStatus | null): { tone: Tone; text: string }
       return health.up ? { tone: "ok", text: "Ready" } : { tone: "warn", text: "Not running" };
     default:
       if (!health.up) return { tone: "error", text: "Not responding" };
-      return health.health.muted ? { tone: "warn", text: "Muted" } : { tone: "ok", text: "Ready" };
+      return s.muted ? { tone: "warn", text: "Muted" } : { tone: "ok", text: "Ready" };
   }
 }
 

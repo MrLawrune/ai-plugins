@@ -3,14 +3,14 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { rpcContract } from "../contract.ts";
-import type { KokoroConfig } from "../schemas.ts";
+import type { Settings, SettingsPatch } from "../schemas.ts";
 import { errorText, Section, SliderRow, SwitchRow } from "./ui.tsx";
 import { playbackStatusToast } from "./voice-section.tsx";
 
-type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;
+type Patch = (p: SettingsPatch, debounceMs?: number) => void;
 const SOUNDS = ["working", "done", "attention", "error"] as const;
 
-export function SoundsSection({ config, patch }: { config: KokoroConfig; patch: Patch }) {
+export function SoundsSection({ config, patch }: { config: Settings; patch: Patch }) {
   const rpc = useRpc<typeof rpcContract>();
   const play = (sound: (typeof SOUNDS)[number]) =>
     rpc.call("playSound", { sound }).then((r) => playbackStatusToast("Sound", r.status), (e) => toast.error(errorText(e)));

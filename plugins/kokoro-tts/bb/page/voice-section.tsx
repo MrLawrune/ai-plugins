@@ -7,10 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import type { rpcContract } from "../contract.ts";
-import type { KokoroConfig, VoiceInfo } from "../schemas.ts";
+import type { Settings, SettingsPatch, VoiceInfo } from "../schemas.ts";
 import { Disclosure, errorText, Row, Section } from "./ui.tsx";
 
-type Patch = (p: Partial<KokoroConfig>, debounceMs?: number) => void;
+type Patch = (p: SettingsPatch, debounceMs?: number) => void;
 
 const LANGS: { value: string; label: string }[] = [
   { value: "en-us", label: "English (US)" },
@@ -64,7 +64,7 @@ function VoiceSelect({ value, voices, onChange, id, placeholder }: {
 }
 
 /** Choosing a voice also picks its language, so pronunciation follows the voice. */
-export function voicePatch(name: string, voices: VoiceInfo[]): Partial<KokoroConfig> {
+export function voicePatch(name: string, voices: VoiceInfo[]): SettingsPatch {
   const lang = voices.find((v) => v.name === name)?.lang;
   return lang ? { voice: name, lang } : { voice: name };
 }
@@ -78,7 +78,7 @@ export function playbackStatusToast(kind: "Preview" | "Sound", status: string): 
   toast.message(`${kind}: ${status}`);
 }
 
-export function VoiceSection({ config, voices, patch }: { config: KokoroConfig; voices: VoiceInfo[]; patch: Patch }) {
+export function VoiceSection({ config, voices, patch }: { config: Settings; voices: VoiceInfo[]; patch: Patch }) {
   const rpc = useRpc<typeof rpcContract>();
   const isBlend = typeof config.voice !== "string";
   const blend: Record<string, number> = isBlend ? (config.voice as Record<string, number>) : {};
@@ -91,7 +91,7 @@ export function VoiceSection({ config, voices, patch }: { config: KokoroConfig; 
   const blendPartner = available.find((v) => v.name !== single && v.lang === voiceByName.get(single)?.lang)
     ?? available.find((v) => v.name !== single);
 
-  const preview = (voice: KokoroConfig["voice"]) =>
+  const preview = (voice: Settings["voice"]) =>
     rpc.call("preview", {
       voice, speed: config.speed, lang: config.lang, speech_gain: config.speech_gain,
       ...(sampleText.trim() ? { text: sampleText.trim() } : {}),

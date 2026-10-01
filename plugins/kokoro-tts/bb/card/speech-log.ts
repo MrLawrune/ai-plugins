@@ -83,9 +83,13 @@ export function refreshSpeechLog(threadId: string): void {
   logs.get(threadId)?.refresh();
 }
 
-const onVisible = () => {
-  if (document.visibilityState !== "visible") return;
+/** Refetch every thread's log that still has a card mounted (after the history is cleared). */
+export function refreshAllSpeechLogs(): void {
   for (const log of logs.values()) if (log.listeners.size > 0) log.refresh();
+}
+
+const onVisible = () => {
+  if (document.visibilityState === "visible") refreshAllSpeechLogs();
 };
 
 export function useSpeechLog(threadId: string, pending: boolean): SpeechLogEntry[] | null {

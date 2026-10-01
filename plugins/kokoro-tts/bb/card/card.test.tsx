@@ -256,3 +256,14 @@ test("a card mounted right after another reuses the fresh speech log", async () 
   await waitFor(() => expect(screen.getAllByText(/^Spoken/)).toHaveLength(2));
   expect(speechLogCalls(first) + speechLogCalls(second)).toBe(1);
 });
+
+test("clearing the history refetches every mounted card's log", async () => {
+  const t1 = await card(SPEECH, { speechLog: () => ({ entries: [done()] }) });
+  await screen.findByText(/^Spoken/);
+  const t2 = await mount(SPEECH, { speechLog: () => ({ entries: [] }) }, { ...MESSAGE, id: "m2", threadId: "t2" });
+  await waitFor(() => expect(speechLogCalls(t2)).toBe(1));
+  const before = speechLogCalls(t1);
+  await t1.emitRealtime("kokoro-log-cleared", {});
+  await waitFor(() => expect(speechLogCalls(t2)).toBe(2));
+  expect(speechLogCalls(t1)).toBe(before + 1);
+});
