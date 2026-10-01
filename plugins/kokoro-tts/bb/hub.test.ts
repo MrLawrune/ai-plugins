@@ -894,3 +894,61 @@ test("a reply past its audio budget stops synthesis and its windows and ends as 
   assert.ok(b.json().some((m) => m.type === "speak" && m.entryId === 8));
 });
 
+
+/** Connects a window and marks it local (on this computer) or not. */
+function connectAs(hub: PlayerHub, id: string, focusedAt: number, local: boolean) {
+  const s = new FakeSocket();
+  s.id = id;
+  hub.markLocal(s, local);
+  hub.onMessage(s, JSON.stringify({ type: "hello", clientId: id, deviceName: id, focusedAt, audioUnlocked: true }));
+  return s;
+}
+const playing = (hub: PlayerHub, s: FakeSocket, entryId: number, st = "playing") =>
+  hub.onMessage(s, JSON.stringify({ type: "status", entryId, status: st }));
+
+test("play on all: a local window acking after a remote one still pauses local media", async () => {
+  const { hub, speaking } = setup({ playOn: "all" });
+  const phone = connectAs(hub, "phone", 10, false);
+  const desk = connectAs(hub, "desk", 20, true);
+  hub.speak(7, "Hello.", "t1", 1);
+  await tick();
+  playing(hub, phone, 7);
+  playing(hub, desk, 7);
+  assert.deepEqual(speaking, [{ key: "7", on: true, local: false }, { key: "7", on: true, local: true }]);
+  playing(hub, phone, 7, "done");
+  playing(hub, desk, 7, "done");
+  assert.deepEqual(speaking.at(-1), { key: "7", on: false });
+});
+
+test("play on all: local acking first pauses once; a remote ack adds nothing", async () => {
+  const { hub, speaking } = setup({ playOn: "all" });
+  const phone = connectAs(hub, "phone", 10, false);
+  const desk = connectAs(hub, "desk", 20, true);
+  hub.speak(7, "Hello.", "t1", 1);
+  await tick();
+  playing(hub, desk, 7);
+  playing(hub, phone, 7);
+  assert.deepEqual(speaking, [{ key: "7", on: true, local: true }]);
+});
+
+test("play on all: the last local window leaving ends the pause while a remote one plays on", async () => {
+  const { hub, speaking, statuses } = setup({ playOn: "all" });
+  const phone = connectAs(hub, "phone", 10, false);
+  const desk = connectAs(hub, "desk", 20, true);
+  const laptop = connectAs(hub, "laptop", 30, true);
+  hub.speak(7, "Hello.", "t1", 1);
+  await tick();
+  playing(hub, phone, 7);
+  playing(hub, desk, 7);
+  playing(hub, laptop, 7);
+  assert.deepEqual(speaking, [{ key: "7", on: true, local: false }, { key: "7", on: true, local: true }]);
+  playing(hub, desk, 7, "done"); // one local window finished; another still plays
+  assert.equal(speaking.length, 2);
+  hub.onClose(laptop); // the last local one disconnects
+  assert.deepEqual(speaking.at(-1), { key: "7", on: false, local: true });
+  assert.ok(!statuses.some(([, st]) => st === "done" || st === "interrupted"), "the phone still plays");
+  playing(hub, phone, 7, "done");
+  await tick();
+  assert.deepEqual(speaking.at(-1), { key: "7", on: false });
+  assert.deepEqual(statuses.at(-1), [7, "done", undefined]);
+});

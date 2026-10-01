@@ -44,7 +44,13 @@ export interface HubDeps {
   /** How long replies wait for a holder that dropped off before normal routing resumes. */
   holdMs?: number;
   log?: (message: string) => void;
-  /** Speech started or stopped playing in a window (the server lowers other audio if it is local). */
+  /**
+   * Speech started or stopped playing (the server pauses other media while
+   * `local`). on: the first window plays it, `local` if that window is on this
+   * computer; a local window that starts after a remote one sends on/local too.
+   * off with `local`: the last local window stopped while others play on;
+   * off alone: the reply stopped everywhere.
+   */
   speaking?: (e: { key: string; on: boolean; local?: boolean }) => void;
 }
 
@@ -84,6 +90,10 @@ interface Job {
   report: Promise<void>;
   /** A window reported it playing and speaking({on: true}) went out. */
   speaking: boolean;
+  /** Windows on this computer that reported playing and have not stopped. */
+  localPlaying: Set<string>;
+  /** speaking({on: true, local: true}) went out and was not ended yet. */
+  localOn: boolean;
   /** Finishes a playing reply whose "done" never arrives, so the queue can't stall. */
   doneTimer: unknown;
 }
@@ -220,7 +230,7 @@ export class PlayerHub {
       entryId, text, sessionId, gain, opts, frames: [], bytes: 0, errorCue: errorCue ?? null, complete: false,
       targets: new Set(), tried: new Set(),
       attempts: 0, acked: false, finished: false, abort: new AbortController(), timer: null, pumping: false,
-      backstop: null, report: Promise.resolve(), speaking: false, doneTimer: null,
+      backstop: null, report: Promise.resolve(), speaking: false, localPlaying: new Set(), localOn: false, doneTimer: null,
     };
     this.#jobs.set(entryId, job);
     this.#noticeLostHolders();
@@ -410,9 +420,21 @@ export class PlayerHub {
   }
 
   #stopSpeaking(job: Job): void {
+    job.localPlaying.clear();
+    job.localOn = false;
     if (!job.speaking) return;
     job.speaking = false;
     this.#deps.speaking?.({ key: String(job.entryId), on: false });
+  }
+
+  /**
+   * A window stopped being a target. When it was the last local one playing
+   * while other windows play on, local media no longer needs to wait.
+   */
+  #leave(job: Job, clientId: string): void {
+    if (!job.localPlaying.delete(clientId) || job.localPlaying.size > 0 || !job.localOn || job.targets.size === 0) return;
+    job.localOn = false;
+    this.#deps.speaking?.({ key: String(job.entryId), on: false, local: true });
   }
 
   #infoOf(clientId: string): PublicClientInfo | undefined {
@@ -429,6 +451,7 @@ export class PlayerHub {
   #dropTarget(clientId: string, keep = false): void {
     for (const job of [...this.#jobs.values()]) {
       if (!job.targets.delete(clientId)) continue;
+      this.#leave(job, clientId);
       if (job.targets.size > 0) continue;
       // The holder dropped off (a phone losing signal): replay it from the start when it is back.
       if (keep || this.#awayActive()) this.#hold(job);
@@ -534,18 +557,26 @@ export class PlayerHub {
     const job = this.#jobs.get(entryId);
     if (!job || !job.targets.has(clientId)) return;
     if (status === "playing") {
+      // Under "all" any local window playing pauses local media, whichever acked first.
+      const local = this.#isLocal(clientId);
+      if (local) job.localPlaying.add(clientId);
+      if (local && !job.localOn) {
+        job.localOn = true;
+        job.speaking = true;
+        this.#deps.speaking?.({ key: String(job.entryId), on: true, local: true });
+      } else if (!job.speaking) {
+        job.speaking = true;
+        this.#deps.speaking?.({ key: String(job.entryId), on: true, local: false });
+      }
       if (job.acked) return;
       job.acked = true;
       this.#clearTimer(job.timer);
-      if (!job.speaking) {
-        job.speaking = true;
-        this.#deps.speaking?.({ key: String(job.entryId), on: true, local: this.#isLocal(clientId) });
-      }
       this.#armDoneWatch(job);
       this.#report(job, "playing", { firstAudioMs });
       return;
     }
     job.targets.delete(clientId);
+    this.#leave(job, clientId);
     if (job.targets.size > 0) return;
     // "done" from a window that never reported "playing" means it played nothing
     // (no audio reached it); never log that as a successful utterance.
