@@ -8,11 +8,13 @@ Every bb agent gets a voice. When a thread finishes, you hear a short spoken sum
 - Audio in the bb window you used last, so it follows you from desktop to laptop to phone. Pin a device or play everywhere instead.
 - Replies from different threads play one at a time, and replies for a device that drops off wait for it instead of playing at home.
 - Each spoken reply shows in chat as a card with what was said, whether it played, and Replay and Stop buttons.
-- A voice settings page in the sidebar, and server settings on the plugin page.
+- A speech history you control: keep it for 1 to 90 days and up to 10,000 entries, or clear it with one click. Audio is never stored.
+- A main synthesis engine and an optional backup: if the main one stops answering, the backup speaks instead. With no backup, you hear an error cue.
+- A voice settings page in the sidebar, and engine settings on the plugin page.
 
 ## How it works
 
-The plugin runs the open-source Kokoro-82M model on your own machine. On first start it downloads the model (about 355 MB, checksum-verified) and installs a private Python runtime with `uv`. Synthesis runs on your machine unless you point it at a remote Kokoro node; audio goes only to the bb windows you choose.
+The plugin runs the open-source Kokoro-82M model on your own machine. On first start it downloads the model (about 355 MB, checksum-verified) and installs a private Python runtime with `uv`. The plugin decides what to say and the Kokoro server only turns text into audio, so the main or backup engine can also be a Kokoro server elsewhere on your network. Audio always plays in a bb window, and only in the windows you choose.
 
 ## Requirements
 

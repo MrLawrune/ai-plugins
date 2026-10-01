@@ -87,28 +87,30 @@ Voice off, Not spoken, Error, or No record.
 
 ## Troubleshooting
 
-Server state, setup progress, and the exact fix command for a failed setup
-are in bb Settings under Server and engine. Playback choices are in the
+Engine state, setup progress, and the exact fix command for a failed setup
+are in bb Settings under Plugins > Kokoro TTS. Playback choices are in the
 Kokoro TTS sidebar panel under Where it plays.
 
 No audio:
-1. Server up and not muted: `curl -s http://127.0.0.1:6789/health | jq '{version, muted}'`
-   (6789 is the default port; use the configured server URL if it differs).
-2. Playing in a bb window (the default): the browser blocks audio until the
-   user clicks once in a bb window after it loads or the plugin reloads.
-   Where it plays lists connected windows and flags any that still need a
-   click; "No windows connected" means no bb window is open to play in.
+1. Not muted, and an engine is reachable: the plugin settings page shows
+   the main and backup engines with their reachability. For the local
+   server: `curl -s http://127.0.0.1:6789/health | jq '{version, engine}'`
+   (6789 is the default port).
+2. The browser blocks audio until the user clicks once in a bb window after
+   it loads or the plugin reloads. Where it plays lists connected windows
+   and flags any that still need a click; "No windows connected" means no
+   bb window is open to play in.
 3. Replies go to the window used last, a pinned device, or every window
    (Route). A pinned device that dropped off holds replies for up to 15
    minutes; a phone with its screen locked plays them when reopened.
-4. Server log: the plugin's log in bb, lines tagged `[server]`.
-5. Server speakers only: `curl -X POST http://127.0.0.1:6789/preview -H "Content-Type: application/json" -d '{"text":"test"}'`
-   plays on the bb host's speakers, even while muted. A host with no audio
-   device (a VM or headless box) can't use this: On the server's speakers is
-   unavailable there and replies play in a bb window.
+4. The reply card's status: "Error: unreachable ..." means no engine
+   answered (an error cue plays unless the mode is quiet or muted); other
+   errors name the engine's reason, such as an unknown voice.
+5. Plugin log in bb: engine and player lines, and the local server's output
+   tagged `[server]`.
 
-Garbled audio: non-ASCII characters in the spoken text -- check the log.
+Garbled audio: non-ASCII characters in the spoken text -- check the card.
 
-For how replies are routed, queued, and held, the server's endpoints, a
-remote synthesis node, the request guard, and data paths, read
+For how replies are routed, queued, and held, the engines and failover,
+a remote synthesis node, the request guard, and data paths, read
 [references/pipeline.md](references/pipeline.md).

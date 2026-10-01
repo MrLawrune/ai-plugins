@@ -1,78 +1,100 @@
 # Kokoro TTS pipeline reference
 
-How a finished reply becomes audio, and the server underneath it. Read this
-for questions about routing, queueing, playback devices, the server's HTTP
-API, a remote synthesis node, or where data lives.
+How a finished reply becomes audio, and the engines underneath it. Read
+this for questions about routing, queueing, playback devices, the engines
+and failover, a remote synthesis node, or where data lives.
 
 ## Routing
 
-- The server's `POST /turn` parses the directive, applies the mode ceiling,
-  and falls back to the first sentence. `POST /cue` gates the attention
-  ping. Both take a per-request `mode` that overrides the configured one
-  for that request; the plugin sends it only when a thread or project
-  override chose the mode.
+- The plugin handles each thread's turns one at a time. When a turn ends it
+  parses the directive, applies the mode ceiling, and falls back to the
+  first sentence. It gates the attention ping the same way. A thread or
+  project override chooses the mode for that thread.
 - The plugin voices root threads, and child threads when enabled, on turn
   end. Sending a message stops speech. It pings on permission prompts and
   questions, and injects the voice contract as agent instructions for any
   agent provider (none for a thread whose voice is Off).
-- Repeats: the server stays silent when a thread reports the same reply
+- Mute comes first: a muted turn is not logged and is not remembered as a
+  repeat.
+- Repeats: the plugin stays silent when a thread reports the same reply
   again (stopping a thread re-reports its last reply).
+- A reply with nothing left to say after markup is stripped plays the done
+  cue instead.
 
 ## Playback
 
-- Play audio: in a bb window (default) or on the server host's speakers.
-  A host with no audio device offers only the bb window.
+- Audio always plays in a bb window.
 - Route picks the window: the one used last (a click or keypress marks a
   window as used), a pinned device, or every open window.
-- Replies play one at a time. A reply from another thread waits, already
-  synthesized, until the current one ends; a newer reply in the same thread
-  replaces its queued one.
+- Replies play one at a time. A reply from another thread waits until the
+  current one ends; a newer reply in the same thread replaces its queued
+  one. At most 16 replies wait; beyond that the oldest is dropped and logged
+  as interrupted.
+- A reply is synthesized when it starts playing, not while it waits.
 - If the window holding the output drops off (last-used or pinned; a phone
-  losing signal or freezing), its replies are synthesized and held for up
-  to 15 minutes and play when it reconnects. A reply cut off mid-way
-  replays from the start. Using another device under last-used takes the
-  output and the held replies.
-- The server pings every window every 25 s, since a hidden page's own
+  losing signal or freezing), its replies are held for up to 15 minutes and
+  play when it reconnects. A reply cut off mid-way replays from the start.
+  Using another device under last-used takes the output and the held
+  replies.
+- The plugin pings every window every 25 s, since a hidden page's own
   timers are throttled. A phone browser can't play with the screen locked
   for long: Chrome freezes the page, so held replies play when it reopens.
 - "Pause other media while speech plays here" (keep or pause) shows only in
-  a bb window on the computer running bb, when the server supports it
-  (Linux with playerctl). It applies while speech plays in such a window or
-  on that computer's speakers; replies to other devices never touch it.
-  Only players that were playing get paused, and only those resume.
+  a bb window on the computer running bb, on Linux with playerctl. It
+  applies while speech plays in such a window; replies to other devices
+  never touch it. Only players that were playing get paused, and only those
+  resume.
 
-## Server
+## Engines
+
+- Settings > Plugins > Kokoro TTS sets a main engine and an optional backup.
+  Each is "This computer (managed)", the local Kokoro server, or "Another
+  server" at a URL. Both use the voice settings.
+- The plugin sends each reply to an engine one sentence group at a time and
+  adds the lead-in silence and the sentence gap itself.
+- Failover happens only before a reply's first audio. Unreachable (refused
+  connection, HTTP 5xx, no first audio within 8 s, or 30 s while the model
+  loads): the backup takes the reply,
+  and the main engine is skipped for 30 s before one reply tries it again.
+  A refused request (HTTP 4xx, such as an unknown voice): the backup takes
+  that reply; the main engine stays in use.
+- No backup and the main engine unreachable: an error cue plays (not in
+  quiet mode or while muted) and the log entry reads `unreachable`.
+- An engine that would forward to another server is refused; point it at
+  the synthesizing server directly.
+
+## Local server
 
 - The plugin installs and runs it (uv, verified model download to the data
-  dir, CPU or GPU runtime, audio probe) unless a server already answers at
-  the configured URL, in which case it is reported as external and the
-  plugin does not restart it.
+  dir, CPU or GPU runtime) unless a server already answers at the
+  configured URL, in which case it is reported as external and the plugin
+  does not restart it.
+- The plugin uses its `/synthesize`, `/voices`, and `/health`, and its
+  `/config` runtime fields (provider, CPU threads, GPU memory cap, idle
+  unload), which the settings page shows only for the managed local engine.
 - Data dir: `~/.local/share/kokoro-tts` (models, `venv-cpu`, `venv-gpu`).
-  Config: `~/.config/kokoro-tts/config.json`. Speech log:
-  `~/.local/state/kokoro-tts/speech-log.jsonl`.
-- Global settings can also be changed with `PATCH /config`.
+  Server config: `~/.config/kokoro-tts/config.json`.
 
-## Endpoints
+## Plugin data
 
-`/turn`, `/cue`, `/play-sound`, `/preview`, `/replay`, `/interrupt`,
-`/interrupt-all`, `/cleanup`, `/mute` (`{"muted": bool}`), `/config`,
-`/voices`, `/devices`, `/engine`, `/synthesize`, `/speech-log`
-(`?session_id=` for one thread), `/speech-log/status`, `/other-audio`,
-`/health` (version, engine, muted, latency, `started_by`).
-
-`/turn`, `/cue`, `/play-sound`, `/replay`, `/interrupt`, and `/cleanup`
-require a `session_id` (the bb thread id).
+- Voice settings, mute, and per-thread and per-project voice settings are
+  stored by the plugin in bb.
+- Speech log: the plugin's database, `~/.bb/plugins/kokoro-tts/data.db`.
+  Each entry holds the spoken text (up to 2000 characters), status, voice,
+  engine, and time to first audio; never audio. History settings bound it
+  by age (1-90 days, default 7) and count (100-10000, default 1000). A
+  deleted thread's entries are deleted; an archived thread keeps them.
+  Clear history deletes them all.
 
 ## Remote synthesis node
 
-`KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0` serves `/synthesize` only; point
-another server at it with the remote engine (Server and engine settings,
-provider `remote`).
+`KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0` serves synthesis to other machines;
+set it as their main or backup engine with "Another server".
 
 Warning: the server has no authentication. Binding beyond loopback lets
-anyone who can reach the port speak through it, read the speech log, and
-change its config. Only do this on a trusted network, preferably bound to
-one private address with the port firewalled to the hosts that need it.
+anyone who can reach the port synthesize through it and change its config.
+Only do this on a trusted network, preferably bound to one private address
+with the port firewalled to the hosts that need it.
 
 ## Request guard
 

@@ -1,11 +1,12 @@
 # kokoro-tts
 
-A BB plugin (`bb/`) built around a persistent local Kokoro TTS server
-(`server/`). It voices every root thread the same way, whichever agent
-provider runs it. The Python
-server owns the config file, validation, and playback; the BB plugin is a
-typed RPC proxy plus a "Kokoro TTS" sidebar page and plugin settings. See `PLUGIN_OVERVIEW.md`
-for the end-user pitch.
+A BB plugin (`bb/`) that voices every root thread the same way, whichever
+agent provider runs it. The plugin decides what to say and when: it reads
+each finished turn, applies the thread's voice mode, keeps the speech log,
+and streams audio to a BB window. Audio always plays in a BB window. A
+Kokoro TTS server (`server/`) only synthesizes: the plugin sends it one
+chunk of text at a time and gets audio back. See `PLUGIN_OVERVIEW.md` for
+the end-user pitch.
 
 ## Settings
 
@@ -14,19 +15,44 @@ The Kokoro TTS sidebar page holds:
 - Listening: mode, speed, and volume.
 - Voice: a single voice or a weighted blend, with a sample button.
 - Sounds: cue volume, working tick, attention ping, test buttons.
-- Where it plays: this browser or the server host; open bb windows grouped
-  by device, with Play on set to the last-used window, a pinned device, or
-  every window; rename this device; pause other media while speech plays
-  here (on the computer running bb, on Linux with playerctl).
+- History: how long the speech log keeps entries (1-90 days, default 7) and
+  how many it keeps (100-10000, default 1000), and Clear history, which
+  deletes every entry. The log keeps what was said, never audio.
+- Where it plays: open bb windows grouped by device, with Route set to the
+  last-used window, a pinned device, or every window; rename this device;
+  pause other media while speech plays here (on the computer running bb, on
+  Linux with playerctl).
 
-Its header shows the server status with Stop and Mute buttons.
+Its header shows the engine status with Stop and Mute buttons.
 
-Server, runtime, synthesis engine, tuning, and diagnostics live under
-Settings > Plugins > Kokoro TTS and work while the server is down: setup
-state (model download, uv install), the Manage server toggle, the Runtime
-pick (CPU or GPU), and the synthesis engine (local or a remote node).
+Engines, setup, runtime, tuning, and diagnostics live under Settings >
+Plugins > Kokoro TTS and work while every engine is down: setup state
+(model download, uv install), the Manage server toggle, the main and backup
+engines, and the Runtime pick (CPU or GPU) with its tuning for the local
+server.
 
-Changes PATCH `/config` immediately and apply on the next spoken turn.
+Settings are stored by the plugin and apply on the next spoken turn.
+Runtime and tuning changes go to the local server's `/config`.
+
+## Engines
+
+The main engine synthesizes every reply. It is either "This computer
+(managed)", the Kokoro server the plugin runs on the computer running bb,
+or "Another server" at a URL. An optional backup engine, set the same way,
+takes over when the main one fails before the reply's first audio:
+
+- Unreachable main engine (connection refused, HTTP 5xx, no first audio
+  within 8 s, or 30 s while its model is still loading): the reply goes to
+  the backup, and the main engine is skipped for 30 s before one reply tries
+  it again.
+- Main engine refuses the request (HTTP 4xx, such as an unknown voice): the
+  reply goes to the backup, and the main engine stays in use.
+- No backup: an unreachable main engine ends the reply with an error cue
+  (silent in quiet mode or while muted) and logs it as `unreachable`.
+
+Once a reply has played audio it stays on that engine. Both engines use the
+voice settings. The settings page shows each engine's reachability and
+whether the main engine is being skipped.
 
 The thread header's Voice control sets a mode, or Off, for the thread and
 for its project. A thread's own setting wins, then its nearest parent
@@ -44,9 +70,9 @@ Agents end a reply with a directive line:
 
     ::kokoro-tts{weight="speech" say="All tests pass."}
 
-bb renders it as a card showing the spoken text and what the server's speech
-log says happened to it: Queued (also shown by the thread's newest card while
-its turn is on its way to the server), Playing, Spoken (with the voice and
+bb renders it as a card showing the spoken text and what the speech log says
+happened to it: Queued (also shown by the thread's newest card while
+its turn is being prepared), Playing, Spoken (with the voice and
 time to first audio), Interrupted (also for an entry left queued or playing
 for over 20 minutes), Muted (also when mute kept its turn from being
 voiced), Voice off, Not spoken (the verbosity mode or a repeated reply kept
@@ -55,39 +81,35 @@ within 25 s), Error, or No record (no log entry and no turn for this reply
 since the card appeared, as for older messages). In a thread whose voice is
 off, including sub-threads that are not voiced, the newest reply's card reads
 Voice off.
-Replay speaks the reply again
-through `POST /replay`, in the window where replies play and logged under the
-thread; Stop appears while it plays and stops that thread's speech only.
+Replay speaks the reply again in the window where replies play, logged under
+the thread; Stop appears while it plays and stops that thread's speech only.
 Sound weights show a one-line chip with the sound name; `silent` renders
 nothing.
 
-Without a directive the server speaks the reply's first sentence. HTML
+Without a directive the plugin speaks the reply's first sentence. HTML
 comments are never spoken.
 
-The speech log lives at `~/.local/state/kokoro-tts/speech-log.jsonl` and is served
-by `GET /speech-log` (`?session_id=` for one thread; cards fetch their own
-thread's). Cards match log entries by thread and normalized spoken text.
-
-## Server traffic
-
-The plugin keeps the server's config and mute state cached: it updates from
-every settings change made in bb and refreshes once a minute, retrying from
-5 s up to 60 s while the server is unreachable. The agent instructions'
-verbosity mode, preview and cue volumes, and the attention ping in browser
-playback read the cache instead of asking the server.
+The speech log lives in the plugin's database. Each card fetches its own
+thread's entries (the newest 50) and matches them by normalized spoken text.
+Entries are pruned to the History limits, and a deleted thread's entries go
+with it; an archived thread keeps them. Clear history empties the log and
+every open card refreshes.
 
 ## Layout
 
-- `bb/` -- BB plugin: backend (`server.ts` composes `supervisor.ts`, `voice.ts`, `hub.ts`, `rpc.ts`), sidebar page, plugin settings, the player content script (`player/`), and the chat card (`card/`).
-- `server/` -- Python Kokoro server (`uv` project; `models.json` pins model files).
+- `bb/` -- BB plugin: backend (`server.ts` composes `supervisor.ts`, `voice.ts`, `hub.ts`, `rpc.ts`), the turn coordinator, settings, and speech log (`coord/`), the engine chain (`engines/`), sidebar page, plugin settings, the player content script (`player/`), and the chat card (`card/`).
+- `server/` -- Python Kokoro server the plugin synthesizes with (`uv` project; `models.json` pins model files).
 - `contract/` -- the voice contracts agents get as instructions (`tts-contract.md`, and `tts-contract-full.md` for full mode); `skills/` -- the kokoro-tts reference skill.
 
 ## Remote node
 
-A headless node (`KOKORO_HOST=0.0.0.0`) can serve speech to other machines.
-Nodes and clients negotiate terminated frames with `X-Kokoro-Frames: 2`;
-older nodes keep working. `/health` lists `started_by`, naming the launcher
-that started the server.
+A headless server (`KOKORO_HEADLESS=1 KOKORO_HOST=0.0.0.0`) synthesizes for
+bb on other machines: set it as their main or backup engine. The plugin
+asks it for `/synthesize`, `/voices`, and `/health`, and negotiates
+terminated frames with `X-Kokoro-Frames: 2`; servers without them keep
+working. A server that would forward to another one refuses the plugin's
+requests; point the engine at the synthesizing server directly. `/health`
+lists `started_by`, naming the launcher that started the server.
 
 ## Server security
 
@@ -96,7 +118,7 @@ clients: it refuses (403) any request carrying an `Origin` header, and,
 when bound to loopback, any `Host` header other than `127.0.0.1`,
 `localhost`, or `[::1]` (DNS rebinding). `KOKORO_HOST=0.0.0.0` (a headless
 remote node) exposes it to every host that can reach the port -- anyone
-there can make it speak, read the speech log, and change its config. Only
+there can make it synthesize and change its config. Only
 bind beyond loopback on a trusted network, and firewall the port.
 Behind a reverse proxy, the loopback Host check applies to the request the
 server receives: set the upstream `Host` (Caddy: `header_up Host
@@ -114,3 +136,30 @@ syncs the `cpu` group into `server/.venv`, overwriting a GPU runtime there.
 ## Release
 
     scripts/release.sh 0.1.1
+
+## Uninstalling
+
+`bb plugin remove kokoro-tts` deletes the plugin's BB settings, secrets,
+and schedules, and the plugin files for a git or npm install. It keeps:
+
+- the plugin's data directory, `~/.bb/plugins/kokoro-tts/` (the speech log
+  in `data.db`, and logs);
+- the plugin's stored rows in bb's database (voice settings, mute, device
+  preferences, per-thread and per-project voice settings), which a later
+  install picks up again;
+- `~/.local/share/kokoro-tts` (models and runtimes, a few hundred MB, or
+  about 3 GB with the GPU runtime);
+- `~/.config/kokoro-tts/config.json` (the local server's config);
+- `~/.local/state/kokoro-tts/speech-log.jsonl` (the local server's log).
+
+Stop the local server (or bb) first, then delete what you don't need:
+
+    rm -rf ~/.local/share/kokoro-tts
+    rm -rf ~/.config/kokoro-tts
+    rm -rf ~/.local/state/kokoro-tts
+    rm -rf ~/.bb/plugins/kokoro-tts
+
+With bb stopped, delete the stored rows:
+
+    sqlite3 ~/.bb/bb.db "DELETE FROM plugin_kv WHERE plugin_id = 'kokoro-tts'"
+
