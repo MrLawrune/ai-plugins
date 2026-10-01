@@ -5,36 +5,7 @@ export const modeSchema = z.enum(["quiet", "ambient", "brief", "conversational",
 export type Mode = z.infer<typeof modeSchema>;
 export const scopeSettingSchema = z.object({ mode: modeSchema.optional(), voiceChildren: z.boolean().optional() }).strict();
 export type ScopeSetting = z.infer<typeof scopeSettingSchema>;
-const providerSchema = z.enum(["cpu", "cuda", "openvino", "remote"]);
-
-export const configSchema = z.object({
-  voice: voiceSchema,
-  speed: z.number(),
-  lang: z.string(),
-  trim: z.boolean(),
-  mode: modeSchema,
-  speech_gain: z.number(),
-  sound_volume: z.number(),
-  working_sound: z.boolean(),
-  attention_sound: z.boolean(),
-  strip_markdown: z.boolean(),
-  output_device: z.number().int().nullable(),
-  lead_in_ms: z.number().int(),
-  gap_ms: z.number().int(),
-  /** Other media on the computer running bb while speech plays there. Default covers older servers. */
-  other_audio: z.enum(["keep", "pause"]).catch("keep"),
-  provider: providerSchema,
-  remote_url: z.string().nullable(),
-  fallback_to_cpu: z.boolean(),
-  idle_unload_minutes: z.number().int(),
-  intra_op_threads: z.number().int(),
-  gpu_mem_limit_mb: z.number().int(),
-});
-export type KokoroConfig = z.infer<typeof configSchema>;
-
-export const configPatchSchema = configSchema.partial().strict();
-
-const restartSchema = z.object({
+export const restartSchema = z.object({
   model_path: z.string(),
   voices_path: z.string(),
   port: z.number(),
@@ -42,39 +13,7 @@ const restartSchema = z.object({
   headless: z.boolean().optional(),
 });
 
-const availableSchema = z.object({ cpu: z.boolean(), cuda: z.boolean(), openvino: z.boolean() });
-
-const localEngineSchema = z.object({
-  kind: z.literal("local"),
-  provider: z.string(),
-  loaded: z.boolean(),
-  loaded_provider: z.string().nullable(),
-  intra_op_threads: z.number(),
-  gpu_mem_limit_mb: z.number(),
-  idle_unload_minutes: z.number(),
-  load_ms: z.number().nullable(),
-  available: availableSchema,
-});
-export const remoteEngineSchema = z.object({
-  kind: z.literal("remote"),
-  provider: z.string(),
-  url: z.string(),
-  last_error: z.string().nullable(),
-  last_latency_ms: z.number().nullable(),
-  fallback: localEngineSchema.nullable(),
-  remote_health: z.record(z.string(), z.unknown()).nullable().optional(),
-});
-
-export const configResponseSchema = z.object({
-  config: configSchema,
-  muted: z.boolean(),
-  providers_available: availableSchema,
-  /** Linux with playerctl: other media can be paused while speech plays. */
-  pause_other_audio_supported: z.boolean().default(false),
-  restart_required: restartSchema,
-  restart_command: z.string(),
-});
-export type ConfigResponse = z.infer<typeof configResponseSchema>;
+export const availableSchema = z.object({ cpu: z.boolean(), cuda: z.boolean(), openvino: z.boolean() });
 
 const healthSchema = z.object({
   status: z.string(),
@@ -107,14 +46,6 @@ export const voiceInfoSchema = z.object({
 });
 export type VoiceInfo = z.infer<typeof voiceInfoSchema>;
 
-export const deviceSchema = z.object({
-  index: z.number(),
-  name: z.string(),
-  default: z.boolean(),
-  channels: z.number(),
-});
-export type DeviceInfo = z.infer<typeof deviceSchema>;
-
 /** Health wrapped so the page can render "server down" without throwing. */
 export const healthResultSchema = z.union([
   z.object({ up: z.literal(true), health: healthSchema }),
@@ -138,7 +69,6 @@ export type SpeechLogEntry = z.infer<typeof speechLogEntrySchema>;
 export const prefsSchema = z.object({
   manageServer: z.boolean(),
   runtime: z.enum(["cpu", "gpu"]),
-  playback: z.enum(["client", "server"]),
   playOn: z.enum(["follow", "pinned", "all"]),
   pinnedDevice: z.string().min(1).max(64).nullable(),
 });
@@ -164,13 +94,6 @@ export const clientInfoSchema = z.object({
   local: z.boolean().optional(),
 });
 export type PublicClientInfo = z.infer<typeof clientInfoSchema>;
-
-export const statusSchema = z.object({
-  health: healthResultSchema,
-  setup: setupStateSchema,
-  clients: z.array(clientInfoSchema),
-});
-export type KokoroStatus = z.infer<typeof statusSchema>;
 
 export const resolvedVoiceSchema = z.object({
   mode: modeSchema,
@@ -198,29 +121,6 @@ export const scopePatchSchema = z
 export type ScopePatchInput = z.infer<typeof scopePatchSchema>;
 
 export const threadIdSchema = z.string().min(1).max(128);
-
-/** What POST /replay returns: a browser-playback entry to play, or the server's status. */
-export const replayResultSchema = z.object({
-  status: z.string().optional(),
-  entry_id: z.number().optional(),
-  text: z.string().optional(),
-  speech_gain: z.number().optional(),
-});
-
-export const turnResultSchema = z.object({
-  action: z.enum(["speech", "sound", "silent"]),
-  text: z.string().optional(),
-  sound: z.enum(["working", "done", "attention", "error"]).optional(),
-  entry_id: z.number().int().optional(),
-  speech_gain: z.number().optional(),
-  sound_volume: z.number().optional(),
-  muted: z.boolean().optional(),
-  /** The speech-log text of the entry this turn made. */
-  logged_text: z.string().optional(),
-  /** The reply's directive say, on every outcome. */
-  say_text: z.string().optional(),
-});
-export type TurnResult = z.infer<typeof turnResultSchema>;
 
 export const engineRefSchema = z.union([z.literal("local"), z.object({ url: z.string().trim().url().max(512) }).strict()]);
 export type EngineRef = z.infer<typeof engineRefSchema>;
@@ -286,3 +186,43 @@ export const runtimeConfigSchema = z.object({
 });
 export const runtimePatchSchema = runtimeConfigSchema.partial().strict();
 export type RuntimePatch = z.infer<typeof runtimePatchSchema>;
+
+export const runtimeInfoSchema = z.object({
+  config: runtimeConfigSchema,
+  providers_available: availableSchema,
+  restart_required: restartSchema,
+  restart_command: z.string(),
+});
+
+export const configResponseSchema = z.object({
+  config: settingsSchema,
+  muted: z.boolean(),
+  /** Linux with playerctl: other media can be paused while speech plays. */
+  pause_other_audio_supported: z.boolean(),
+  /** The local engine's runtime; null when the plugin does not manage a local engine. */
+  runtime: runtimeInfoSchema.nullable(),
+  note: z.string().nullable(),
+});
+export type ConfigResponse = z.infer<typeof configResponseSchema>;
+
+/** Strict members: a patch touches speech settings or engine runtime, never both. */
+export const configPatchSchema = z.union([settingsPatchSchema, runtimePatchSchema]);
+
+export const engineStatusSchema = z.object({
+  slot: z.enum(["main", "backup"]),
+  url: z.string(),
+  local: z.boolean(),
+  health: healthResultSchema,
+  breaker: z.enum(["closed", "open", "half-open"]),
+});
+
+export const statusSchema = z.object({
+  /** The main engine's health; the page header reads it. */
+  health: healthResultSchema,
+  engines: z.array(engineStatusSchema),
+  setup: setupStateSchema,
+  clients: z.array(clientInfoSchema),
+  muted: z.boolean(),
+  latency: z.object({ median_ms: z.number().nullable(), samples: z.number() }),
+});
+export type KokoroStatus = z.infer<typeof statusSchema>;

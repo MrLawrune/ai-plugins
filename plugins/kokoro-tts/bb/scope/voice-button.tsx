@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { rpcContract } from "../contract.ts";
-import type { KokoroConfig, ScopePatchInput, ScopeSetting, VoiceScopeState } from "../schemas.ts";
+import type { Mode, ScopePatchInput, ScopeSetting, VoiceScopeState } from "../schemas.ts";
 import { MODES } from "../page/listening-section.tsx";
 import { StopSlider } from "../page/ui.tsx";
 import { errorText } from "../util.ts";
@@ -29,7 +29,7 @@ export function childrenPatch(choice: Children): ScopePatchInput {
   return { voiceChildren: choice === "default" ? null : choice === "on" };
 }
 
-function modeLabel(mode: KokoroConfig["mode"]): string {
+function modeLabel(mode: Mode): string {
   return MODES.find((m) => m.value === mode)?.label ?? mode;
 }
 
@@ -128,7 +128,7 @@ function ScopeSection({ title, setting, defaultMode, defaultChildren, onSave }: 
   title: string;
   setting: ScopeSetting;
   /** What applies here with no mode set. */
-  defaultMode: KokoroConfig["mode"];
+  defaultMode: Mode;
   /** Whether child threads are voiced with nothing set; null when an ancestor thread decides. */
   defaultChildren: boolean | null;
   onSave: (patch: ScopePatchInput) => Promise<void>;

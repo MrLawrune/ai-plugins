@@ -19,7 +19,14 @@ test("load keeps valid stored fields", async () => {
   const p = await store.load();
   assert.equal(p.runtime, "gpu");
   assert.equal(p.pinnedDevice, "Desk");
-  assert.equal(p.playback, "client");
+});
+
+test("a stored playback field loads without error and is dropped", async () => {
+  const store = new PrefsStore(memKv({ prefs: { runtime: "gpu", playback: "server" } }));
+  const p = await store.load();
+  assert.equal(p.runtime, "gpu");
+  assert.equal("playback" in p, false);
+  assert.deepEqual(p, { ...DEFAULT_PREFS, runtime: "gpu" });
 });
 
 test("update validates, persists, and notifies", async () => {

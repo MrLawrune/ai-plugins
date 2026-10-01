@@ -3,7 +3,6 @@ import { prefsSchema, type Prefs } from "./schemas.ts";
 export const DEFAULT_PREFS: Prefs = {
   manageServer: true,
   runtime: "cpu",
-  playback: "client",
   playOn: "follow",
   pinnedDevice: null,
 };

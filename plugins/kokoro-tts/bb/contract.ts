@@ -5,7 +5,6 @@ import { z } from "zod";
 import {
   configPatchSchema,
   configResponseSchema,
-  deviceSchema,
   prefsSchema,
   scopePatchSchema,
   speechLogEntrySchema,
@@ -26,10 +25,6 @@ export const rpcContract = defineRpcContract({
   getConfig: { input: z.null(), output: configResponseSchema },
   patchConfig: { input: configPatchSchema, output: configResponseSchema },
   listVoices: { input: z.null(), output: z.object({ voices: z.array(voiceInfoSchema) }) },
-  listDevices: {
-    input: z.null(),
-    output: z.object({ devices: z.array(deviceSchema), selected: z.number().nullable() }),
-  },
   preview: {
     input: z
       .object({
@@ -38,6 +33,7 @@ export const rpcContract = defineRpcContract({
         speed: z.number().optional(),
         lang: z.string().optional(),
         speech_gain: z.number().optional(),
+        slot: z.enum(["main", "backup"]).optional(),
       })
       .strict(),
     output: z.object({ status: z.string() }),
@@ -54,6 +50,10 @@ export const rpcContract = defineRpcContract({
   interruptAll: { input: z.null(), output: z.object({ sessions_cancelled: z.number() }) },
   /** Stops one thread's speech, wherever it plays. */
   stop: { input: z.object({ threadId: z.string().min(1).max(128) }).strict(), output: z.object({ status: z.string() }) },
+  /** Deletes the whole speech log. */
+  clearHistory: { input: z.null(), output: z.object({ deleted: z.number() }) },
+  /** Clears the one-time settings note. */
+  dismissNote: { input: z.null(), output: z.object({ ok: z.literal(true) }) },
   installUv: { input: z.null(), output: z.object({ started: z.boolean() }) },
   getPrefs: { input: z.null(), output: prefsSchema },
   setPrefs: { input: prefsSchema.partial().strict(), output: prefsSchema },
