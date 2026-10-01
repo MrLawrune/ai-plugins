@@ -28,7 +28,11 @@ export interface KokoroClient {
 
 const FRAME_END = 0;
 const FRAME_ERROR = 0xffffffff;
-const FRAME_MAX = 1 << 20;
+/**
+ * Largest wire frame accepted. The server sends one frame per model batch
+ * (about 2.4 MB for a long sentence at half speed); the chain re-slices them.
+ */
+export const WIRE_FRAME_MAX = 16 << 20;
 
 export function createKokoroClient(
   baseUrl: string,
@@ -112,28 +116,53 @@ export async function* readFrames(
   opts: { markers?: boolean } = {},
 ): AsyncGenerator<Uint8Array> {
   const reader = body.getReader();
-  let buf = new Uint8Array(0);
+  // Received bytes not yet yielded, kept as chunks so a large frame is copied once.
+  let parts: Uint8Array[] = [];
+  let have = 0;
+  /** Removes and returns the first n buffered bytes. */
+  const take = (n: number): Uint8Array => {
+    const out = new Uint8Array(n);
+    let o = 0;
+    while (o < n) {
+      const p = parts[0];
+      const k = Math.min(p.length, n - o);
+      out.set(p.subarray(0, k), o);
+      o += k;
+      if (k === p.length) parts.shift();
+      else parts[0] = p.subarray(k);
+    }
+    have -= n;
+    return out;
+  };
   let ended = false;
+  let need: number | null = null;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      const next = new Uint8Array(buf.length + value.length);
-      next.set(buf);
-      next.set(value, buf.length);
-      buf = next;
-      while (buf.length >= 4) {
-        const n = new DataView(buf.buffer, buf.byteOffset, 4).getUint32(0, true);
-        if (opts.markers && n === FRAME_END) { ended = true; return; }
-        if (opts.markers && n === FRAME_ERROR) throw new ServerError("synthesis failed mid-reply");
-        if (n % 4 !== 0 || n > FRAME_MAX) throw new ServerError(`bad frame length ${n}`);
-        if (buf.length < 4 + n) break;
-        yield buf.slice(4, 4 + n);
-        buf = buf.slice(4 + n);
+      if (value.length === 0) continue;
+      parts.push(value);
+      have += value.length;
+      for (;;) {
+        if (need === null) {
+          if (have < 4) break;
+          const head = take(4);
+          const n = new DataView(head.buffer).getUint32(0, true);
+          if (opts.markers && n === FRAME_END) { ended = true; return; }
+          if (opts.markers && n === FRAME_ERROR) throw new ServerError("synthesis failed mid-reply");
+          if (n % 4 !== 0) throw new ServerError(`bad frame length ${n}`);
+          if (n > WIRE_FRAME_MAX) throw new ServerError(`frame too large (${n} bytes)`);
+          need = n;
+        }
+        if (have < need) break;
+        const frame = take(need);
+        need = null;
+        yield frame;
       }
     }
-    if (buf.length > 0 || (opts.markers && !ended)) throw new ServerError("synthesis stream ended early");
+    if (have > 0 || need !== null || (opts.markers && !ended)) throw new ServerError("synthesis stream ended early");
   } finally {
+    parts = [];
     await reader.cancel().catch(() => undefined);
   }
 }

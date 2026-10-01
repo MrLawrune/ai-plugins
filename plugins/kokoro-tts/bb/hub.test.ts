@@ -817,5 +817,6 @@ test("a frame that is not whole float32 samples ends the job", async () => {
   hub.speak(7, "Hi.", "t1", 1);
   await tick();
   assert.equal(b.frames(), 1);
-  assert.deepEqual(statuses, [[7, "error", { error: "frame too large" }]]);
+  assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "t1" });
+  assert.deepEqual(statuses, [[7, "error", { error: "bad frame length 6" }]]);
 });

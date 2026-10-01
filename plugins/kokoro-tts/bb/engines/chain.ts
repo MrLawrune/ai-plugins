@@ -1,6 +1,6 @@
 // Main/backup failover over engines, with a circuit breaker on the main engine.
 import { sentenceChunks } from "../coord/speakable.ts";
-import { EngineError, SAMPLE_RATE, type Engine, type EngineHealth, type Pcm, type SynthOpts } from "./types.ts";
+import { EngineError, MAX_PIECE_BYTES, SAMPLE_RATE, type Engine, type EngineHealth, type Pcm, type SynthOpts } from "./types.ts";
 
 export type Slot = "main" | "backup";
 /** `only`: use exactly this slot (previews) — no failover, breaker untouched. */
@@ -27,6 +27,16 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   out.set(a);
   out.set(b, a.length);
   return out;
+}
+
+/**
+ * Engine audio with its silence in front, cut into pieces of at most
+ * MAX_PIECE_BYTES. A model batch can be several megabytes; the silence is
+ * never a piece of its own, since it is shorter than a piece.
+ */
+function* pieces(head: Uint8Array, pcm: Pcm): Generator<Pcm> {
+  const all = concat(head, pcm);
+  for (let o = 0; o < all.length; o += MAX_PIECE_BYTES) yield all.subarray(o, o + MAX_PIECE_BYTES);
 }
 
 function message(e: unknown): string {
@@ -184,9 +194,10 @@ export class EngineChain {
     try {
       if (!only && won.slot === "main") this.state = { state: "closed", until: null };
       onEngine?.(won.slot, committed.url);
-      yield concat(silence(leadInMs), won.first);
+      yield* pieces(silence(leadInMs), won.first);
       for (let i = 0; ; ) {
         let frame: Pcm | null;
+        let gap: Uint8Array = new Uint8Array(0);
         try {
           frame = await pull.next(interFrameMs);
           if (!frame) {
@@ -196,7 +207,8 @@ export class EngineChain {
             pull = new Pull(committed, chunks[i], synth, signal);
             const head = await pull.next(firstFrameMs);
             if (!head) throw new EngineError("stream", "the engine returned no audio");
-            frame = concat(silence(gapMs), head);
+            frame = head;
+            gap = silence(gapMs);
           }
         } catch (e) {
           if (signal.aborted || (e instanceof EngineError && e.kind === "cancelled")) throw new EngineError("cancelled", "cancelled");
@@ -205,7 +217,7 @@ export class EngineChain {
           const detail = message(e).replace(/^unreachable: /, "");
           throw new EngineError("stream", `engine failed mid-reply: ${detail}`, e instanceof EngineError ? e.status : undefined);
         }
-        yield frame;
+        yield* pieces(gap, frame);
       }
     } finally {
       await pull.close();

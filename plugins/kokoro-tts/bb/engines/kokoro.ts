@@ -96,6 +96,7 @@ export function createKokoroEngine(
     let frames = 0;
     try {
       for await (const frame of readFrames(res.body, { markers: res.headers.get("X-Kokoro-Frames") === "2" })) {
+        if (frame.length === 0) continue;
         frames++;
         yield frame;
       }

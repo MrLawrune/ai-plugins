@@ -4,6 +4,7 @@
 // the output drops off (a phone losing signal or freezing), holds replies for
 // it for a while instead of playing them on some other device.
 import type { ClientRegistry } from "./clients.ts";
+import { MAX_PIECE_BYTES } from "./engines/types.ts";
 import type { SynthOptions } from "./kokoro-client.ts";
 import { encodeFrame, parseClientMsg, type ServerMsg, type SoundName } from "./protocol.ts";
 import type { PlayOn, PublicClientInfo } from "./schemas.ts";
@@ -79,7 +80,7 @@ interface Job {
 
 const HOLD_MS = 15 * 60_000;
 /** Largest decoded PCM frame the hub forwards to a window. */
-export const MAX_FRAME_BYTES = 1 << 20;
+export const MAX_FRAME_BYTES = MAX_PIECE_BYTES;
 const MAX_QUEUED = 16;
 
 export class PlayerHub {
@@ -480,9 +481,10 @@ export class PlayerHub {
     try {
       for await (const pcm of this.#deps.synthesize(job.text, job.abort.signal, job.opts, job.entryId)) {
         if (job.finished) return;
-        if (pcm.length > MAX_FRAME_BYTES || pcm.length % 4 !== 0) {
+        const bad = pcm.length % 4 !== 0 ? `bad frame length ${pcm.length}` : pcm.length > MAX_FRAME_BYTES ? "frame too large" : null;
+        if (bad) {
           for (const id of job.targets) this.#send(id, { type: "stop", sessionId: job.sessionId });
-          this.#finish(job, "error", "frame too large");
+          this.#finish(job, "error", bad);
           return;
         }
         job.frames.push(pcm);

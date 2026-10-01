@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createKokoroClient, isLoopback, portOf, readFrames, ServerError } from "./kokoro-client.ts";
+import { createKokoroClient, isLoopback, portOf, readFrames, ServerError, WIRE_FRAME_MAX } from "./kokoro-client.ts";
 
 function frame(values: number[]): Uint8Array {
   const pcm = new Uint8Array(new Float32Array(values).buffer);
@@ -130,10 +130,30 @@ test("synthesize asks for terminated frames, forwards options, and rejects an em
   assert.deepEqual(JSON.parse(String(sent.body)), { text: "Hi.", voice: "af_sky", speed: 1.2 });
 });
 
-test("readFrames rejects a frame length that is not float32 or over 1 MiB", async () => {
-  for (const n of [6, (1 << 20) + 4]) {
-    await assert.rejects(async () => {
-      for await (const _ of readFrames(streamOf([marker(n)]), { markers: true })) { /* drain */ }
-    }, new RegExp(`bad frame length ${n}`));
-  }
+test("readFrames rejects a misaligned frame length with its own message", async () => {
+  await assert.rejects(async () => {
+    for await (const _ of readFrames(streamOf([marker(6)]), { markers: true })) { /* drain */ }
+  }, /^Error: bad frame length 6$|bad frame length 6/);
+});
+
+test("readFrames rejects a frame over 16 MiB as too large", async () => {
+  const n = WIRE_FRAME_MAX + 4;
+  await assert.rejects(async () => {
+    for await (const _ of readFrames(streamOf([marker(n)]), { markers: true })) { /* drain */ }
+  }, (e: unknown) => e instanceof ServerError && e.message === `frame too large (${n} bytes)`);
+});
+
+test("readFrames accepts a real multi-megabyte model frame split across many reads", async () => {
+  // 452 characters with no sentence break at speed 1 came back as one 2,437,120-byte frame.
+  const n = 2_437_120;
+  const whole = new Uint8Array(4 + n + 4);
+  new DataView(whole.buffer).setUint32(0, n, true);
+  whole.fill(7, 4, 4 + n);
+  const chunks: Uint8Array[] = [];
+  for (let o = 0; o < whole.length; o += 65_536) chunks.push(whole.slice(o, o + 65_536));
+  const got: Uint8Array[] = [];
+  for await (const f of readFrames(streamOf(chunks), { markers: true })) got.push(f);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].length, n);
+  assert.ok(got[0].every((b) => b === 7));
 });
