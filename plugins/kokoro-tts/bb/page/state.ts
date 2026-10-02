@@ -87,9 +87,12 @@ export function resetStatusForTests(): void {
   subscribers.clear();
 }
 
-/** Some engine, main or backup, answers: speech can play and voices can be listed. */
+/**
+ * Some engine, main or backup, answers and synthesizes itself: speech can play
+ * and voices can be listed. One that forwards to another server refuses bb.
+ */
 export function anyEngineUp(s: KokoroStatus | null): boolean {
-  return s?.engines.some((e) => e.health.up) ?? false;
+  return s?.engines.some((e) => e.health.up && !e.health.health.forwards) ?? false;
 }
 
 /** The managed local engine (in either slot) answers: its runtime can be read. */

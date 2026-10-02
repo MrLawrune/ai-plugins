@@ -123,3 +123,14 @@ test("with every engine down the banner shows and voices wait", async () => {
   expect(await screen.findByText(/Speech plays once an engine is running/)).toBeTruthy();
   expect(slot.inspection.rpcCalls.some((c) => c.method === "listVoices")).toBe(false);
 });
+
+test("an engine that answers but forwards does not count: the banner shows", async () => {
+  const slot = await panel({
+    status: () => ({
+      ...READY,
+      engines: [{ ...READY.engines[0]!, health: { up: true, health: { ...HEALTH, forwards: true } } }],
+    }),
+  });
+  expect(await screen.findByText(/Speech plays once an engine is running/)).toBeTruthy();
+  expect(slot.inspection.rpcCalls.some((c) => c.method === "listVoices")).toBe(false);
+});
