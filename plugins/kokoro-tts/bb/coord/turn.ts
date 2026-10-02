@@ -11,6 +11,7 @@ export interface CueSwitches { working_sound: boolean; attention_sound: boolean 
 export const MAX_FALLBACK_CHARS = 240;
 // "full" mode reads the whole reply; about six minutes of speech at most.
 export const FULL_MAX_CHARS = 6000;
+const REST_ON_SCREEN = "\n\nThe rest is on screen.";
 
 const WEIGHT_RANK: Record<string, number> = { silent: 0, "sound:working": 1, "sound:done": 2, "sound:attention": 3, speech: 4 };
 const RANK_WEIGHT = Object.fromEntries(Object.entries(WEIGHT_RANK).map(([w, r]) => [r, w])) as Record<number, string>;
@@ -112,8 +113,9 @@ export function fullText(text: string): string | null {
     .replace(INLINE_CODE, (_, code: string) => speakInlineCode(code));
   text = pyStrip(text);
   if (!text) return null;
-  const capped = capSpeech(text);
-  return capped === text ? text : capped + "\n\nThe rest is on screen.";
+  // The cut leaves room for the suffix, so the speech-wide cap never removes it.
+  const capped = capSpeech(text, FULL_MAX_CHARS - codePoints(REST_ON_SCREEN).length);
+  return capped === text ? text : capped + REST_ON_SCREEN;
 }
 
 /**
@@ -121,12 +123,12 @@ export function fullText(text: string): string | null {
  * or line end past the halfway point when there is one. Every spoken text
  * goes through it, so no reply asks an engine for more than about six minutes.
  */
-export function capSpeech(text: string): string {
+export function capSpeech(text: string, max = FULL_MAX_CHARS): string {
   const chars = codePoints(text);
-  if (chars.length <= FULL_MAX_CHARS) return text;
-  let cut = chars.slice(0, FULL_MAX_CHARS);
+  if (chars.length <= max) return text;
+  let cut = chars.slice(0, max);
   const end = Math.max(rfind(cut, ". "), rfind(cut, "\n"));
-  if (end > Math.floor(FULL_MAX_CHARS / 2)) cut = cut.slice(0, end + 1);
+  if (end > Math.floor(max / 2)) cut = cut.slice(0, end + 1);
   return cut.join("").replace(new RegExp(`${S}+$`, "u"), "");
 }
 

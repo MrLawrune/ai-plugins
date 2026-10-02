@@ -6,8 +6,26 @@ import type { Mode } from "../schemas.ts";
 
 const fx = JSON.parse(fs.readFileSync(new URL("./fixtures/turn.json", import.meta.url), "utf8"));
 
+const REST = "\n\nThe rest is on screen.";
+const len = (s: string) => Array.from(s).length;
+/**
+ * Python cuts a long full-mode reply at FULL_MAX_CHARS and then adds the
+ * suffix (over 6000 in all); the plugin cuts earlier so the suffix fits. Its
+ * text is then the same reply cut at the same kind of boundary, no later.
+ */
+function sameCutWithinCap(ts: string, py: string, label: string) {
+  assert.ok(len(ts) <= FULL_MAX_CHARS, `${label}: ${len(ts)} code points`);
+  assert.ok(ts.endsWith(REST) && py.endsWith(REST), label);
+  assert.ok(py.startsWith(ts.slice(0, -REST.length)), label);
+}
+
 test("route matches Python for every fixture", () => {
-  for (const c of fx.route) assert.deepEqual(route(c.text, c.mode as Mode, c.cfg), c.out, JSON.stringify(c.text).slice(0, 80) + " " + c.mode);
+  for (const c of fx.route) {
+    const label = JSON.stringify(c.text).slice(0, 80) + " " + c.mode;
+    const out = route(c.text, c.mode as Mode, c.cfg);
+    if (c.out.text && len(c.out.text) > FULL_MAX_CHARS) sameCutWithinCap((out as { text: string }).text, c.out.text, label);
+    else assert.deepEqual(out, c.out, label);
+  }
 });
 test("routeCue matches Python", () => {
   for (const c of fx.cue) assert.deepEqual(routeCue(c.sound, c.mode as Mode, c.cfg), c.out);
@@ -18,8 +36,22 @@ test("extractDirective matches Python", () => {
 test("firstSentence matches Python", () => {
   for (const c of fx.first) assert.equal(firstSentence(c.text), c.out, c.text.slice(0, 80));
 });
-test("fullText matches Python", () => {
-  for (const c of fx.full) assert.equal(fullText(c.text), c.out, c.text.slice(0, 80));
+test("fullText matches Python, cutting long replies early enough to keep the suffix", () => {
+  for (const c of fx.full) {
+    if (c.out && len(c.out) > FULL_MAX_CHARS) sameCutWithinCap(fullText(c.text)!, c.out, c.text.slice(0, 80));
+    else assert.equal(fullText(c.text), c.out, c.text.slice(0, 80));
+  }
+});
+
+test("a full-mode cut near 6000 keeps 'The rest is on screen.' through the speech cap", () => {
+  // Sentences end at code point 5986: a cut there plus the suffix would pass 6000.
+  const sentence = "x".repeat(97) + ". "; // 99 code points with its space
+  const text = sentence.repeat(60).slice(0, 5940) + "y".repeat(44) + ". " + "z".repeat(500) + ".";
+  assert.equal(text.indexOf(". ", 5940), 5984);
+  const out = fullText(text)!;
+  assert.ok(out.endsWith(REST));
+  assert.ok(len(out) <= FULL_MAX_CHARS);
+  assert.equal(capSpeech(out), out, "capping again changes nothing");
 });
 test("last valid directive wins and fenced ones are ignored", () => {
   const t = 'a\n```\n::kokoro-tts{weight="speech" say="fenced"}\n```\n::kokoro-tts{weight="speech" say="one"}\n::kokoro-tts{weight="sound:done"}\n';

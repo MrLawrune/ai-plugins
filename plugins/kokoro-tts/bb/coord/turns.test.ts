@@ -334,3 +334,12 @@ test("a thread known to be gone is not replayed", async () => {
   assert.deepEqual(await turns.replay("t", A, async () => false), { status: "unsupported" });
   assert.deepEqual(calls, []);
 });
+
+test("a long full-mode reply keeps its 'The rest is on screen.' all the way to the hub", async () => {
+  const { turns, speaks } = harness();
+  const reply = ("A sentence that keeps going on. ").repeat(400);
+  await turns.idle("t", reply, "full");
+  const spoken = speaks()[0][2] as string;
+  assert.ok(spoken.endsWith("The rest is on screen."), spoken.slice(-60));
+  assert.ok(Array.from(spoken).length <= 6000);
+});
