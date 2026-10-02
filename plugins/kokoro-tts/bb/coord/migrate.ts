@@ -12,6 +12,7 @@ export interface MigrateDeps {
   runtime: "cpu" | "gpu";
   /** GET {baseUrl}/config → body.config, null on failure. */
   fetchConfig: (baseUrl: string) => Promise<Record<string, unknown> | null>;
+  /** The file's text; null when it does not exist (throws for any other read failure). */
   readFile: (path: string) => string | null;
   env: NodeJS.ProcessEnv;
   home: string;
@@ -39,9 +40,10 @@ export function oldConfigPath(env: NodeJS.ProcessEnv, home: string): string {
   return env.KOKORO_CONFIG ?? join(env.XDG_CONFIG_HOME ?? join(home, ".config"), "kokoro-tts", "config.json");
 }
 
-function readOldFile(d: MigrateDeps): Record<string, unknown> | null {
+/** The old config file: its object, "missing" (a fresh install), or null when it exists but is not usable. */
+function readOldFile(d: MigrateDeps): Record<string, unknown> | "missing" | null {
   const text = d.readFile(oldConfigPath(d.env, d.home));
-  if (text === null) return null;
+  if (text === null) return "missing";
   try {
     const parsed: unknown = JSON.parse(text);
     return isRecord(parsed) ? parsed : null;
@@ -60,11 +62,17 @@ function urlRef(url: string): Settings["engines"]["main"] | null {
 export async function migrate(d: MigrateDeps): Promise<MigrationResult> {
   try {
     let old = await d.fetchConfig(d.serverUrl);
-    if (old === null && isLoopback(d.serverUrl)) old = readOldFile(d);
+    // No server answering and no config file on this computer: a fresh install, nothing to carry over.
+    let fresh = false;
+    if (old === null && isLoopback(d.serverUrl)) {
+      const file = readOldFile(d);
+      fresh = file === "missing";
+      old = file === "missing" ? null : file;
+    }
 
     const settings = coerceSettings(old ?? {});
     const notes: string[] = [];
-    if (old === null) notes.push(NOTE_UNREADABLE);
+    if (old === null && !fresh) notes.push(NOTE_UNREADABLE);
 
     settings.engines = { main: "local", backup: null };
     if (!isLoopback(d.serverUrl)) {

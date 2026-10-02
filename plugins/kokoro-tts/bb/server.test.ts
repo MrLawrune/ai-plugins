@@ -1,5 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
@@ -39,11 +40,11 @@ const waitFor = async (pred: () => boolean | Promise<boolean>, ms = 3_000) => {
   while (!(await pred()) && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
 };
 
-test("with no Kokoro server reachable the plugin loads on defaults with a note, and registers its routes", async () => {
+test("a fresh install (no server, no config file) loads on defaults with no note, and registers its routes", async () => {
   const host = await load();
   try {
     assert.deepEqual(await host.bb.storage.kv.get("settings"), DEFAULT_SETTINGS);
-    assert.equal(await host.bb.storage.kv.get("migration-note"), NOTE_UNREADABLE);
+    assert.equal(await host.bb.storage.kv.get("migration-note"), undefined);
     const routes = host.harness.registrations.httpRoutes.map((r) => `${r.method} ${r.path}`);
     assert.ok(routes.includes("GET /sound/attention"), routes.join(", "));
     assert.deepEqual(host.harness.registrations.websocketRoutes.map((r) => r.path), ["/player"]);
@@ -261,6 +262,24 @@ test("a replay whose thread is deleted while its lookup runs logs and speaks not
     assert.deepEqual((await host.harness.callRpc("speechLog", { threadId: "t1" }) as { entries: unknown[] }).entries, []);
     assert.ok(!messages().some((m) => m.type === "speak"));
   } finally {
+    await host.harness.dispose();
+  }
+});
+
+test("an unparseable old config file with no server answering loads on defaults with the note", async () => {
+  const dir = tmpDir("kokoro-server-test-");
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(file, "{not json");
+  const saved = process.env.KOKORO_CONFIG;
+  process.env.KOKORO_CONFIG = file;
+  const host = createFakePluginHost({ settings: { serverUrl: deadUrl } });
+  try {
+    await plugin(host.bb);
+    assert.deepEqual(await host.bb.storage.kv.get("settings"), DEFAULT_SETTINGS);
+    assert.equal(await host.bb.storage.kv.get("migration-note"), NOTE_UNREADABLE);
+  } finally {
+    if (saved === undefined) delete process.env.KOKORO_CONFIG;
+    else process.env.KOKORO_CONFIG = saved;
     await host.harness.dispose();
   }
 });

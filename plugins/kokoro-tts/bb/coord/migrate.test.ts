@@ -101,8 +101,14 @@ test("migrate reads the KOKORO_CONFIG file", async () => {
   assert.equal((await migrate(d)).settings.voice, "bf_emma");
 });
 
-test("server and file both missing gives defaults and the unreadable note", async () => {
+test("a fresh install (no server answering, no config file) gives defaults and no note", async () => {
   const r = await migrate(deps());
+  assert.deepEqual(r.settings, DEFAULT_SETTINGS);
+  assert.equal(r.note, null);
+});
+
+test("a config file that exists but cannot be read gives defaults and the unreadable note", async () => {
+  const r = await migrate(deps({ readFile: () => { throw new Error("EACCES: permission denied"); } }));
   assert.deepEqual(r.settings, DEFAULT_SETTINGS);
   assert.equal(r.note, NOTE_UNREADABLE);
 });
@@ -124,7 +130,7 @@ test("invalid speed falls back to default while other fields are kept", async ()
 test("server playback note", async () => {
   const r = await migrate(deps({ rawPrefs: { playback: "server" }, fetchConfig: async () => ({}) }));
   assert.equal(r.note, NOTE_SERVER_PLAYBACK);
-  const both = await migrate(deps({ rawPrefs: { playback: "server" } }));
+  const both = await migrate(deps({ rawPrefs: { playback: "server" }, readFile: () => "[]" }));
   assert.ok(both.note!.includes(NOTE_SERVER_PLAYBACK));
   assert.ok(both.note!.includes(NOTE_UNREADABLE));
 });

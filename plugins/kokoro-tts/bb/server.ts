@@ -124,8 +124,10 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
       readFile: (p) => {
         try {
           return fs.readFileSync(p, "utf8");
-        } catch {
-          return null;
+        } catch (cause) {
+          // Only a missing file means a fresh install; anything else is an unreadable one.
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw cause;
         }
       },
       env: process.env,
