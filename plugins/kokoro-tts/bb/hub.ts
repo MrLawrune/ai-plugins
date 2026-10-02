@@ -133,13 +133,15 @@ export class PlayerHub {
 
   constructor(deps: HubDeps) {
     this.#deps = deps;
-    this.#setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+    const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+    // Nothing new is timed once the hub is disposed.
+    this.#setTimer = (fn, ms) => (this.#disposed ? null : setTimer(fn, ms));
     this.#clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.#now = deps.now ?? Date.now;
   }
 
   onMessage(socket: SocketLike, raw: string | Uint8Array): void {
-    if (typeof raw !== "string") return;
+    if (this.#disposed || typeof raw !== "string") return;
     const msg = parseClientMsg(raw);
     if (!msg) return;
     const { registry } = this.#deps;
@@ -195,6 +197,7 @@ export class PlayerHub {
   }
 
   onClose(socket: SocketLike): void {
+    if (this.#disposed) return;
     const info = this.#socketInfo.get(socket);
     if (!info) return;
     this.#socketInfo.delete(socket);
@@ -305,10 +308,12 @@ export class PlayerHub {
     }));
   }
 
+  /** Ends every reply (waiting ones are never dispatched) and closes the windows' sockets. */
   dispose(): void {
     this.#disposed = true;
     if (this.#away) this.#clearTimer(this.#away.timer);
     this.#away = null;
+    for (const job of this.#held.splice(0)) this.#finish(job, "interrupted");
     this.stop(null);
     for (const socket of this.#sockets.values()) socket.close(1001, "plugin unloading");
     this.#sockets.clear();
@@ -382,7 +387,7 @@ export class PlayerHub {
   }
 
   #releaseHeld(): void {
-    if (this.#awayActive()) return;
+    if (this.#disposed || this.#awayActive()) return;
     while (!this.#current && this.#held.length > 0) {
       const job = this.#held.shift()!;
       if (job.finished) continue;
@@ -471,6 +476,10 @@ export class PlayerHub {
   }
 
   #target(job: Job): boolean {
+    if (this.#disposed) {
+      this.#finish(job, "interrupted");
+      return false;
+    }
     job.attempts += 1;
     const { playOn, pinnedDevice } = this.#deps.routing();
     const ids = this.#deps.registry.select(playOn, pinnedDevice, job.tried);
@@ -516,7 +525,7 @@ export class PlayerHub {
 
   /** Starts synthesis for a job that was just dispatched, unless it already ran (a held job's replay). */
   #startPump(job: Job): void {
-    if (job.pumping || job.finished) return;
+    if (this.#disposed || job.pumping || job.finished) return;
     job.pumping = true;
     void this.#pump(job);
   }

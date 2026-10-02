@@ -975,3 +975,31 @@ test("after dispose the hub ignores speak and sound", async () => {
   assert.deepEqual([statuses, synthCalls], [[], []]);
   assert.ok(!b.json().some((m) => m.type === "speak" || m.type === "sound"));
 });
+
+test("dispose with a playing and a waiting reply starts no synthesis and leaves no timers", async () => {
+  const { hub, connect, status, statuses, synthCalls, clock } = setup();
+  const b = connect("b", 20);
+  hub.speak(1, "One.", "t1", 1);
+  hub.speak(2, "Two.", "t2", 1);
+  await tick();
+  status(b, 1, "playing");
+  hub.dispose();
+  await tick();
+  assert.deepEqual(synthCalls, [1], "the waiting reply was never dispatched");
+  assert.ok(!b.json().some((m) => m.type === "speak" && m.entryId === 2));
+  assert.deepEqual(statuses.filter(([, s]) => s !== "playing").map(([id, s]) => [id, s]).sort(), [[1, "interrupted"], [2, "interrupted"]]);
+  assert.equal(clock.pending(), 0);
+});
+
+test("a late hello or close after dispose creates nothing", async () => {
+  const { hub, registry, clock } = setup();
+  hub.dispose();
+  const late = new FakeSocket();
+  hub.onMessage(late, JSON.stringify({ type: "hello", clientId: "phone", deviceName: "phone", focusedAt: 50, audioUnlocked: true }));
+  hub.onClose(late);
+  assert.deepEqual(registry.live(), []);
+  assert.deepEqual(hub.clients(), []);
+  assert.deepEqual(hub.holderIds(), []);
+  assert.deepEqual(late.sent, []);
+  assert.equal(clock.pending(), 0);
+});
