@@ -128,6 +128,11 @@ when bound to loopback, any `Host` header other than `127.0.0.1`,
 remote node) exposes it to every host that can reach the port -- anyone
 there can make it synthesize and change its config. Only
 bind beyond loopback on a trusted network, and firewall the port.
+The server also serves endpoints the plugin does not use (turns, cues,
+previews, replays, mute, and its own speech history, kept in
+`~/.local/state/kokoro-tts/speech-log.jsonl`); the plugin calls only
+`/synthesize`, `/voices`, `/health`, and the runtime part of `/config`, but
+anyone who can reach the port can call the rest.
 Behind a reverse proxy, the loopback Host check applies to the request the
 server receives: set the upstream `Host` (Caddy: `header_up Host
 {upstream_hostport}`), or bind the server to a non-loopback address instead.
@@ -160,14 +165,17 @@ and schedules, and the plugin files for a git or npm install. It keeps:
 - `~/.config/kokoro-tts/config.json` (the local server's config);
 - `~/.local/state/kokoro-tts/speech-log.jsonl` (the local server's log).
 
-Stop the local server (or bb) first, then delete what you don't need:
+Remove (or disable) the plugin first: while it runs it restarts a local
+server that stops. Then stop any local Kokoro server still running -- one
+the plugin adopted, or one left from an earlier run, can outlive both the
+plugin and bb, so stopping bb is no proof it stopped:
+
+    curl -s http://127.0.0.1:6789/health    # answers while a server runs
+    pkill -f kokoro_server.py
+
+Then delete what you don't need:
 
     rm -rf ~/.local/share/kokoro-tts
     rm -rf ~/.config/kokoro-tts
     rm -rf ~/.local/state/kokoro-tts
     rm -rf ~/.bb/plugins/kokoro-tts
-
-With bb stopped, delete the stored rows:
-
-    sqlite3 ~/.bb/bb.db "DELETE FROM plugin_kv WHERE plugin_id = 'kokoro-tts'"
-
