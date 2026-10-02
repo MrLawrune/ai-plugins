@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { CONFIG_RESPONSE, HEALTH, PREFS, READY, RUNTIME, rpcStubs } from "./fixtures.ts";
@@ -182,4 +182,29 @@ test("an engine that forwards says so instead of Reachable", async () => {
   });
   expect(await screen.findByText(/This server forwards to another one, so it can't synthesize for bb/)).toBeTruthy();
   expect(screen.queryByText("Reachable")).toBeNull();
+});
+
+test("the runtime reloads when the local backup comes up while a remote main stays up", async () => {
+  const { refreshStatus } = await import("./state.ts");
+  let localUp = false;
+  const status = () => ({
+    ...READY,
+    engines: [
+      { slot: "main" as const, url: "http://192.0.2.10:6789", local: false, health: { up: true as const, health: HEALTH }, breaker: "closed" as const },
+      { slot: "backup" as const, url: "http://127.0.0.1:6789", local: true,
+        health: localUp ? { up: true as const, health: HEALTH } : { up: false as const, error: "starting" }, breaker: "closed" as const },
+    ],
+  });
+  const slot = await settings({
+    status,
+    getConfig: () => ({ ...engines({ url: "http://192.0.2.10:6789" }, "local"), runtime: localUp ? RUNTIME : null }),
+  });
+  await screen.findByRole("radiogroup", { name: "Main engine" });
+  const configLoads = () => slot.inspection.rpcCalls.filter((c) => c.method === "getConfig").length;
+  await waitFor(() => expect(configLoads()).toBe(1));
+  expect(screen.queryByText("Tuning")).toBeNull();
+  localUp = true;
+  await act(async () => refreshStatus());
+  await waitFor(() => expect(configLoads()).toBe(2));
+  expect(await screen.findByText("Tuning")).toBeTruthy();
 });

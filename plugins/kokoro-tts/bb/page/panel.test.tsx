@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { CONFIG_RESPONSE, READY, rpcStubs } from "./fixtures.ts";
+import { CONFIG_RESPONSE, HEALTH, READY, rpcStubs } from "./fixtures.ts";
 
 async function panel(overrides = {}) {
   const app = await loadPluginApp(() => import("../app.tsx"));
@@ -46,6 +46,7 @@ test("while the server is setting up, the panel explains where to look", async (
     status: () => ({
       ...READY,
       health: { up: false, error: "unreachable" },
+      engines: [{ ...READY.engines[0]!, health: { up: false, error: "unreachable" } }],
       setup: { state: "downloading-models", detail: null, progress: 0.42, fixCommand: null, headless: null, gpuAvailable: false },
     }),
   });
@@ -97,4 +98,28 @@ test("there is no server playback or output device choice", async () => {
   expect(screen.queryByLabelText("Play audio")).toBeNull();
   expect(screen.queryByText("Rescan devices")).toBeNull();
   expect(screen.getByLabelText("Route")).toBeTruthy();
+});
+
+const MAIN_DOWN_BACKUP_UP = {
+  ...READY,
+  health: { up: false, error: "ECONNREFUSED" },
+  engines: [
+    { slot: "main", url: "http://192.0.2.10:6789", local: false, health: { up: false, error: "ECONNREFUSED" }, breaker: "open" },
+    { slot: "backup", url: "http://127.0.0.1:6789", local: true, health: { up: true, health: HEALTH }, breaker: "closed" },
+  ],
+};
+
+test("with the main engine down and the backup up, voices load and no 'nothing can speak' banner shows", async () => {
+  const slot = await panel({ status: () => MAIN_DOWN_BACKUP_UP });
+  await screen.findByRole("heading", { name: "Voice" });
+  await waitFor(() => expect(slot.inspection.rpcCalls.some((c) => c.method === "listVoices")).toBe(true));
+  expect(screen.queryByText(/Speech plays once an engine is running/)).toBeNull();
+});
+
+test("with every engine down the banner shows and voices wait", async () => {
+  const slot = await panel({
+    status: () => ({ ...MAIN_DOWN_BACKUP_UP, engines: MAIN_DOWN_BACKUP_UP.engines.map((e) => ({ ...e, health: { up: false, error: "down" } })) }),
+  });
+  expect(await screen.findByText(/Speech plays once an engine is running/)).toBeTruthy();
+  expect(slot.inspection.rpcCalls.some((c) => c.method === "listVoices")).toBe(false);
 });

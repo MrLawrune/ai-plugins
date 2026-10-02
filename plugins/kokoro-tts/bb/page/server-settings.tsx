@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { formatHomePathForDisplay } from "@/lib/utils";
 import type { rpcContract } from "../contract.ts";
 import type { ConfigResponse, EngineRef, EngineStatus, RuntimePatch, Settings } from "../schemas.ts";
-import { useConfig, usePrefs, useStatus } from "./state.ts";
+import { localEngineUp, useConfig, usePrefs, useStatus } from "./state.ts";
 import { ownerText, statusLine } from "./status.ts";
 import { ChoiceGroup, Disclosure, errorText, Row, SaveIndicator, SliderRow, StatusDot, SwitchRow } from "./ui.tsx";
 
@@ -114,7 +114,7 @@ export function ServerSettings() {
   const status = useStatus();
   const up = status?.health.up === true;
   const { prefs, setPrefs } = usePrefs();
-  const { data, patch, commit, save } = useConfig(up);
+  const { data, patch, commit, save } = useConfig(localEngineUp(status));
   const [engineError, setEngineError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
 

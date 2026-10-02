@@ -5,7 +5,7 @@ import type { rpcContract } from "../contract.ts";
 import { HistorySection } from "./history-section.tsx";
 import { ListeningSection } from "./listening-section.tsx";
 import { SoundsSection } from "./sounds-section.tsx";
-import { useConfig, useLoaded, usePrefs, useStatus } from "./state.ts";
+import { anyEngineUp, localEngineUp, useConfig, useLoaded, usePrefs, useStatus } from "./state.ts";
 import { statusLine } from "./status.ts";
 import { SaveIndicator, StatusDot } from "./ui.tsx";
 import { VoiceSection } from "./voice-section.tsx";
@@ -16,8 +16,9 @@ const SETTINGS_PATH = "Settings › Plugins › Kokoro TTS";
 export function KokoroPanel() {
   const rpc = useRpc<typeof rpcContract>();
   const status = useStatus();
-  const up = status?.health.up === true;
-  const { data, error, reload, patch, dismissNote, save } = useConfig(up);
+  // listVoices falls back to the backup, so any engine answering is enough.
+  const up = anyEngineUp(status);
+  const { data, error, reload, patch, dismissNote, save } = useConfig(localEngineUp(status));
   const { prefs, setPrefs } = usePrefs();
   const voices = useLoaded(useCallback(() => rpc.call("listVoices"), [rpc]), up);
   const line = statusLine(status);

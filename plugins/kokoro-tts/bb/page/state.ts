@@ -87,6 +87,16 @@ export function resetStatusForTests(): void {
   subscribers.clear();
 }
 
+/** Some engine, main or backup, answers: speech can play and voices can be listed. */
+export function anyEngineUp(s: KokoroStatus | null): boolean {
+  return s?.engines.some((e) => e.health.up) ?? false;
+}
+
+/** The managed local engine (in either slot) answers: its runtime can be read. */
+export function localEngineUp(s: KokoroStatus | null): boolean {
+  return s?.engines.some((e) => e.local && e.health.up) ?? false;
+}
+
 export function refreshStatus(): void {
   if (timer) clearTimeout(timer);
   void poll();
@@ -139,17 +149,18 @@ const omit = <T extends object>(obj: T, keys: (keyof T)[]): T => {
 
 /**
  * Settings are plugin-owned and load even while every engine is down; they
- * reload when the main engine comes up, since only then is its runtime known.
+ * reload when the local engine's reachability changes, since only while it
+ * answers is its runtime known.
  */
-export function useConfig(up: boolean) {
+export function useConfig(localUp: boolean) {
   const rpc = useRpc<typeof rpcContract>();
   const [confirmed, setConfirmed] = useState<ConfigResponse | null>(null);
   const [drafts, setDrafts] = useState<SettingsPatch>({});
   const [runtimeDrafts, setRuntimeDrafts] = useState<RuntimePatch>({});
   const [settingsSave, setSettingsSave] = useState<SaveState>({ kind: "idle" });
   const [runtimeSave, setRuntimeSave] = useState<SaveState>({ kind: "idle" });
-  // `up` is a dependency only so the load reruns when the main engine comes up.
-  const load = useCallback(() => rpc.call("getConfig"), [rpc, up]);
+  // `localUp` is a dependency only so the load reruns when the local engine comes up or goes down.
+  const load = useCallback(() => rpc.call("getConfig"), [rpc, localUp]);
   const loaded = useLoaded(load, true);
   useEffect(() => { if (loaded.value) setConfirmed(loaded.value); }, [loaded.value]);
 
