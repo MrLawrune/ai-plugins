@@ -232,7 +232,7 @@ export class TurnCoordinator {
     this.#chains.set(threadId, next);
     void next.then(() => {
       if (this.#chains.get(threadId) === next) this.#chains.delete(threadId);
-    });
+    }).catch(() => {});
     return next;
   }
 }

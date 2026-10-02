@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { NOTE_LOCAL_SWITCH_FAILED, NOTE_UNREADABLE } from "./coord/migrate.ts";
 import { DEFAULT_SETTINGS, type Settings } from "./schemas.ts";
-import plugin, { createPlugin, enginesChange, isLocalRequest } from "./server.ts";
+import plugin, { createPlugin, engineCache, enginesChange, isLocalRequest } from "./server.ts";
 import { tmpDir } from "./test-tmp.ts";
 
 /** A loopback URL nothing listens on, so no real Kokoro server is touched. */
@@ -282,4 +282,19 @@ test("an unparseable old config file with no server answering loads on defaults 
     else process.env.KOKORO_CONFIG = saved;
     await host.harness.dispose();
   }
+});
+
+test("the engine cache keeps one adapter per URL and drops the ones no longer used", () => {
+  const made: string[] = [];
+  const cache = engineCache((url) => {
+    made.push(url);
+    return { url, health: async () => { throw new Error("unused"); }, voices: async () => [], synthesize: () => (async function* () {})() };
+  });
+  assert.equal(cache.get("http://a"), cache.get("http://a"));
+  cache.get("http://b");
+  cache.get("http://c");
+  cache.retain(["http://a", "http://c"]);
+  assert.deepEqual(cache.urls(), ["http://a", "http://c"]);
+  cache.get("http://b");
+  assert.deepEqual(made, ["http://a", "http://b", "http://c", "http://b"]);
 });

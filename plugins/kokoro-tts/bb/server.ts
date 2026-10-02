@@ -54,6 +54,26 @@ export function enginesChange(prev: Engines, next: Engines): { reset: boolean; r
   return { reset: JSON.stringify(prev) !== JSON.stringify(next), restart: usesLocal(prev) !== usesLocal(next) };
 }
 
+/**
+ * One adapter per engine URL, so each keeps its connection reuse. `retain`
+ * drops adapters for URLs nothing uses any more.
+ */
+export function engineCache(create: (url: string) => Engine) {
+  const cache = new Map<string, Engine>();
+  return {
+    get(url: string): Engine {
+      let engine = cache.get(url);
+      if (!engine) cache.set(url, (engine = create(url)));
+      return engine;
+    },
+    retain(urls: Iterable<string>): void {
+      const keep = new Set(urls);
+      for (const url of cache.keys()) if (!keep.has(url)) cache.delete(url);
+    },
+    urls: (): string[] => [...cache.keys()],
+  };
+}
+
 export interface PluginOptions {
   /** For every request to a Kokoro server; tests pass a fake. */
   fetch?: typeof fetch;
@@ -148,17 +168,15 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
   });
   speechLog.init();
 
-  /** One adapter per engine URL, so each keeps its connection reuse. */
-  const engineCache = new Map<string, Engine>();
-  const engineAt = (url: string): Engine => {
-    let engine = engineCache.get(url);
-    if (!engine) {
-      engine = createKokoroEngine(url, fetchImpl);
-      engineCache.set(url, engine);
-    }
-    return engine;
+  const adapters = engineCache((url) => createKokoroEngine(url, fetchImpl));
+  const engineAt = (url: string): Engine => adapters.get(url);
+  const urlOf = (ref: EngineRef) => (ref === "local" ? localUrl : ref.url);
+  const engineFor = (ref: EngineRef) => engineAt(urlOf(ref));
+  /** After an engines or server URL change: keep only the adapters still in use (the local one always). */
+  const retainEngines = () => {
+    const { main, backup } = settings.get().engines;
+    adapters.retain([localUrl, urlOf(main), ...(backup ? [urlOf(backup)] : [])]);
   };
-  const engineFor = (ref: EngineRef) => engineAt(ref === "local" ? localUrl : ref.url);
   const engines = () => {
     const { main, backup } = settings.get().engines;
     return { main: engineFor(main), backup: backup ? engineFor(backup) : null, mainRef: main, backupRef: backup };
@@ -251,7 +269,10 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
       const r = next.retention;
       if (r.maxAgeDays !== prev.retention.maxAgeDays || r.maxEntries !== prev.retention.maxEntries) speechLog.prune();
       const change = enginesChange(prev.engines, next.engines);
-      if (change.reset) chain.reset();
+      if (change.reset) {
+        chain.reset();
+        retainEngines();
+      }
       if (change.restart) supervisor?.restart();
     } catch (cause) {
       bb.log.warn(`settings change: ${errorText(cause)}`);
@@ -260,6 +281,7 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
   pluginSettings.onChange((next) => {
     localUrl = localOf(next.serverUrl);
     chain.reset();
+    retainEngines();
     supervisor?.restart();
   });
 
