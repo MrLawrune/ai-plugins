@@ -7,7 +7,7 @@ Plugins for [bb](https://getbb.app).
 Hear your agents: local Kokoro text-to-speech for every bb thread, set up and run for you.
 
     bb marketplace add git:github.com/MrLawrune/ai-plugins@main      # then install Kokoro TTS from the store
-    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.3.0 --plugin kokoro-tts --tag-prefix kokoro-tts/
+    bb plugin install git:https://github.com/MrLawrune/ai-plugins.git@^0.4.0 --plugin kokoro-tts --tag-prefix kokoro-tts/
 
 ## parakeet-stt
 
