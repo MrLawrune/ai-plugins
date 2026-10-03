@@ -176,7 +176,7 @@ test("no audio within the synthesis deadline -> error synthesis timeout", async 
   const b = connect("b", 20);
   hub.speak(7, "Hello.", "t1", 1);
   await tick();
-  clock.advance(74_999);
+  clock.advance(BACKSTOP_MS - 1);
   await tick();
   assert.equal(statuses.length, 0);
   clock.advance(1);
@@ -769,7 +769,7 @@ test("the queue holds 16 by default", async () => {
   assert.deepEqual(statuses, [[1, "interrupted", undefined]]);
 });
 
-test("backstop is 75 s from dispatch", async () => {
+test("the backstop runs from dispatch", async () => {
   const never = new Promise<void>(() => {});
   const { hub, connect, status, clock, statuses } = setup({
     async *synthesize(text) {
@@ -785,13 +785,13 @@ test("backstop is 75 s from dispatch", async () => {
   clock.advance(50_000);
   status(b, 1, "done");
   await tick();
-  clock.advance(25_000); // 75 s after speak(A)
+  clock.advance(BACKSTOP_MS - 50_000); // a backstop's time after speak(A)
   await tick();
   assert.deepEqual(statuses.filter(([id]) => id === 2), []);
   clock.advance(49_999);
   await tick();
   assert.deepEqual(statuses.filter(([id]) => id === 2), []);
-  clock.advance(1); // 75 s after A started synthesizing
+  clock.advance(1); // a backstop's time after A started synthesizing
   await tick();
   assert.deepEqual(statuses.filter(([id]) => id === 2), [[2, "error", { error: "synthesis timeout" }]]);
   assert.deepEqual(b.json().at(-1), { type: "stop", sessionId: "ta" });

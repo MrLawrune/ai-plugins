@@ -46,7 +46,7 @@ export interface RpcDeps {
   scope: Pick<LoadScope, "signal" | "track">;
   turns: Pick<TurnCoordinator, "replay">;
   /** Null when the plugin install is broken (no server/ found): status/config RPC still work. */
-  supervisor: () => Pick<Supervisor, "status" | "uvInstalled" | "uvInstallFailed"> | null;
+  supervisor: () => Pick<Supervisor, "status" | "uvInstalled" | "uvInstallFailed" | "demanded"> | null;
   /** Runs the uv installer script; tests pass a fake. */
   installUv?: typeof installUv;
   prefs: PrefsStore;
@@ -124,9 +124,16 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   /** This load's signal, cut off after `ms` too. */
   const within = (ms: number) => AbortSignal.any([scope.signal, AbortSignal.timeout(ms)]);
   const local = () => createKokoroClient(deps.localUrl(), deps.fetch);
+  /**
+   * A local backup behind a remote main engine is cold: "standby" while it is
+   * stopped, "active" while it runs because the main server failed.
+   */
+  const coldBackup = ({ main, backup }: { main: EngineRef; backup: EngineRef | null }) =>
+    backup === "local" && main !== "local" ? (deps.supervisor()?.demanded() ? "active" as const : "standby" as const) : null;
+  /** The local server runs, or should: a stopped cold backup has no runtime to show. */
   const usesLocal = () => {
     const { engines } = deps.settings.get();
-    return engines.main === "local" || engines.backup === "local";
+    return engines.main === "local" || coldBackup(engines) === "active";
   };
   const localRuntime = async (): Promise<ConfigResponse["runtime"]> => {
     try {
@@ -155,12 +162,22 @@ export function registerRpc(bb: BbPluginApi, deps: RpcDeps): void {
   };
   const status = async () => {
     const { main, backup, mainRef, backupRef } = deps.engines();
-    const [mainHealth, backupHealth] = await Promise.all([probe("main", main), backup ? probe("backup", backup) : null]);
+    const cold = coldBackup({ main: mainRef, backup: backupRef });
+    // A stopped cold backup is not probed: nothing listens, and it is not meant to.
+    const [mainHealth, backupHealth] = await Promise.all([
+      probe("main", main),
+      backup && cold !== "standby" ? probe("backup", backup) : null,
+    ]);
     const engines: EngineStatus[] = [{
       slot: "main", url: main.url, local: mainRef === "local", health: healthResult(mainHealth), breaker: deps.chain.breaker().state,
     }];
-    if (backup && backupHealth) {
-      engines.push({ slot: "backup", url: backup.url, local: backupRef === "local", health: healthResult(backupHealth), breaker: "closed" });
+    if (backup) {
+      engines.push({
+        slot: "backup", url: backup.url, local: backupRef === "local",
+        health: backupHealth ? healthResult(backupHealth) : { up: false, error: "standby" },
+        breaker: "closed",
+        ...(cold ? { cold } : {}),
+      });
     }
     return {
       health: engines[0].health,

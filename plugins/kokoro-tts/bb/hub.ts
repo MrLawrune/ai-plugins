@@ -103,10 +103,11 @@ const HOLD_MS = 15 * 60_000;
 export const MAX_FRAME_BYTES = MAX_PIECE_BYTES;
 const MAX_QUEUED = 16;
 /**
- * First-frame backstop: past the chain's worst case of two cold attempts
- * (30 s each) plus attempt cleanup, so the backup always gets its full budget.
+ * First-frame backstop: past the chain's worst case, a cold main (30 s), then
+ * a cold local backup's start (30 s) and its first frame (8 s), plus attempt
+ * cleanup, so the backup always gets its full budget.
  */
-export const BACKSTOP_MS = 75_000;
+export const BACKSTOP_MS = 90_000;
 /** Per-reply audio budget: 64 MiB of float32 at 24 kHz is about 11.6 minutes. */
 export const MAX_REPLY_BYTES = 64 << 20;
 

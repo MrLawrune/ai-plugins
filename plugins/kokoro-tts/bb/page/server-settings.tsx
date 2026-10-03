@@ -22,11 +22,16 @@ const choiceOf = (ref: EngineRef | null): EngineChoice => (ref === null ? "none"
 const isHttpUrl = (url: string) => /^https?:\/\/\S+$/.test(url);
 
 function engineStatusText(e: EngineStatus): string {
-  if (!e.health.up) return `Unreachable: ${e.health.error}`;
+  if (e.cold === "standby") return "Standby — starts when the main server fails";
+  const why = e.cold === "active" ? " · running because the main server failed" : "";
+  if (!e.health.up) return `Unreachable: ${e.health.error}${why}`;
   if (e.health.health.forwards) return `${FORWARDS}, so it can't synthesize for bb. Point this engine at the synthesizing server.`;
   const version = e.health.health.version;
-  return version ? `Reachable · v${version}` : "Reachable";
+  return `${version ? `Reachable · v${version}` : "Reachable"}${why}`;
 }
+
+/** A stopped cold backup is as it should be, not a problem. */
+const engineOk = (e: EngineStatus) => e.cold === "standby" || (e.health.up && !e.health.health.forwards);
 
 /** One engine slot: where it runs, its URL when it is another server, and how it is doing. */
 function EngineSlot({ label, value, optional, status, note, disabled, onSave }: {
@@ -85,7 +90,10 @@ function EngineSlot({ label, value, optional, status, note, disabled, onSave }: 
           disabled={disabled}
           options={[
             ...(optional ? [{ value: "none" as const, label: "None", hint: "With the main engine unreachable, replies play an error cue." }] : []),
-            { value: "local" as const, label: "This computer (managed)", hint: "The Kokoro server on the computer running bb." },
+            optional
+              ? { value: "local" as const, label: "This computer (starts only when the main server fails)",
+                hint: "The Kokoro server on the computer running bb, stopped again once the main server is back." }
+              : { value: "local" as const, label: "This computer (managed)", hint: "The Kokoro server on the computer running bb." },
             { value: "url" as const, label: "Another server", hint: "A Kokoro server elsewhere on your network synthesizes." },
           ]}
         />
@@ -99,7 +107,7 @@ function EngineSlot({ label, value, optional, status, note, disabled, onSave }: 
         </Row>
       ) : null}
       {status && selected === saved && saved !== "none" ? (
-        <p className={status.health.up && !status.health.health.forwards ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
+        <p className={engineOk(status) ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
           {engineStatusText(status)}
         </p>
       ) : null}
@@ -135,7 +143,7 @@ export function ServerSettings() {
   const openvinoOffered = runtime?.providers_available.openvino === true || provider === "openvino";
   const h = up && status.health.up ? status.health.health : null;
   const slotStatus = (slot: EngineStatus["slot"]) => status.engines.find((e) => e.slot === slot);
-  const showSetup = !["running", "external"].includes(status.setup.state);
+  const showSetup = !["running", "external", "standby"].includes(status.setup.state) || status.setup.fixCommand !== null;
 
   const apply = async (p: Parameters<typeof commit>[0]): Promise<boolean> => {
     setApplying(true);

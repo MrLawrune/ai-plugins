@@ -32,7 +32,7 @@ function deps(over: Omit<Partial<SupervisorDeps>, "prefs"> & { healthSeq?: boole
     findUv: () => "/usr/bin/uv",
     ensureModels: async (p) => { log.push("models"); p(1); },
     syncRuntime: async (_uv, rt) => { log.push(`sync:${rt}`); },
-    needed: () => true,
+    localRole: () => "always",
     spawnServer: (o) => { log.push(`spawn:${o.runtime}:${o.headless}`); const p = fakeProc(); procs.push(p); return p; },
     gpuAvailable: () => false,
     engineProvider: async () => ({ provider: "cpu", cudaAvailable: false }),
@@ -72,9 +72,9 @@ test("full managed setup reaches running, then stops the server on abort", async
   assert.deepEqual(procs[0].kills, ["SIGTERM"]);
 });
 
-test("not needed: external, never spawns", async () => {
+test("no local slot: external, never spawns", async () => {
   let checks = 0;
-  const { d, log } = deps({ needed: () => false, health: async () => { checks++; return false; } });
+  const { d, log } = deps({ localRole: () => "never", health: async () => { checks++; return false; } });
   const sup = new Supervisor(d);
   const ctl = new AbortController();
   const run = sup.start(ctl.signal);
@@ -90,13 +90,13 @@ test("not needed: external, never spawns", async () => {
 });
 
 test("restart after becoming needed spawns", async () => {
-  let needed = false;
-  const { d, log } = deps({ needed: () => needed });
+  let role: "always" | "never" = "never";
+  const { d, log } = deps({ localRole: () => role });
   const sup = new Supervisor(d);
   const ctl = new AbortController();
   const run = sup.start(ctl.signal);
   await until(() => sup.status().state === "external");
-  needed = true;
+  role = "always";
   sup.restart();
   await until(() => sup.status().state === "running");
   assert.deepEqual(log, ["models", "sync:cpu", "spawn:cpu:true"]);
@@ -372,6 +372,139 @@ test("a failed uv install shows the installer error and the manual command while
   uv = "/h/.local/bin/uv";
   sup.uvInstalled();
   await until(() => sup.status().state === "running");
+  ctl.abort();
+  await run;
+});
+
+// --- a cold local backup: started only while the main server fails ---
+
+const STANDBY = "Starts when the main server fails.";
+
+test("a cold backup waits in standby: no health check and no spawn until demanded", async () => {
+  let checks = 0;
+  const { d, log } = deps({ localRole: () => "onDemand", health: async () => { checks++; return checks > 1; } });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "standby");
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual([sup.status().state, sup.status().detail], ["standby", STANDBY]);
+  assert.equal(sup.demanded(), false);
+  assert.equal(checks, 0, "a stopped backup is not probed");
+  assert.deepEqual(log, []);
+  sup.demand();
+  await sup.ready();
+  assert.equal(sup.status().state, "running");
+  assert.equal(sup.demanded(), true);
+  assert.deepEqual(log, ["models", "sync:cpu", "spawn:cpu:true"]);
+  ctl.abort();
+  await run;
+});
+
+test("release stops the cold backup's server and returns to standby", async () => {
+  const { d, procs } = deps({ localRole: () => "onDemand" });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  sup.demand();
+  await until(() => sup.status().state === "running");
+  sup.release();
+  await until(() => sup.status().state === "standby");
+  assert.deepEqual(procs[0].kills, ["SIGTERM"]);
+  assert.equal(sup.demanded(), false);
+  assert.equal(sup.status().detail, STANDBY);
+  ctl.abort();
+  await run;
+});
+
+test("a cold backup that fails to start goes back to standby with the reason, and the next demand retries", async () => {
+  const { d, procs } = deps({ localRole: () => "onDemand", healthSeq: [false] });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "standby");
+  sup.demand();
+  const ready = sup.ready();
+  await until(() => procs.length > 0);
+  procs[0].exit(1);
+  await assert.rejects(ready, /exited with code 1 during startup/);
+  await until(() => sup.status().state === "standby");
+  assert.match(sup.status().detail ?? "", /^Starts when the main server fails\. Its last run failed: .*exited with code 1/);
+  assert.equal(sup.demanded(), false);
+  sup.demand();
+  await until(() => procs.length > 1);
+  assert.equal(procs.length, 2, "a new demand starts it again");
+  ctl.abort();
+  await run; // never rejected: a cold backup's failure must not stop the service
+});
+
+test("a cold backup that needs uv fails its demand at once", async () => {
+  const { d } = deps({ localRole: () => "onDemand", healthSeq: [false], findUv: () => null });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  sup.demand();
+  await assert.rejects(sup.ready(), /uv is needed/);
+  ctl.abort();
+  await run;
+});
+
+test("switching a running cold backup to no local slot stops it; back to backup waits in standby again", async () => {
+  let role: "onDemand" | "never" = "onDemand";
+  const { d, procs } = deps({ localRole: () => role });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  sup.demand();
+  await until(() => sup.status().state === "running");
+  role = "never";
+  sup.restart();
+  await until(() => sup.status().state === "external");
+  assert.deepEqual(procs[0].kills, ["SIGTERM"]);
+  role = "onDemand";
+  sup.restart();
+  await until(() => sup.status().state === "standby");
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(procs.length, 1, "not started again until the main server fails");
+  ctl.abort();
+  await run;
+});
+
+test("demand and release do nothing to an always-on local server", async () => {
+  const { d, procs } = deps();
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  await until(() => sup.status().state === "running");
+  sup.demand();
+  sup.release();
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  assert.deepEqual(procs[0].kills, []);
+  assert.equal(sup.status().state, "running");
+  ctl.abort();
+  await run;
+});
+
+test("a cold start pending when the local slot is removed fails, and an old failure is forgotten", async () => {
+  let role: "onDemand" | "never" = "onDemand";
+  const { d, procs } = deps({ localRole: () => role, healthSeq: [false] });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  sup.demand();
+  await until(() => procs.length > 0);
+  procs[0].exit(1); // the first start fails: standby with the reason
+  await until(() => sup.status().state === "standby");
+  sup.demand();
+  const ready = sup.ready();
+  await until(() => procs.length > 1);
+  role = "never";
+  sup.restart();
+  await assert.rejects(ready, /no local engine/i);
+  role = "onDemand";
+  sup.restart();
+  await until(() => sup.status().state === "standby");
+  assert.equal(sup.status().detail, STANDBY);
   ctl.abort();
   await run;
 });

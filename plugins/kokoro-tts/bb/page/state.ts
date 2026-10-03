@@ -53,7 +53,7 @@ const STALE_AFTER = 2;
 /** Bumped by resetStatusForTests so an in-flight poll from a previous mount is ignored. */
 let generation = 0;
 
-const settled = (s: KokoroStatus | null) => s !== null && (s.setup.state === "running" || s.setup.state === "external");
+const settled = (s: KokoroStatus | null) => s !== null && ["running", "external", "standby"].includes(s.setup.state);
 
 async function poll(): Promise<void> {
   timer = null;

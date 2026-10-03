@@ -6,7 +6,8 @@ import * as path from "node:path";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { NOTE_LOCAL_SWITCH_FAILED, NOTE_UNREADABLE } from "./coord/migrate.ts";
 import { DEFAULT_SETTINGS, type Settings } from "./schemas.ts";
-import plugin, { createPlugin, engineCache, enginesChange, isLocalRequest } from "./server.ts";
+import plugin, { createPlugin, engineCache, enginesChange, isLocalRequest, type PluginOptions } from "./server.ts";
+import type { KokoroStatus } from "./schemas.ts";
 import { tmpDir } from "./test-tmp.ts";
 
 /** A loopback URL nothing listens on, so no real Kokoro server is touched. */
@@ -188,7 +189,7 @@ test("a failing settings listener does not fail the patch that was saved", async
   }
 });
 
-test("an engines change resets the chain, but restarts the local server only when its use changes", () => {
+test("an engines change resets the chain, but restarts the local server only when its role changes", () => {
   const remote = (url: string) => ({ url });
   assert.deepEqual(
     enginesChange({ main: "local", backup: remote("http://a") }, { main: "local", backup: remote("http://b") }),
@@ -197,8 +198,23 @@ test("an engines change resets the chain, but restarts the local server only whe
   );
   assert.deepEqual(
     enginesChange({ main: remote("http://a"), backup: "local" }, { main: "local", backup: remote("http://a") }),
+    { reset: true, restart: true },
+    "a cold backup becomes the always-on main engine",
+  );
+  assert.deepEqual(
+    enginesChange({ main: "local", backup: null }, { main: remote("http://a"), backup: "local" }),
+    { reset: true, restart: true },
+    "the always-on main engine becomes a cold backup: it stops until the main server fails",
+  );
+  assert.deepEqual(
+    enginesChange({ main: remote("http://a"), backup: "local" }, { main: remote("http://b"), backup: "local" }),
     { reset: true, restart: false },
-    "still used locally, in another slot",
+    "another main server: the cold backup stays as it is",
+  );
+  assert.deepEqual(
+    enginesChange({ main: "local", backup: null }, { main: "local", backup: "local" }),
+    { reset: true, restart: false },
+    "the main engine is local: still always on",
   );
   assert.deepEqual(enginesChange({ main: "local", backup: null }, { main: remote("http://a"), backup: null }), { reset: true, restart: true });
   assert.deepEqual(enginesChange({ main: remote("http://a"), backup: null }, { main: remote("http://a"), backup: "local" }), { reset: true, restart: true });
@@ -297,4 +313,102 @@ test("the engine cache keeps one adapter per URL and drops the ones no longer us
   assert.deepEqual(cache.urls(), ["http://a", "http://c"]);
   cache.get("http://b");
   assert.deepEqual(made, ["http://a", "http://b", "http://c", "http://b"]);
+});
+
+// --- a cold local backup ---
+
+const REMOTE_MAIN = "http://192.0.2.10:6789";
+
+/** A plugin whose main engine is another server and whose backup is this computer; nothing real is installed or spawned. */
+async function coldBackupHost(engines: Settings["engines"] = { main: { url: REMOTE_MAIN }, backup: "local" }) {
+  const fetched: string[] = [];
+  const fakeFetch: typeof fetch = async (input) => {
+    fetched.push(String(input));
+    throw new TypeError("fetch failed");
+  };
+  const spawned: string[] = [];
+  const localServer: PluginOptions["localServer"] = {
+    findUv: () => "/usr/bin/uv",
+    ensureModels: async () => {},
+    syncRuntime: async () => {},
+    gpuAvailable: () => false,
+    spawnServer: ({ runtime }) => {
+      spawned.push(runtime);
+      let exit!: (code: string) => void;
+      const exited = new Promise<string>((r) => { exit = r; });
+      return { exited, kill: (signal) => exit(`signal ${signal}`) };
+    },
+  };
+  const host = createFakePluginHost({ settings: { serverUrl: deadUrl } });
+  await host.bb.storage.kv.set("settings", { ...DEFAULT_SETTINGS, engines });
+  await createPlugin({ fetch: fakeFetch, localServer })(host.bb);
+  return { host, fetched, spawned };
+}
+
+test("a cold local backup: loading and the server service start nothing, and status reports it on standby without probing it", async () => {
+  const { host, fetched, spawned } = await coldBackupHost();
+  const server = host.harness.runService("server");
+  try {
+    await waitFor(async () => ((await host.harness.callRpc("status")) as KokoroStatus).setup.state === "standby", 1_000);
+    const s = (await host.harness.callRpc("status")) as KokoroStatus;
+    assert.deepEqual([s.setup.state, s.setup.detail], ["standby", "Starts when the main server fails."]);
+    assert.deepEqual(s.engines[1], {
+      slot: "backup", url: deadUrl, local: true, cold: "standby", health: { up: false, error: "standby" }, breaker: "closed",
+    });
+    assert.deepEqual(spawned, []);
+    assert.deepEqual(fetched.filter((u) => u.startsWith(deadUrl)), [], "the stopped backup is never probed");
+  } finally {
+    server.controller.abort();
+    await server.done;
+    await host.harness.dispose();
+  }
+});
+
+test("main unreachable: the reply starts the cold backup", async () => {
+  const { host, spawned } = await coldBackupHost();
+  const server = host.harness.runService("server");
+  try {
+    await waitFor(async () => ((await host.harness.callRpc("status")) as KokoroStatus).setup.state === "standby", 1_000);
+    await playerSocket(host);
+    await host.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "t1", parentThreadId: null, projectId: "p1" }), lastAssistantText: "Hello there.",
+    });
+    await waitFor(() => spawned.length > 0);
+    assert.deepEqual(spawned, ["cpu"]);
+    const s = (await host.harness.callRpc("status")) as KokoroStatus;
+    assert.equal(s.engines[1]?.cold, "active");
+  } finally {
+    server.controller.abort();
+    await server.done;
+    await host.harness.dispose();
+  }
+});
+
+test("making the cold backup the main engine starts it at once", async () => {
+  const { host, spawned } = await coldBackupHost();
+  const server = host.harness.runService("server");
+  try {
+    await waitFor(async () => ((await host.harness.callRpc("status")) as KokoroStatus).setup.state === "standby", 1_000);
+    await host.harness.callRpc("patchConfig", { engines: { main: "local", backup: null } });
+    await waitFor(() => spawned.length > 0);
+    assert.deepEqual(spawned, ["cpu"]);
+  } finally {
+    server.controller.abort();
+    await server.done;
+    await host.harness.dispose();
+  }
+});
+
+test("no local slot: the server service starts nothing", async () => {
+  const { host, spawned, fetched } = await coldBackupHost({ main: { url: REMOTE_MAIN }, backup: null });
+  const server = host.harness.runService("server");
+  try {
+    await waitFor(async () => ((await host.harness.callRpc("status")) as KokoroStatus).setup.state === "external", 1_000);
+    assert.deepEqual(spawned, []);
+    assert.deepEqual(fetched.filter((u) => u.startsWith(deadUrl)), []);
+  } finally {
+    server.controller.abort();
+    await server.done;
+    await host.harness.dispose();
+  }
 });

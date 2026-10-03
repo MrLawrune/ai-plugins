@@ -78,7 +78,8 @@ export type Prefs = z.infer<typeof prefsSchema>;
 export type PlayOn = Prefs["playOn"];
 
 export const setupStateSchema = z.object({
-  state: z.enum(["checking", "needs-uv", "downloading-models", "installing-runtime", "starting", "running", "external", "error"]),
+  /** `standby`: a cold local backup, stopped until the main server fails. */
+  state: z.enum(["checking", "needs-uv", "downloading-models", "installing-runtime", "starting", "running", "external", "standby", "error"]),
   detail: z.string().nullable(),
   progress: z.number().min(0).max(1).nullable(),
   fixCommand: z.string().nullable(),
@@ -217,6 +218,8 @@ export const engineStatusSchema = z.object({
   local: z.boolean(),
   health: healthResultSchema,
   breaker: z.enum(["closed", "open", "half-open"]),
+  /** A cold local backup: stopped until the main server fails ("standby"), or running because it did ("active"). */
+  cold: z.enum(["standby", "active"]).optional(),
 });
 export type EngineStatus = z.infer<typeof engineStatusSchema>;
 

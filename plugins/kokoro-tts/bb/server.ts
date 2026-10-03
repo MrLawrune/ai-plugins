@@ -11,6 +11,7 @@ import { MuteStore, SettingsStore } from "./coord/settings.ts";
 import { SpeechLogStore } from "./coord/speech-log.ts";
 import { TurnCoordinator } from "./coord/turns.ts";
 import { EngineChain } from "./engines/chain.ts";
+import { ColdBackup } from "./engines/cold-backup.ts";
 import { createKokoroEngine } from "./engines/kokoro.ts";
 import type { Engine } from "./engines/types.ts";
 import { PlayerHub } from "./hub.ts";
@@ -26,7 +27,7 @@ import { ensureModels, loadModelManifest } from "./setup/models.ts";
 import { dataDir, locatePluginRoot, pythonIn, venvDir } from "./setup/paths.ts";
 import { spawnServer } from "./setup/process.ts";
 import { findExecutable, findUv, syncRuntime } from "./setup/uv.ts";
-import { Supervisor } from "./supervisor.ts";
+import { Supervisor, type LocalRole, type SupervisorDeps } from "./supervisor.ts";
 import { errorText, sleep } from "./util.ts";
 import { registerVoice } from "./voice.ts";
 
@@ -42,16 +43,21 @@ const localOf = (serverUrl: string) => (isLoopback(serverUrl) ? serverUrl : DEFA
 
 type Engines = Settings["engines"];
 
-/** Whether an engine slot uses the plugin-managed local server. */
-export const usesLocal = ({ main, backup }: Engines) => main === "local" || backup === "local";
+/**
+ * How the engine slots use the plugin-managed local server: always on as the
+ * main engine, a cold backup started only while the main server fails, or not
+ * at all.
+ */
+export const localRole = ({ main, backup }: Engines): LocalRole =>
+  main === "local" ? "always" : backup === "local" ? "onDemand" : "never";
 
 /**
  * What an engines settings change needs: the chain forgets its breaker and
  * health on any change, but the local server (and its loaded model) restarts
- * only when it starts or stops being used.
+ * only when its role changes (it starts or stops running always).
  */
 export function enginesChange(prev: Engines, next: Engines): { reset: boolean; restart: boolean } {
-  return { reset: JSON.stringify(prev) !== JSON.stringify(next), restart: usesLocal(prev) !== usesLocal(next) };
+  return { reset: JSON.stringify(prev) !== JSON.stringify(next), restart: localRole(prev) !== localRole(next) };
 }
 
 /**
@@ -79,6 +85,8 @@ export interface PluginOptions {
   fetch?: typeof fetch;
   /** Timeout of migration's provider switch on the local server. */
   migrationPatchMs?: number;
+  /** Installing and starting the local server; tests pass fakes. */
+  localServer?: Partial<Pick<SupervisorDeps, "findUv" | "ensureModels" | "syncRuntime" | "spawnServer" | "gpuAvailable">>;
 }
 
 export default createPlugin();
@@ -181,7 +189,22 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     const { main, backup } = settings.get().engines;
     return { main: engineFor(main), backup: backup ? engineFor(backup) : null, mainRef: main, backupRef: backup };
   };
-  const chain = new EngineChain({ engines });
+  let supervisor: Supervisor | null = null;
+  const chain: EngineChain = new EngineChain({
+    engines,
+    // A cold local backup is started when the main server fails.
+    prepare: (slot, signal) => (slot === "backup" && localRole(settings.get().engines) === "onDemand" ? cold.ensure(signal) : undefined),
+  });
+  const cold = new ColdBackup({
+    supervisor: () => supervisor,
+    mainHealth: (signal) => engines().main.health(signal),
+    mainBack: (health) => {
+      chain.noteHealth("main", health, engines().main.url);
+      chain.closeBreaker();
+    },
+  });
+  bb.onDispose(() => cold.dispose());
+  bb.background.service("cold-backup", { start: (signal) => cold.watch(signal) });
 
   const pauser = new MediaPauser();
   bb.onDispose(() => pauser.dispose());
@@ -194,7 +217,7 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     routing: () => prefs.get(),
     synthesize: (text, signal, opts, entryId) => {
       const s = settings.get();
-      return chain.synthesize(text, {
+      return cold.serve((used) => chain.synthesize(text, {
         voice: opts?.voice ?? s.voice,
         speed: opts?.speed ?? s.speed,
         lang: opts?.lang ?? s.lang,
@@ -202,9 +225,10 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
         leadInMs: s.lead_in_ms,
         gapMs: s.gap_ms,
         only: opts?.slot,
-      }, signal, (_slot, url) => {
+      }, signal, (slot, url) => {
+        if (slot === "backup") used();
         if (entryId < PREVIEW_ID_BASE) speechLog.setEngine(entryId, url);
-      });
+      }));
     },
     log: (message) => bb.log.info(message),
     // Other media is only paused for a window on this computer, and only when the settings ask for it.
@@ -257,7 +281,6 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
   });
   bb.onDispose(() => turns.dispose());
 
-  let supervisor: Supervisor | null = null;
   prefs.onChange((next, prev) => {
     if (next.playOn !== prev.playOn || next.pinnedDevice !== prev.pinnedDevice) hub.routingChanged();
     if (next.runtime !== prev.runtime || next.manageServer !== prev.manageServer) supervisor?.restart();
@@ -335,7 +358,7 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
   const localClient = () => createKokoroClient(localUrl, fetchImpl);
 
   const sup = new Supervisor({
-    needed: () => usesLocal(settings.get().engines),
+    localRole: () => localRole(settings.get().engines),
     health: async () => {
       try {
         return (await engineAt(localUrl).health(scope.signal)).reachable;
@@ -366,6 +389,7 @@ async function plugin(bb: BbPluginApi, opts: PluginOptions) {
     },
     sleep,
     now: Date.now,
+    ...opts.localServer,
   });
   supervisor = sup;
   bb.background.service("server", { start: (signal) => sup.start(signal) });

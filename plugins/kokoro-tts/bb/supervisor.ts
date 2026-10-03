@@ -1,10 +1,14 @@
 // Brings the local Kokoro server up when an engine slot uses it: adopt a
 // running one, else uv -> models -> runtime -> spawn (headless), and keep it
-// alive. State feeds the page.
+// alive. As the main engine it runs always; as a cold backup only from
+// demand() to release(). State feeds the page.
 import { isLoopback } from "./kokoro-client.ts";
 import type { Prefs, SetupState } from "./schemas.ts";
 import { SetupError } from "./setup/errors.ts";
 import { UV_INSTALL_COMMAND } from "./setup/uv.ts";
+import { errorText } from "./util.ts";
+
+const STANDBY = "Starts when the main server fails.";
 
 export interface ServerProcess {
   /** Numeric exit code, `signal <NAME>` when killed by a signal, or the spawn error message. */
@@ -12,9 +16,15 @@ export interface ServerProcess {
   kill(signal: NodeJS.Signals): void;
 }
 
+/**
+ * How the engine slots use the local server: `always` as the main engine,
+ * `onDemand` as a cold backup (started only while the main server fails),
+ * `never` when no slot uses it (nothing is checked or spawned).
+ */
+export type LocalRole = "always" | "onDemand" | "never";
+
 export interface SupervisorDeps {
-  /** Whether an engine slot uses the local server; when not, nothing is checked or spawned. */
-  needed(): boolean;
+  localRole(): LocalRole;
   health(): Promise<boolean>;
   prefs(): Prefs;
   serverUrl(): string;
@@ -37,6 +47,11 @@ export class Supervisor {
   #restartCtl: AbortController | null = null;
   #uvWaiter: (() => void) | null = null;
   #uvFailure: string | null = null;
+  /** A cold backup is wanted: from demand() until release() or a failed start. */
+  #demanded = false;
+  /** Why the cold backup's last start or run failed, for the standby card. */
+  #coldFailure: { message: string; fixCommand: string | null } | null = null;
+  #waiters: Array<{ resolve: () => void; reject: (cause: Error) => void }> = [];
 
   constructor(deps: SupervisorDeps) {
     this.#deps = deps;
@@ -49,6 +64,46 @@ export class Supervisor {
 
   restart(): void {
     this.#restartCtl?.abort();
+  }
+
+  /** A cold backup is needed (the main server failed): start it. Nothing for any other role. */
+  demand(): void {
+    if (this.#demanded || this.#deps.localRole() !== "onDemand") return;
+    this.#demanded = true;
+    this.#coldFailure = null;
+    // Not "running" from before a release() that is still stopping it: ready() waits for this start.
+    this.#set({ state: "checking", detail: null, progress: null, fixCommand: null });
+    this.#restartCtl?.abort();
+  }
+
+  /** The cold backup is no longer needed: stop it and wait in standby. */
+  release(): void {
+    if (!this.#demanded) return;
+    this.#demanded = false;
+    this.#restartCtl?.abort();
+  }
+
+  demanded(): boolean {
+    return this.#demanded;
+  }
+
+  /**
+   * Resolves once the local server answers (started or adopted); rejects when
+   * its start fails, needs the user (uv, an unmanaged server that is down),
+   * or it is stopped first.
+   */
+  ready(): Promise<void> {
+    const { state, detail } = this.#state;
+    if (state === "running" || state === "external") return Promise.resolve();
+    if (state === "needs-uv" || state === "error") return Promise.reject(new Error(detail ?? state));
+    return new Promise((resolve, reject) => this.#waiters.push({ resolve, reject }));
+  }
+
+  #settle(cause: Error | null): void {
+    for (const w of this.#waiters.splice(0)) {
+      if (cause) w.reject(cause);
+      else w.resolve();
+    }
   }
 
   uvInstalled(): void {
@@ -85,6 +140,13 @@ export class Supervisor {
         if (!inner.signal.aborted) return;
       } catch (cause) {
         if (!inner.signal.aborted) {
+          if (this.#deps.localRole() === "onDemand") {
+            // A cold backup that fails waits for the next demand; the service keeps running.
+            this.#demanded = false;
+            this.#coldFailure = { message: errorText(cause), fixCommand: cause instanceof SetupError ? cause.fixCommand : null };
+            this.#settle(cause instanceof Error ? cause : new Error(String(cause)));
+            continue;
+          }
           this.#set({
             state: "error",
             detail: cause instanceof Error ? cause.message : String(cause),
@@ -101,12 +163,35 @@ export class Supervisor {
 
   #set(patch: Partial<SetupState>): void {
     this.#state = { ...this.#state, ...patch };
+    const { state, detail } = this.#state;
+    if (state === "running" || state === "external") this.#settle(null);
+    else if (state === "needs-uv" || state === "error") this.#settle(new Error(detail ?? state));
+    else if (state === "standby") this.#settle(new Error("the local server was stopped"));
   }
 
   async #run(signal: AbortSignal): Promise<void> {
     const d = this.#deps;
-    if (!d.needed()) {
+    const role = d.localRole();
+    if (role !== "onDemand") {
+      this.#demanded = false;
+      this.#coldFailure = null;
+    }
+    if (role === "onDemand" && !this.#demanded) {
+      // demand() and release() restart the run; so does a settings change.
+      const failure = this.#coldFailure;
+      this.#set({
+        state: "standby",
+        detail: failure ? `${STANDBY} Its last run failed: ${failure.message}` : STANDBY,
+        progress: null,
+        fixCommand: failure?.fixCommand ?? null,
+        headless: null,
+      });
+      while (!signal.aborted) await d.sleep(60_000, signal);
+      return;
+    }
+    if (role === "never") {
       // A settings change that starts using the local server calls restart().
+      this.#settle(new Error("No local engine is configured."));
       this.#set({ state: "external", detail: "No local engine is configured.", progress: null, fixCommand: null, headless: null });
       while (!signal.aborted) await d.sleep(60_000, signal);
       return;

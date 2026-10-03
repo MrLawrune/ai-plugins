@@ -92,7 +92,7 @@ test("an engine URL that is not http(s) is not saved", async () => {
 test("a backup engine on this computer is saved alongside the main engine", async () => {
   const slot = await settings({ getConfig: () => engines({ url: "http://192.0.2.10:6789" }) });
   const backup = await screen.findByRole("radiogroup", { name: "Backup engine" });
-  fireEvent.click(within(backup).getByRole("radio", { name: "This computer (managed)" }));
+  fireEvent.click(within(backup).getByRole("radio", { name: "This computer (starts only when the main server fails)" }));
   await waitFor(() => expect(patches(slot)).toEqual([{ engines: { main: { url: "http://192.0.2.10:6789" }, backup: "local" } }]));
 });
 
@@ -207,4 +207,53 @@ test("the runtime reloads when the local backup comes up while a remote main sta
   await act(async () => refreshStatus());
   await waitFor(() => expect(configLoads()).toBe(2));
   expect(await screen.findByText("Tuning")).toBeTruthy();
+});
+
+// --- a cold local backup ---
+
+const REMOTE = "http://192.0.2.10:6789";
+const coldStatus = (cold: "standby" | "active") => ({
+  ...READY,
+  engines: [
+    { slot: "main", url: REMOTE, local: false, health: { up: cold === "standby", ...(cold === "standby" ? { health: HEALTH } : { error: "ECONNREFUSED" }) }, breaker: cold === "standby" ? "closed" : "open" },
+    {
+      slot: "backup", url: "http://127.0.0.1:6789", local: true, cold, breaker: "closed",
+      health: cold === "standby" ? { up: false, error: "standby" } : { up: true, health: HEALTH },
+    },
+  ],
+  setup: { ...READY.setup, state: cold === "standby" ? "standby" : "running", detail: cold === "standby" ? "Starts when the main server fails." : null },
+});
+
+test("a stopped cold backup shows standby, not unreachable", async () => {
+  await settings({
+    status: () => coldStatus("standby"),
+    getConfig: () => ({ ...engines({ url: REMOTE }, "local"), runtime: null }),
+  });
+  expect(await screen.findByText("Standby — starts when the main server fails")).toBeTruthy();
+  expect(screen.queryByText(/Unreachable/)).toBeNull();
+});
+
+test("a running cold backup says why it runs", async () => {
+  await settings({
+    status: () => coldStatus("active"),
+    getConfig: () => ({ ...engines({ url: REMOTE }, "local"), runtime: RUNTIME }),
+  });
+  expect(await screen.findByText("Reachable · running because the main server failed")).toBeTruthy();
+});
+
+test("the backup's local option says it starts only when the main server fails", async () => {
+  await settings({ getConfig: () => ({ ...engines({ url: REMOTE }, "local"), runtime: null }) });
+  const backup = await screen.findByRole("radiogroup", { name: "Backup engine" });
+  expect(within(backup).getByRole("radio", { name: /This computer \(starts only when the main server fails\)/ })
+    .getAttribute("aria-checked")).toBe("true");
+  const main = screen.getByRole("radiogroup", { name: "Main engine" });
+  expect(within(main).getByRole("radio", { name: /This computer \(managed\)/ })).toBeTruthy();
+});
+
+test("the runtime can be picked for a local backup on standby", async () => {
+  await settings({
+    status: () => coldStatus("standby"),
+    getConfig: () => ({ ...engines({ url: REMOTE }, "local"), runtime: null }),
+  });
+  expect(await screen.findByRole("radiogroup", { name: "Runtime" })).toBeTruthy();
 });

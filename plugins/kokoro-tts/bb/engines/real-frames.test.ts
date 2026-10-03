@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ClientRegistry } from "../clients.ts";
 import { BACKSTOP_MS, MAX_FRAME_BYTES, PlayerHub, type EntryStatus, type SocketLike } from "../hub.ts";
-import { EngineChain, FIRST_FRAME_COLD_MS, type ReplyOpts } from "./chain.ts";
+import { EngineChain, FIRST_FRAME_COLD_MS, FIRST_FRAME_MS, type ReplyOpts } from "./chain.ts";
+import { COLD_START_MS, ColdBackup } from "./cold-backup.ts";
 import { createKokoroEngine } from "./kokoro.ts";
 import { MAX_PIECE_BYTES, type Engine, type Pcm } from "./types.ts";
 
@@ -145,6 +146,67 @@ test("two cold engines: the backup's audio near the end of its 30 s still plays 
     hub.onMessage(sock, JSON.stringify({ type: "hello", clientId: "c", deviceName: "c", focusedAt: 1, audioUnlocked: true }));
     hub.speak(7, "Hi.", "t1", 1);
     for (let ms = 0; ms < 2 * FIRST_FRAME_COLD_MS && !sock.json.some((m) => m.type === "end"); ms += 100) {
+      t.mock.timers.tick(100);
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    }
+    assert.ok(sock.json.some((m) => m.type === "end"), JSON.stringify(sock.json));
+    assert.equal(sock.frames.length, 1);
+    assert.equal(statuses.length, 0);
+  } finally {
+    hub.dispose();
+  }
+});
+
+test("a cold main, then a cold backup's whole start: its first audio still plays through the hub", async (t) => {
+  assert.ok(BACKSTOP_MS >= FIRST_FRAME_COLD_MS + COLD_START_MS + FIRST_FRAME_MS + 10_000,
+    "the hub backstop covers the main's cold budget, the backup's start, its warm budget and attempt cleanup");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const cold = { reachable: true, loaded: false, version: null, forwards: false, error: null };
+  const base = { health: async () => cold, voices: async () => [] };
+  const main: Engine = {
+    ...base, url: "http://main",
+    synthesize: (_c, _o, signal) => (async function* (): AsyncGenerator<Pcm> {
+      await new Promise((_, rej) => signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true }));
+    })(),
+  };
+  const backup: Engine = {
+    ...base, url: "http://127.0.0.1:6789",
+    synthesize: () => (async function* (): AsyncGenerator<Pcm> {
+      await new Promise((r) => setTimeout(r, FIRST_FRAME_MS - 100));
+      yield new Uint8Array(400);
+    })(),
+  };
+  // A stopped local server that answers just inside its start budget.
+  let state = "standby";
+  let demanded = false;
+  const coldBackup = new ColdBackup({
+    supervisor: () => ({
+      status: () => ({ state }),
+      demanded: () => demanded,
+      demand: () => { demanded = true; },
+      release: () => {},
+      ready: () => new Promise<void>((r) => setTimeout(() => { state = "running"; r(); }, COLD_START_MS - 100)),
+    }),
+    mainHealth: async () => cold,
+    mainBack: () => {},
+  });
+  const chain = new EngineChain({
+    engines: () => ({ main, backup }),
+    prepare: (slot, signal) => (slot === "backup" ? coldBackup.ensure(signal) : undefined),
+  });
+  chain.noteHealth("main", cold, main.url);
+  const statuses: [number, EntryStatus, unknown][] = [];
+  const hub = new PlayerHub({
+    registry: new ClientRegistry(),
+    routing: () => ({ playOn: "follow", pinnedDevice: null }),
+    synthesize: (text, signal) => chain.synthesize(text, OPTS, signal),
+    reportStatus: async (id, s, extra) => { statuses.push([id, s, extra]); },
+  });
+  try {
+    const sock = new FakeSocket();
+    hub.onMessage(sock, JSON.stringify({ type: "hello", clientId: "c", deviceName: "c", focusedAt: 1, audioUnlocked: true }));
+    hub.speak(7, "Hi.", "t1", 1);
+    for (let ms = 0; ms < BACKSTOP_MS && !sock.json.some((m) => m.type === "end"); ms += 100) {
       t.mock.timers.tick(100);
       for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
     }

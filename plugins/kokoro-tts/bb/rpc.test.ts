@@ -66,6 +66,8 @@ interface Options {
   threadExists?: (threadId: string) => Promise<boolean>;
   replay?: RpcDeps["turns"]["replay"];
   installUv?: RpcDeps["installUv"];
+  /** The local server's supervisor says it was demanded as a cold backup (true) or not (false). */
+  demanded?: boolean;
 }
 
 async function harness(o: Options = {}) {
@@ -116,6 +118,7 @@ async function harness(o: Options = {}) {
     status: () => ({ state: "needs-uv" as const, detail: null, progress: null, fixCommand: null, headless: null, gpuAvailable: false }),
     uvInstalled: () => { uvEvents.push("installed"); },
     uvInstallFailed: (message: string) => { uvEvents.push(`failed: ${message}`); },
+    demanded: () => o.demanded ?? false,
   };
   registerRpc(host.bb, {
     settings,
@@ -136,7 +139,7 @@ async function harness(o: Options = {}) {
         return { status: "playing" as const };
       }),
     },
-    supervisor: () => (o.installUv ? supervisor : null),
+    supervisor: () => (o.installUv || o.demanded !== undefined ? supervisor : null),
     installUv: o.installUv,
     prefs: new PrefsStore(kv),
     hub: {
@@ -248,8 +251,8 @@ test("a runtime patch the server refuses surfaces the server's message", async (
 
 test("status reports each engine's health and breaker, the main's health, mute and latency", async () => {
   const main = fakeEngine("http://gpu:6789", { health: DOWN });
-  const backup = fakeEngine(LOCAL, { health: { ...UP, loaded: false } });
-  const h = await harness({ main, backup, settings: { engines: { main: { url: "http://gpu:6789" }, backup: "local" } } });
+  const backup = fakeEngine("http://cpu:6789", { health: { ...UP, loaded: false } });
+  const h = await harness({ main, backup, settings: { engines: { main: { url: "http://gpu:6789" }, backup: { url: "http://cpu:6789" } } } });
   const e = h.speechLog.add("Hi.", "t1", null);
   h.speechLog.setStatus(e.id, "done", { first_audio_ms: 420 });
   await h.mute.set(true);
@@ -258,7 +261,7 @@ test("status reports each engine's health and breaker, the main's health, mute a
   assert.deepEqual(s.engines, [
     { slot: "main", url: "http://gpu:6789", local: false, health: { up: false, error: "ECONNREFUSED" }, breaker: "closed" },
     {
-      slot: "backup", url: LOCAL, local: true, breaker: "closed",
+      slot: "backup", url: "http://cpu:6789", local: false, breaker: "closed",
       health: { up: true, health: { status: "ok", version: "0.3.4", model: "", active_sessions: 0, forwards: false } },
     },
   ]);
@@ -484,4 +487,46 @@ test("status says when an engine forwards to another server", async () => {
   const s = await h.call<KokoroStatus>("status");
   const health = s.engines[0]!.health;
   assert.equal(health.up && health.health.forwards, true);
+});
+
+/** An engine that counts its health probes. */
+function probed(url: string, health: EngineHealth = UP) {
+  const e = { ...fakeEngine(url), probes: 0 };
+  e.health = async () => { e.probes++; return health; };
+  return e;
+}
+
+const COLD = { engines: { main: { url: "http://gpu:6789" }, backup: "local" as const } };
+
+test("status reports a stopped cold backup on standby without probing it", async () => {
+  const backup = probed(LOCAL);
+  const h = await harness({ main: fakeEngine("http://gpu:6789"), backup, settings: COLD, demanded: false });
+  const s = await h.call<KokoroStatus>("status");
+  assert.deepEqual(s.engines[1], {
+    slot: "backup", url: LOCAL, local: true, cold: "standby", health: { up: false, error: "standby" }, breaker: "closed",
+  });
+  assert.equal(backup.probes, 0);
+});
+
+test("status probes a cold backup that runs because the main server failed", async () => {
+  const backup = probed(LOCAL);
+  const h = await harness({ main: fakeEngine("http://gpu:6789", { health: DOWN }), backup, settings: COLD, demanded: true });
+  const s = await h.call<KokoroStatus>("status");
+  assert.equal(s.engines[1]?.cold, "active");
+  assert.equal(s.engines[1]?.health.up, true);
+  assert.equal(backup.probes, 1);
+});
+
+test("a local main engine or a remote backup is never cold", async () => {
+  const h = await harness({ main: fakeEngine(LOCAL), backup: fakeEngine("http://gpu:6789"), settings: { engines: { main: "local", backup: { url: "http://gpu:6789" } } } });
+  const s = await h.call<KokoroStatus>("status");
+  assert.deepEqual(s.engines.map((e) => e.cold), [undefined, undefined]);
+});
+
+test("getConfig skips the runtime of a stopped cold backup", async () => {
+  const h = await harness({ settings: COLD, demanded: false });
+  assert.equal((await h.call<ConfigResponse>("getConfig")).runtime, null);
+  assert.deepEqual(h.fetches, []);
+  const running = await harness({ settings: COLD, demanded: true });
+  assert.notEqual((await running.call<ConfigResponse>("getConfig")).runtime, null);
 });
