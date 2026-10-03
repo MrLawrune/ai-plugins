@@ -48,7 +48,7 @@ from kokoro_pause import MediaPauser, pause_supported
 from kokoro_engine import FRAME_END, FRAME_ERROR, SAMPLE_RATE, EngineError, LocalEngine, RemoteEngine, available_providers
 from kokoro_turn import MODE_CEILING, SOUNDS, apply_cue_prefs, extract_directive, route_cue, route_turn
 
-SERVER_VERSION = "0.3.4"
+SERVER_VERSION = "0.4.0"
 MAX_REPLAY_CHARS = 2000
 PREVIEW_TEXT = "This is how I will sound when reading your updates."
 from mistune.plugins.formatting import strikethrough as strikethrough_plugin
