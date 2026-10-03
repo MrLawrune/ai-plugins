@@ -38,8 +38,9 @@ Runtime and tuning changes go to the local server's `/config`.
 
 The main engine synthesizes every reply. It is either "This computer
 (managed)", the Kokoro server the plugin runs on the computer running bb,
-or "Another server" at a URL. An optional backup engine, set the same way,
-takes over when the main one fails before the reply's first audio:
+or "Another server" at a URL. An optional backup engine, "Another server"
+or "This computer (starts only when the main server fails)", takes over
+when the main one fails before the reply's first audio:
 
 - Unreachable main engine (connection refused, HTTP 5xx, or no first audio
   in time): the reply goes to the backup, and the main engine is skipped
@@ -49,6 +50,16 @@ takes over when the main one fails before the reply's first audio:
   engine unloads when idle) and its last attempt did not go unanswered.
 - Main engine refuses the request (HTTP 4xx, such as an unknown voice): the
   reply goes to the backup, and the main engine stays in use.
+- A backup on this computer is cold: its server does not run while the main
+  server works, so only one server runs. The first reply the main engine
+  fails starts it; that reply is heard after the main engine's timeout plus
+  the start, which may take up to 30 s (the server loads its model before
+  it answers). Replies that fail over meanwhile wait for the same start. A
+  server that has not answered after 30 s fails the reply as unreachable
+  and keeps starting for the next one. While it runs, the main server's
+  health is checked every minute: once it answers, replies go back to it,
+  and the local server stops after 10 minutes without a backup reply, never
+  during one.
 - No engine could speak the reply (no backup, or the backup failed too):
   the reply ends with an error cue and its log entry gives the reason
   (`unreachable ...` when no engine answered). The cue follows the reply's
@@ -59,8 +70,9 @@ takes over when the main one fails before the reply's first audio:
 Once a reply has played audio it stays on that engine. A reply speaks at
 most 6000 characters (cut at a sentence or line end) and at most about 11
 minutes of audio; past that it stops and is logged `reply too long`. Both engines use the
-voice settings. The settings page shows each engine's reachability and
-whether the main engine is being skipped.
+voice settings. The settings page shows each engine's reachability,
+whether the main engine is being skipped, and a stopped local backup as
+Standby.
 
 The thread header's Voice control sets a mode, or Off, for the thread and
 for its project. A thread's own setting wins, then its nearest parent

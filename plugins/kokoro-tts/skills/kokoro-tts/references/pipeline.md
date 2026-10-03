@@ -48,8 +48,8 @@ and failover, a remote synthesis node, or where data lives.
 ## Engines
 
 - Settings > Plugins > Kokoro TTS sets a main engine and an optional backup.
-  Each is "This computer (managed)", the local Kokoro server, or "Another
-  server" at a URL. Both use the voice settings.
+  Each is this computer (the local Kokoro server) or "Another server" at a
+  URL. Both use the voice settings.
 - The plugin sends each reply to an engine one sentence group at a time and
   adds the lead-in silence and the sentence gap itself.
 - Failover happens only before a reply's first audio. Unreachable (refused
@@ -60,6 +60,16 @@ and failover, a remote synthesis node, or where data lives.
   10 minutes and its last attempt was answered).
   A refused request (HTTP 4xx, such as an unknown voice): the backup takes
   that reply; the main engine stays in use.
+- A local backup behind a remote main engine is cold: its server is stopped
+  (Standby on the settings page) while the main server works. The first
+  reply that fails over starts it and waits up to 30 s for it to answer, so
+  the first fallback is heard after about the main engine's timeout plus
+  the start; replies failing over meanwhile share that start, and a fresh
+  server gets the 8 s budget (it loads its model before it answers). A
+  start that fails or takes longer fails that reply as unreachable. While
+  it runs, the main server's health is checked every minute: once it
+  answers, replies return to it, and the local server stops after 10
+  minutes without a backup reply, never mid-reply.
 - No engine could speak the reply (no backup, or the backup failed too):
   an error cue plays and the log entry gives the reason (`unreachable ...`
   when no engine answered). The cue uses the reply's own mode (thread,
@@ -76,7 +86,8 @@ and failover, a remote synthesis node, or where data lives.
 - The plugin installs and runs it (uv, verified model download to the data
   dir, CPU or GPU runtime) unless a server already answers at the
   configured URL, in which case it is reported as external and the plugin
-  does not restart it.
+  does not restart it. As the main engine it runs always; as a cold backup
+  only while the main server fails.
 - The plugin uses its `/synthesize`, `/voices`, and `/health`, and its
   `/config` runtime fields (provider, CPU threads, GPU memory cap, idle
   unload), which the settings page shows only for the managed local engine.

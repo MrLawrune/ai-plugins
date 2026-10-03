@@ -9,7 +9,7 @@ Every bb agent gets a voice. When a thread finishes, you hear a short spoken sum
 - Replies from different threads play one at a time, and replies for a device that drops off wait for it instead of playing at home.
 - Each spoken reply shows in chat as a card with what was said, whether it played, and Replay and Stop buttons.
 - A speech history you control: keep it for 1 to 90 days and up to 10,000 entries, or clear it with one click. Audio is never stored.
-- A main synthesis engine and an optional backup: if the main one stops answering, the backup speaks instead. When no engine can speak a reply, you hear an error cue.
+- A main synthesis engine and an optional backup: if the main one stops answering, the backup speaks instead. A backup on this computer starts only when the main one fails and stops again once it is back. When no engine can speak a reply, you hear an error cue.
 - A voice settings page in the sidebar, and engine settings on the plugin page.
 
 ## How it works

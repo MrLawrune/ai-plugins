@@ -93,7 +93,9 @@ Kokoro TTS sidebar panel under Where it plays.
 
 No audio:
 1. Not muted, and an engine is reachable: the plugin settings page shows
-   the main and backup engines with their reachability. For the local
+   the main and backup engines with their reachability. A backup on this
+   computer shows Standby until the main server fails, then starts (the
+   first fallback takes up to about 30 s longer). For the local
    server: `curl -s http://127.0.0.1:6789/health | jq '{version, engine}'`
    (6789 is the default port).
 2. The browser blocks audio until the user clicks once in a bb window after
