@@ -46,8 +46,9 @@ when the main one fails before the reply's first audio:
   in time): the reply goes to the backup, and the main engine is skipped
   for 30 s before one reply tries it again. An engine gets 8 s to start
   speaking, or 30 s when it may be loading its model: its health said the
-  model is not loaded, or it has not spoken in the last 10 minutes (a GPU
-  engine unloads when idle) and its last attempt did not go unanswered.
+  model is not loaded, or it has not spoken in the last 10 minutes, or in
+  its idle-unload time when its health reports a shorter one (a GPU engine
+  unloads when idle), and its last attempt did not go unanswered.
 - Main engine refuses the request (HTTP 4xx, such as an unknown voice): the
   reply goes to the backup, and the main engine stays in use.
 - A backup on this computer is cold: its server does not run while the main

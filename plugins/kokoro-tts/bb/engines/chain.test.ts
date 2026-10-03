@@ -156,6 +156,23 @@ test("an engine that has not spoken in 10 minutes gets the cold budget, even if 
   t += 10 * 60_000; // a GPU engine may have unloaded since
   assert.equal((await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal))).length, 1);
 });
+test("an engine that unloads its model sooner than 10 minutes is cold after that many idle minutes", async () => {
+  let t = 0;
+  const main = engine("m", slowFirst(60));
+  const chain = new EngineChain({ engines: () => ({ main, backup: null }), now: () => t, firstFrameMs: 20, firstFrameColdMs: 1000 });
+  chain.noteHealth("main", { ...WARM, unloadAfterMs: 2 * 60_000 }, "m");
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal));
+  t += 3 * 60_000; // unloaded a minute ago
+  assert.equal((await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal))).length, 1, "cold budget");
+  t += 60_000; // spoke just now: warm again
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)), (e: EngineError) => e.kind === "unreachable");
+  chain.reset();
+  chain.noteHealth("main", { ...WARM, unloadAfterMs: 60 * 60_000 }, "m");
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal));
+  t += 10 * 60_000; // a longer idle unload is capped at 10 minutes
+  assert.equal((await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal))).length, 1, "cold budget");
+});
+
 test("stale loaded:false health is replaced once the engine speaks", async () => {
   // The settings page saw the model unloaded once and then closed: later outages must not keep the 30 s budget.
   const t = 0;

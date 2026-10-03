@@ -57,7 +57,8 @@ and failover, a remote synthesis node, or where data lives.
   reply, and the main engine is skipped for 30 s before one reply tries it
   again. An engine gets 8 s to start speaking, or 30 s when it may be
   loading its model (its health said not loaded, or it has not spoken in
-  10 minutes and its last attempt was answered).
+  10 minutes, or in its shorter idle-unload time from its health, and its
+  last attempt was answered).
   A refused request (HTTP 4xx, such as an unknown voice): the backup takes
   that reply; the main engine stays in use.
 - A local backup behind a remote main engine is cold: its server is stopped

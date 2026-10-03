@@ -36,6 +36,8 @@ interface SlotState {
   audioAt: number | null;
   /** Its last attempt went unanswered; a retry gets the short budget. */
   unanswered: boolean;
+  /** From /health: the engine unloads its model after this much idle time. */
+  unloadAfterMs: number | null;
 }
 
 function silence(ms: number): Uint8Array {
@@ -149,7 +151,7 @@ export class EngineChain {
   noteHealth(slot: Slot, h: EngineHealth, url: string): void {
     const { main, backup } = this.deps.engines();
     if ((slot === "main" ? main : backup)?.url !== url || !h.reachable) return;
-    this.slot(slot).loaded = h.loaded;
+    Object.assign(this.slot(slot), { loaded: h.loaded, unloadAfterMs: h.unloadAfterMs ?? null });
   }
 
   /** The main engine answers its health check again: replies go back to it now, not after the cooldown. */
@@ -166,19 +168,21 @@ export class EngineChain {
 
   private slot(slot: Slot): SlotState {
     let s = this.slots.get(slot);
-    if (!s) this.slots.set(slot, (s = { loaded: null, audioAt: null, unanswered: false }));
+    if (!s) this.slots.set(slot, (s = { loaded: null, audioAt: null, unanswered: false, unloadAfterMs: null }));
     return s;
   }
 
   /**
    * The long budget for an engine that may be loading its model: its health
-   * said not loaded, or it has not spoken in WARM_FOR_MS (a GPU engine
-   * unloads when idle) and its last attempt did not go unanswered.
+   * said not loaded, or it has not spoken in WARM_FOR_MS, or in its own idle
+   * unload time when /health said that is shorter (a GPU engine unloads when
+   * idle), and its last attempt did not go unanswered.
    */
   private cold(slot: Slot): boolean {
     const s = this.slot(slot);
     if (s.loaded === false) return true;
-    const recent = s.audioAt !== null && this.now() - s.audioAt < WARM_FOR_MS;
+    const warmFor = Math.min(WARM_FOR_MS, s.unloadAfterMs ?? WARM_FOR_MS);
+    const recent = s.audioAt !== null && this.now() - s.audioAt < warmFor;
     return !recent && !s.unanswered;
   }
 

@@ -45,14 +45,20 @@ export function createKokoroEngine(
 
   async function health(signal: AbortSignal): Promise<EngineHealth> {
     try {
-      const body = (await getJson("/health", signal)) as { version?: string; engine?: { kind?: string; loaded?: boolean } } | null;
+      const body = (await getJson("/health", signal)) as {
+        version?: string;
+        engine?: { kind?: string; loaded?: boolean; provider?: string; idle_unload_minutes?: number };
+      } | null;
       const engine = body?.engine;
+      // The server unloads an idle model after idle_unload_minutes, except on CPU or at 0.
+      const idle = engine?.kind === "local" && engine.provider !== "cpu" ? engine.idle_unload_minutes : undefined;
       return {
         reachable: true,
         loaded: engine?.kind === "local" && typeof engine.loaded === "boolean" ? engine.loaded : null,
         version: body?.version ?? null,
         forwards: engine?.kind === "remote",
         error: null,
+        ...(typeof idle === "number" && idle > 0 ? { unloadAfterMs: idle * 60_000 } : {}),
       };
     } catch (cause) {
       if (cause instanceof EngineError && cause.kind === "cancelled") throw cause;

@@ -9,7 +9,15 @@ export const MAX_PIECE_BYTES = 1 << 20;
 
 export interface SynthOpts { voice: string | Record<string, number>; speed: number; lang: string; trim: boolean }
 
-export interface EngineHealth { reachable: boolean; loaded: boolean | null; version: string | null; forwards: boolean | null; error: string | null }
+export interface EngineHealth {
+  reachable: boolean;
+  loaded: boolean | null;
+  version: string | null;
+  forwards: boolean | null;
+  error: string | null;
+  /** Idle time after which the engine unloads its model; absent when it never does or is not known. */
+  unloadAfterMs?: number;
+}
 
 export type EngineErrorKind = "cancelled" | "config" | "unreachable" | "stream";
 

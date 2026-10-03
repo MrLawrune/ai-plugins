@@ -74,6 +74,15 @@ test("health maps local/remote engines", async () => {
     { reachable: true, loaded: null, version: null, forwards: true, error: null });
 });
 
+test("health says when a local engine unloads its model: after its idle minutes, never on CPU or at 0", async () => {
+  const at = (engine: unknown) => createKokoroEngine("http://h", (async () => json({ engine })) as typeof fetch).health(new AbortController().signal);
+  assert.equal((await at({ kind: "local", loaded: true, provider: "cuda", idle_unload_minutes: 2 })).unloadAfterMs, 120_000);
+  assert.equal((await at({ kind: "local", loaded: true, provider: "openvino", idle_unload_minutes: 5 })).unloadAfterMs, 300_000);
+  assert.equal((await at({ kind: "local", loaded: true, provider: "cpu", idle_unload_minutes: 2 })).unloadAfterMs, undefined);
+  assert.equal((await at({ kind: "local", loaded: true, provider: "cuda", idle_unload_minutes: 0 })).unloadAfterMs, undefined);
+  assert.equal((await at({ kind: "remote" })).unloadAfterMs, undefined);
+});
+
 test("health failure is unreachable with the message", async () => {
   const down = createKokoroEngine("http://h", (async () => { throw new TypeError("fetch failed"); }) as typeof fetch);
   const h = await down.health(new AbortController().signal);
