@@ -13,6 +13,12 @@ export interface ChainDeps {
   firstFrameColdMs?: number;  // 30000
   interFrameMs?: number;      // 15000
   cooldownMs?: number;        // 30000
+  /**
+   * Runs before a slot is tried, e.g. to start a cold backup; a rejection
+   * fails that slot as unreachable. "started": the engine was just started
+   * and has its model loaded, so it gets the warm first-frame budget.
+   */
+  prepare?: (slot: Slot, signal: AbortSignal) => Promise<"started" | void> | "started" | void;
 }
 
 const UNREACHABLE = "unreachable: ";
@@ -146,6 +152,11 @@ export class EngineChain {
     this.slot(slot).loaded = h.loaded;
   }
 
+  /** The main engine answers its health check again: replies go back to it now, not after the cooldown. */
+  closeBreaker(): void {
+    this.state = { state: "closed", until: null };
+  }
+
   /** The engines changed: forget the breaker and what was known about them. */
   reset(): void {
     this.gen++;
@@ -190,6 +201,28 @@ export class EngineChain {
     return all;
   }
 
+  /** The slot's prepare hook, given up on when the reply is aborted. */
+  private async prepareSlot(slot: Slot, signal: AbortSignal): Promise<"started" | void> {
+    if (!this.deps.prepare) return;
+    let stop: (() => void) | undefined;
+    const aborted = new Promise<"aborted">((resolve) => {
+      stop = () => resolve("aborted");
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
+    });
+    let r: "started" | "aborted" | void;
+    try {
+      r = await Promise.race([this.deps.prepare(slot, signal), aborted]);
+    } catch (e) {
+      if (signal.aborted) throw new EngineError("cancelled", "cancelled");
+      throw new EngineError("unreachable", `${UNREACHABLE}${message(e)}`);
+    } finally {
+      if (stop) signal.removeEventListener("abort", stop);
+    }
+    if (r === "aborted" || signal.aborted) throw new EngineError("cancelled", "cancelled");
+    return r;
+  }
+
   /** Yields PCM for the whole reply; calls onEngine once with the slot/url that produced the first audio. Throws EngineError on failure. */
   async *synthesize(text: string, opts: ReplyOpts, signal: AbortSignal, onEngine?: (slot: Slot, url: string) => void): AsyncGenerator<Pcm> {
     const chunks = sentenceChunks(text);
@@ -209,8 +242,9 @@ export class EngineChain {
     for (const { slot, engine } of this.candidates(only)) {
       let attempt: Pull | undefined;
       try {
+        const fresh = (await this.prepareSlot(slot, signal)) === "started";
         attempt = new Pull(engine, chunks[0], synth, signal);
-        const frame = await attempt.next(this.cold(slot) ? coldMs : firstFrameMs);
+        const frame = await attempt.next(!fresh && this.cold(slot) ? coldMs : firstFrameMs);
         if (!frame) throw new EngineError("stream", "the engine returned no audio");
         won = { slot, engine, pull: attempt, first: frame };
         break;

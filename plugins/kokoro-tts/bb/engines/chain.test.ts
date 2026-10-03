@@ -269,3 +269,58 @@ test("a stream failure before the first frame fails over with the breaker unchan
   await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal, (s) => used.push(s)));
   assert.deepEqual(used, ["backup"]); assert.equal(chain.breaker().state, "closed");
 });
+
+test("prepare runs before a slot is tried, only for slots that are tried", async () => {
+  const prepared: string[] = [];
+  const main = engine("m", ok); const backup = engine("b", ok);
+  const chain = new EngineChain({ engines: () => ({ main, backup }), prepare: (slot) => { prepared.push(slot); } });
+  await collect(chain.synthesize("Hi.", OPTS, new AbortController().signal));
+  assert.deepEqual(prepared, ["main"]);
+});
+
+test("a failed prepare fails that slot as unreachable without calling its engine", async () => {
+  const main = engine("m", () => fail("unreachable")); const backup = engine("b", ok);
+  const chain = new EngineChain({
+    engines: () => ({ main, backup }),
+    prepare: async (slot) => { if (slot === "backup") throw new Error("the local server did not start in time"); },
+  });
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)),
+    (e: EngineError) => e.kind === "unreachable" && e.message === "unreachable: the local server did not start in time");
+  assert.equal(backup.calls.length, 0);
+});
+
+test("an engine prepare just started gets the warm first-frame budget", async () => {
+  const main = engine("m", () => fail("unreachable")); const backup = engine("b", hang);
+  const chain = new EngineChain({
+    engines: () => ({ main, backup }), firstFrameMs: 50, firstFrameColdMs: 5_000,
+    prepare: async (slot) => (slot === "backup" ? "started" : undefined),
+  });
+  const t0 = Date.now();
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, new AbortController().signal)), (e: EngineError) => e.kind === "unreachable");
+  assert.ok(Date.now() - t0 < 1_000, `took ${Date.now() - t0} ms: a fresh server has its model loaded`);
+});
+
+test("a reply aborted while prepare waits is cancelled, not a failure", async () => {
+  const main = engine("m", () => fail("unreachable")); const backup = engine("b", ok);
+  const ac = new AbortController();
+  const chain = new EngineChain({
+    engines: () => ({ main, backup }),
+    // A start that never ends: only the reply's abort gets the chain out of it.
+    prepare: (slot) => (slot === "backup" ? new Promise<void>(() => { setTimeout(() => ac.abort(), 10); }) : undefined),
+  });
+  await assert.rejects(collect(chain.synthesize("Hi.", OPTS, ac.signal)), (e: EngineError) => e.kind === "cancelled");
+  assert.equal(backup.calls.length, 0);
+});
+
+test("closing the breaker sends the next reply to main at once", async () => {
+  let down = true;
+  const main = engine("m", () => (down ? fail("unreachable") : ok())); const backup = engine("b", ok);
+  const chain = new EngineChain({ engines: () => ({ main, backup }), cooldownMs: 60_000 });
+  await collect(chain.synthesize("A.", OPTS, new AbortController().signal));
+  assert.equal(chain.breaker().state, "open");
+  down = false;
+  chain.closeBreaker();
+  const used: string[] = [];
+  await collect(chain.synthesize("B.", OPTS, new AbortController().signal, (s) => used.push(s)));
+  assert.deepEqual(used, ["main"]);
+});
