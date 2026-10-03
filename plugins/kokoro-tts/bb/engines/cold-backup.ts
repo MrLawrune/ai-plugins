@@ -32,7 +32,7 @@ export class ColdBackup {
   readonly #deps: ColdBackupDeps;
   readonly #now: () => number;
   /** The start replies are waiting on, shared by all of them. */
-  #starting: Promise<"started"> | null = null;
+  #starting: Promise<"started" | undefined> | null = null;
   /** Replies the backup is speaking now. */
   #speaking = 0;
   /** When the backup was last tried or last finished a reply. */
@@ -48,8 +48,10 @@ export class ColdBackup {
 
   /**
    * Before the backup slot is tried: a stopped backup is started, and the
-   * reply waits (bounded) until it answers. "started" when it had to wait,
-   * so the chain gives it the warm first-frame budget.
+   * reply waits (bounded) until it answers. "started" when the plugin just
+   * started it (its model is loaded), so the chain gives it the warm
+   * first-frame budget; an adopted server's model may be unloaded, so the
+   * chain's own rules decide for it.
    */
   ensure(_signal: AbortSignal): Promise<"started" | void> {
     if (this.#disposed) return Promise.reject(new Error("unloading"));
@@ -66,7 +68,8 @@ export class ColdBackup {
       timer = setTimeout(() => reject(new Error(`the local server did not start within ${ms / 1000} s`)), ms);
       this.#abandon = reject;
     });
-    const starting = Promise.race([sup.ready().then(() => "started" as const), late]).finally(() => {
+    const answered = sup.ready().then(() => (sup.status().state === "running" ? "started" as const : undefined));
+    const starting = Promise.race([answered, late]).finally(() => {
       clearTimeout(timer);
       if (this.#starting === starting) {
         this.#starting = null;

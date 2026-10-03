@@ -40,6 +40,8 @@ function fakeSupervisor() {
       ? Promise.resolve()
       : new Promise<void>((resolve, reject) => { waiters.push({ resolve, reject }); })),
     answer: () => { state = "running"; settle(null); },
+    /** A server someone else runs already answered at the local URL. */
+    adopt: () => { state = "external"; settle(null); },
     fail: (message: string) => { demanded = false; state = "standby"; settle(new Error(message)); },
   };
 }
@@ -75,6 +77,14 @@ test("a stopped backup is started once for concurrent replies, and reported fres
   assert.deepEqual(sup.events, ["demand"]);
   sup.answer();
   assert.deepEqual(await Promise.all([a, b]), ["started", "started"]);
+});
+
+test("an adopted server is not reported freshly started: its model may be unloaded", async () => {
+  const { backup, sup } = cold();
+  const p = backup.ensure(signal());
+  await tick();
+  sup.adopt();
+  assert.equal(await p, undefined);
 });
 
 test("a running backup is used at once, without another start", async () => {

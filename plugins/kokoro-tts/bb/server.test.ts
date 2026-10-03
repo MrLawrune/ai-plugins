@@ -327,6 +327,7 @@ async function coldBackupHost(engines: Settings["engines"] = { main: { url: REMO
     throw new TypeError("fetch failed");
   };
   const spawned: string[] = [];
+  const kills: string[] = [];
   const localServer: PluginOptions["localServer"] = {
     findUv: () => "/usr/bin/uv",
     ensureModels: async () => {},
@@ -336,13 +337,13 @@ async function coldBackupHost(engines: Settings["engines"] = { main: { url: REMO
       spawned.push(runtime);
       let exit!: (code: string) => void;
       const exited = new Promise<string>((r) => { exit = r; });
-      return { exited, kill: (signal) => exit(`signal ${signal}`) };
+      return { exited, kill: (signal) => { kills.push(signal); exit(`signal ${signal}`); } };
     },
   };
   const host = createFakePluginHost({ settings: { serverUrl: deadUrl } });
   await host.bb.storage.kv.set("settings", { ...DEFAULT_SETTINGS, engines });
   await createPlugin({ fetch: fakeFetch, localServer })(host.bb);
-  return { host, fetched, spawned };
+  return { host, fetched, spawned, kills };
 }
 
 test("a cold local backup: loading and the server service start nothing, and status reports it on standby without probing it", async () => {
@@ -406,6 +407,26 @@ test("no local slot: the server service starts nothing", async () => {
     await waitFor(async () => ((await host.harness.callRpc("status")) as KokoroStatus).setup.state === "external", 1_000);
     assert.deepEqual(spawned, []);
     assert.deepEqual(fetched.filter((u) => u.startsWith(deadUrl)), []);
+  } finally {
+    server.controller.abort();
+    await server.done;
+    await host.harness.dispose();
+  }
+});
+
+test("moving the local server from main engine to backup stops it and puts it on standby", async () => {
+  const { host, spawned, kills } = await coldBackupHost({ main: "local", backup: null });
+  const server = host.harness.runService("server");
+  try {
+    await waitFor(() => spawned.length > 0);
+    assert.deepEqual(spawned, ["cpu"]);
+    await host.harness.callRpc("patchConfig", { engines: { main: { url: REMOTE_MAIN }, backup: "local" } });
+    await waitFor(async () => ((await host.harness.callRpc("status")) as KokoroStatus).setup.state === "standby", 2_000);
+    assert.deepEqual(kills, ["SIGTERM"]);
+    const s = (await host.harness.callRpc("status")) as KokoroStatus;
+    assert.equal(s.setup.state, "standby");
+    assert.equal(s.engines[1]?.cold, "standby");
+    assert.deepEqual(spawned, ["cpu"], "not started again");
   } finally {
     server.controller.abort();
     await server.done;

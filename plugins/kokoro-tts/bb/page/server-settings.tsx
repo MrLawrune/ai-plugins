@@ -15,6 +15,8 @@ type Provider = NonNullable<RuntimePatch["provider"]>;
 type ShownProvider = NonNullable<ConfigResponse["runtime"]>["config"]["provider"];
 
 const FORWARDS = "This server forwards to another one";
+/** The supervisor's detail for a cold backup on standby; the backup slot already says it. */
+const STANDBY_DETAIL = "Starts when the main server fails.";
 type Engines = Settings["engines"];
 type EngineChoice = "none" | "local" | "url";
 
@@ -144,6 +146,9 @@ export function ServerSettings() {
   const h = up && status.health.up ? status.health.health : null;
   const slotStatus = (slot: EngineStatus["slot"]) => status.engines.find((e) => e.slot === slot);
   const showSetup = !["running", "external", "standby"].includes(status.setup.state) || status.setup.fixCommand !== null;
+  // Under the main engine's status, a standby note is only worth showing when the backup's last run failed.
+  const setupDetail = status.setup.state !== "standby" ? status.setup.detail
+    : status.setup.detail && status.setup.detail !== STANDBY_DETAIL ? `Local backup: ${status.setup.detail}` : null;
 
   const apply = async (p: Parameters<typeof commit>[0]): Promise<boolean> => {
     setApplying(true);
@@ -191,7 +196,7 @@ export function ServerSettings() {
             status.latency.median_ms != null ? `typical first audio ${Math.round(status.latency.median_ms)} ms` : null]
             .filter(Boolean).join(" · ")}
         </p>
-        {status.setup.detail ? <p className="text-xs text-muted-foreground">{status.setup.detail}</p> : null}
+        {setupDetail ? <p className="text-xs text-muted-foreground">{setupDetail}</p> : null}
       </div>
 
       {showSetup ? (

@@ -508,3 +508,75 @@ test("a cold start pending when the local slot is removed fails, and an old fail
   ctl.abort();
   await run;
 });
+
+/** A process that records signals but exits only when the test says so. */
+function slowProc() {
+  let resolveExit!: (code: number | string | null) => void;
+  const kills: string[] = [];
+  let alive = true;
+  const proc: ServerProcess & { kills: string[]; exit: (c: number | string | null) => void; alive: () => boolean } = {
+    exited: new Promise((r) => { resolveExit = r; }),
+    kill: (s) => { kills.push(s); },
+    kills,
+    exit: (c) => { alive = false; resolveExit(c); },
+    alive: () => alive,
+  };
+  return proc;
+}
+
+test("demand() while a release is still stopping the server: ready() waits for the next start", async () => {
+  const procs: ReturnType<typeof slowProc>[] = [];
+  const { d } = deps({
+    localRole: () => "onDemand",
+    // Healthy while the newest server is alive.
+    health: async () => procs.length > 0 && procs.at(-1)!.alive(),
+    spawnServer: () => { const p = slowProc(); procs.push(p); return p; },
+  });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  sup.demand();
+  await sup.ready();
+  assert.equal(procs.length, 1);
+  sup.release();
+  await until(() => procs[0].kills.length > 0);
+  assert.deepEqual(procs[0].kills, ["SIGTERM"]);
+  sup.demand(); // the main server failed again before the old one exited
+  let ready = false;
+  const next = sup.ready().then(() => { ready = true; });
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(ready, false, "the stopping server does not count");
+  assert.equal(procs.length, 1, "no second server while the first still holds the port");
+  procs[0].exit("signal SIGTERM");
+  await next;
+  assert.equal(procs.length, 2);
+  assert.equal(sup.status().state, "running");
+  ctl.abort();
+  procs[1].exit("signal SIGTERM");
+  await run;
+});
+
+test("a server that never gets healthy is killed and waited for before the cold backup can start again", async () => {
+  const procs: ReturnType<typeof slowProc>[] = [];
+  const { d } = deps({
+    localRole: () => "onDemand",
+    health: async () => false,
+    spawnServer: () => { const p = slowProc(); procs.push(p); return p; },
+  });
+  const sup = new Supervisor(d);
+  const ctl = new AbortController();
+  const run = sup.start(ctl.signal);
+  sup.demand();
+  let failed: unknown = null;
+  const ready = sup.ready().catch((e: unknown) => { failed = e; });
+  await until(() => procs[0]?.kills.includes("SIGKILL") ?? false);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(failed, null, "not failed while the killed server still holds the port");
+  assert.equal(sup.demanded(), true);
+  procs[0].exit("signal SIGKILL");
+  await ready;
+  assert.match(String(failed), /did not become healthy within 60 s/);
+  await until(() => sup.status().state === "standby");
+  ctl.abort();
+  await run;
+});

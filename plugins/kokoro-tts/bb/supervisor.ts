@@ -254,7 +254,9 @@ export class Supervisor {
       }
 
       if (result.kind === "timeout") {
+        // Wait for it to go, so a prompt next start does not find the port still taken.
         proc.kill("SIGKILL");
+        await proc.exited;
         throw new Error("Kokoro server did not become healthy within 60 s");
       }
 

@@ -257,3 +257,21 @@ test("the runtime can be picked for a local backup on standby", async () => {
   });
   expect(await screen.findByRole("radiogroup", { name: "Runtime" })).toBeTruthy();
 });
+
+test("on standby the header does not repeat the backup's plan", async () => {
+  await settings({
+    status: () => coldStatus("standby"),
+    getConfig: () => ({ ...engines({ url: REMOTE }, "local"), runtime: null }),
+  });
+  await screen.findByText("Standby — starts when the main server fails");
+  expect(screen.queryByText("Starts when the main server fails.")).toBeNull();
+});
+
+test("a cold backup whose last run failed says so, as the local backup's", async () => {
+  const failed = coldStatus("standby");
+  await settings({
+    status: () => ({ ...failed, setup: { ...failed.setup, detail: "Starts when the main server fails. Its last run failed: boom" } }),
+    getConfig: () => ({ ...engines({ url: REMOTE }, "local"), runtime: null }),
+  });
+  expect(await screen.findByText("Local backup: Starts when the main server fails. Its last run failed: boom")).toBeTruthy();
+});
