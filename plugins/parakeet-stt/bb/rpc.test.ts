@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { DictationLog } from "./dictation-log.ts";
 import { PrefsStore } from "./prefs.ts";
+import { rpcContract } from "./contract.ts";
 import { createRpcHandlers, type RpcDeps } from "./rpc.ts";
 import { SttError, type SttClient } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
@@ -114,6 +115,14 @@ test("setServer rejects URLs that are not http(s)", async () => {
     await assert.rejects(handlers.setServer({ serverUrl: bad }), /Enter an http or https URL/, bad);
   }
   assert.deepEqual(sets, []);
+});
+
+test("the setServer contract passes any bounded string through, so the handler's message reaches the page", () => {
+  const input = rpcContract.setServer.input;
+  for (const v of ["ftp://x", "not a url", ""]) assert.equal(input.safeParse({ serverUrl: v }).success, true, v);
+  assert.equal(input.safeParse({ serverUrl: "x".repeat(2049) }).success, false);
+  assert.equal(input.safeParse({ serverUrl: 5 }).success, false);
+  assert.deepEqual(input.parse({ serverUrl: "  http://stt.example  " }), { serverUrl: "http://stt.example" });
 });
 
 test("setServer writes a valid URL through settings and trims it; empty clears; null clears the key", async () => {

@@ -1,6 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { deviceKindSchema, deviceSchema, healthResultSchema, historyEntrySchema, idSchema, nameSchema, prefsSchema, profileInfoSchema, serverResultSchema, serverUrlSchema } from "./schemas.ts";
+import { deviceKindSchema, deviceSchema, healthResultSchema, historyEntrySchema, idSchema, nameSchema, prefsSchema, profileInfoSchema, serverResultSchema } from "./schemas.ts";
 
 export const rpcContract = defineRpcContract({
   health: { input: z.null(), output: healthResultSchema },
@@ -31,9 +31,9 @@ export const rpcContract = defineRpcContract({
   clearHistory: { input: z.null(), output: z.object({ cleared: z.literal(true) }) },
   /** The server URL and whether a key is set (the key itself never leaves the backend). */
   getServer: { input: z.null(), output: serverResultSchema },
-  /** Writes through the plugin settings; an omitted field is unchanged and a null key is cleared. */
+  /** Writes through the plugin settings; an omitted field is unchanged and a null key is cleared. The handler validates the URL. */
   setServer: {
-    input: z.object({ serverUrl: serverUrlSchema.optional(), apiKey: z.string().max(512).nullable().optional() }).strict(),
+    input: z.object({ serverUrl: z.string().trim().max(2048).optional(), apiKey: z.string().max(512).nullable().optional() }).strict(),
     output: serverResultSchema,
   },
   /** The one-time note left by the 0.1.0 migration, or null once dismissed. */
