@@ -57,3 +57,52 @@ test("extra mention fields survive shifting", () => {
     { from: 16, to: 21, kind: "user", label: "Alex", provider: "people" },
   ]);
 });
+
+test("a short edit that merely touches repeated text beside a mention succeeds", () => {
+  const a = { text: "Alex", mentions: [{ from: 0, to: 4 }] };
+  assert.deepEqual(applyTextEdit(a, "Alright Alex"), {
+    text: "Alright Alex",
+    mentions: [{ from: 8, to: 12 }],
+  });
+  const b = { text: "hi @Alex", mentions: [{ from: 3, to: 8 }] };
+  assert.deepEqual(applyTextEdit(b, "hi @Al @Alex"), {
+    text: "hi @Al @Alex",
+    mentions: [{ from: 7, to: 12 }],
+  });
+});
+
+test("deleting text before a mention shifts it left", () => {
+  const cur = { text: "hello there @Alex", mentions: [{ from: 12, to: 17 }] };
+  assert.deepEqual(applyTextEdit(cur, "hello @Alex"), {
+    text: "hello @Alex",
+    mentions: [{ from: 6, to: 11 }],
+  });
+});
+
+test("the `at` hint chooses between equivalent alignments", () => {
+  const cur = {
+    text: "go go",
+    mentions: [
+      { from: 0, to: 2 },
+      { from: 3, to: 5 },
+    ],
+  };
+  const next = "go go go";
+  assert.deepEqual(applyTextEdit(cur, next, 0)?.mentions, [
+    { from: 3, to: 5 },
+    { from: 6, to: 8 },
+  ]);
+  assert.deepEqual(applyTextEdit(cur, next, 3)?.mentions, [
+    { from: 0, to: 2 },
+    { from: 6, to: 8 },
+  ]);
+  assert.deepEqual(applyTextEdit(cur, next)?.mentions, [
+    { from: 0, to: 2 },
+    { from: 3, to: 5 },
+  ]);
+});
+
+test("a real overlap is still null under every alignment", () => {
+  const cur = { text: "aa @Alex", mentions: [{ from: 3, to: 8 }] };
+  assert.equal(applyTextEdit(cur, "aa @Alxx"), null);
+});
