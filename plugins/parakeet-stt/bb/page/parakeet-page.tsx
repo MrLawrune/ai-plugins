@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { thisDevice } from "../device.ts";
 import { setDictationPrefs } from "../dictation-prefs.ts";
-import { SHORTCUTS, type DeviceRecord, type HealthResult, type HistoryEntry, type Prefs, type ProfileInfo, type rpcContract } from "../schemas.ts";
+import { SHORTCUTS, type DeviceRecord, type HealthResult, type HistoryEntry, type Prefs, type ProfileInfo } from "../schemas.ts";
+import type { rpcContract } from "../contract.ts";
 import { ProfilesSection, type ProfilesApi } from "./profiles-section.tsx";
 import { errorText, Row, Section, SliderRow, SwitchRow } from "./ui.tsx";
 

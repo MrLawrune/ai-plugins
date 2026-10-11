@@ -1,4 +1,3 @@
-import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 export const SHORTCUTS = ["ctrl+space", "alt+space", "ctrl+shift+space", "off"] as const;
@@ -57,8 +56,8 @@ export type DeviceKind = (typeof DEVICE_KINDS)[number];
 /** Also accepts the earlier phone/tablet kinds, which are both touch screens. */
 export const deviceKindSchema = z.preprocess((v) => (v === "phone" || v === "tablet" ? "touch" : v), z.enum(DEVICE_KINDS));
 
-const idSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
-const nameSchema = z.string().trim().min(1).max(64);
+export const idSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+export const nameSchema = z.string().trim().min(1).max(64);
 
 export const profileInfoSchema = z.object({ id: idSchema, name: nameSchema });
 export type ProfileInfo = z.infer<typeof profileInfoSchema>;
@@ -84,32 +83,3 @@ export const healthResultSchema = z.object({
   lastLatencyMs: z.number().nullable(),
 });
 export type HealthResult = z.infer<typeof healthResultSchema>;
-
-export const rpcContract = defineRpcContract({
-  health: { input: z.null(), output: healthResultSchema },
-  transcribe: {
-    input: z.object({ audioBase64: z.string().min(1), mimeType: z.string().min(1), filename: z.string().min(1) }).strict(),
-    output: z.object({ text: z.string(), durationMs: z.number() }),
-  },
-  /** Register (or refresh) this browser; returns its record and effective prefs. */
-  hello: {
-    input: z.object({ deviceId: idSchema, name: nameSchema, kind: deviceKindSchema }).strict(),
-    output: z.object({ device: deviceSchema, prefs: prefsSchema }),
-  },
-  getPrefs: { input: z.object({ profileId: idSchema }).strict(), output: prefsSchema },
-  setPrefs: {
-    input: z.object({ profileId: idSchema, patch: z.object(prefsSchema.shape).partial().strict() }).strict(),
-    output: prefsSchema,
-  },
-  listProfiles: { input: z.null(), output: z.object({ profiles: z.array(profileInfoSchema), devices: z.array(deviceSchema) }) },
-  createProfile: { input: z.object({ name: nameSchema, copyFrom: idSchema }).strict(), output: profileInfoSchema },
-  renameProfile: { input: profileInfoSchema.strict(), output: profileInfoSchema },
-  deleteProfile: { input: z.object({ id: idSchema }).strict(), output: z.object({ deleted: z.literal(true) }) },
-  updateDevice: {
-    input: z.object({ id: idSchema, name: nameSchema.optional(), profileId: idSchema.optional() }).strict(),
-    output: deviceSchema,
-  },
-  forgetDevice: { input: z.object({ id: idSchema }).strict(), output: z.object({ forgotten: z.literal(true) }) },
-  listHistory: { input: z.null(), output: z.object({ entries: z.array(historyEntrySchema) }) },
-  clearHistory: { input: z.null(), output: z.object({ cleared: z.literal(true) }) },
-});

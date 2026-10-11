@@ -14,7 +14,8 @@ import { ParakeetPage } from "./page/parakeet-page.tsx";
 import { followBottom } from "./follow-bottom.ts";
 import { createPressDetector } from "./press.ts";
 import { blobToBase64, extensionFor, startBrowserRecording } from "./recorder.ts";
-import type { Prefs, rpcContract, SoundName } from "./schemas.ts";
+import type { rpcContract } from "./contract.ts";
+import type { Prefs, SoundName } from "./schemas.ts";
 import { startBrowserStream } from "./stream-client.ts";
 
 const PLUGIN_ID = "parakeet-stt";

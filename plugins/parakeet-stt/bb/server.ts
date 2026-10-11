@@ -7,11 +7,12 @@ import { createAiService } from "./ai-service.ts";
 import { HistoryStore } from "./history.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers } from "./rpc.ts";
-import { rpcContract, SOUNDS } from "./schemas.ts";
+import { rpcContract } from "./contract.ts";
+import { SOUNDS } from "./schemas.ts";
 import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
 
-export { rpcContract } from "./schemas.ts";
+export { rpcContract } from "./contract.ts";
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
