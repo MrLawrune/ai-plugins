@@ -2,7 +2,6 @@
 // useSyncExternalStore never resubscribes on re-render; the phone MediaQueryList is shared.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useComposer, useRpc } from "@get-bb/plugin-sdk/app";
-import { toast } from "sonner";
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "../dictation-prefs.ts";
 import { controller, type DictationDeps } from "../dictation.ts";
 import { thisDevice } from "../device.ts";
@@ -11,9 +10,9 @@ import { blobToBase64, extensionFor, startBrowserRecording } from "../recorder.t
 import type { rpcContract } from "../contract.ts";
 import type { Prefs, SoundName } from "../schemas.ts";
 import { startBrowserStream } from "../stream-client.ts";
+import { PLUGIN_BASE } from "./constants.ts";
 import { makeTarget, toastNotify } from "./target.ts";
 
-export const PLUGIN_BASE = "/api/v1/plugins/parakeet-stt/http";
 const HOLD_MS = 350;
 const PHONE_QUERY = "(pointer: coarse), (max-width: 640px)";
 
@@ -57,7 +56,7 @@ function configureController(rpc: Rpc): void {
     },
     prefs: prefsNow,
     playSound: (name: SoundName) => { void new Audio(`${PLUGIN_BASE}/sound/${name}`).play().catch(() => undefined); },
-    notify: (kind, message) => { if (kind === "error") toast.error(message); else toast(message); },
+    notify: (kind, message) => toastNotify(message, kind),
     now: Date.now,
   };
   controller.configure(deps);

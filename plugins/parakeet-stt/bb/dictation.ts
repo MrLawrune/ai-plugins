@@ -188,6 +188,7 @@ export class DictationController {
         void this.stop();
       });
     } catch (e) {
+      if (this.snapshot().phase !== "streaming") return; // cancelled while connecting
       // No idle state here: the one-shot fallback keeps this session (and its target) alive.
       deps.notify("info", `Streaming unavailable (${e instanceof Error ? e.message : String(e)}); using one-shot.`);
       return this.#startOneShot(deps, target);

@@ -450,3 +450,15 @@ test("targetCount counts distinct ids; has() reports a mounted id", () => {
   assert.equal(c.targetCount(), 0);
   assert.equal(c.has("a"), false);
 });
+
+test("cancel while the stream is connecting: a later connect failure does not start a recording", async () => {
+  let fail!: (e: Error) => void;
+  const s = streamHarness({ startStream: () => new Promise((_, reject) => { fail = reject; }) });
+  const starting = s.c.start();
+  s.c.cancel();
+  fail(new Error("connect refused"));
+  await starting;
+  assert.equal(s.c.snapshot().phase, "idle");
+  assert.ok(!s.log.includes("oneshot:start"), s.log.join(" | "));
+  assert.equal(s.log.filter((l) => l === "end").length, 1);
+});

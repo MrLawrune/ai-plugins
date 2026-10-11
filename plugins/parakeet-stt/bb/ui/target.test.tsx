@@ -1,29 +1,37 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { PluginComposerApi } from "@get-bb/plugin-sdk/app";
 import { controller, type DictationDeps, type StreamHandlers, type Target } from "../dictation.ts";
+import { takeCaret } from "../caret-tracker.ts";
 import { liveState } from "../draft-tail.ts";
 import { makeTarget, runDictation } from "./target.ts";
+
+// the real tracker reads the DOM selection; tests script the caret instead
+vi.mock("../caret-tracker.ts", () => ({ notePluginEdit: vi.fn(), takeCaret: vi.fn(() => null) }));
 
 type Mention = { from: number; to: number; label: string; kind: "project"; projectId: string };
 const pill = (from: number, to: number): Mention => ({ from, to, label: "Alex", kind: "project", projectId: "p" });
 
 /** The slice of PluginComposerApi the target uses, over an in-memory draft. */
-function fakeComposer(text: string, mentions: Mention[] = []) {
-  const state = { text, mentions, blocked: false, reason: null as string | null };
+function fakeComposer(text: string, mentions: Mention[] = [], key = "k1") {
+  const state = { text, mentions, blocked: false, reason: null as string | null, closed: false };
   const lock: boolean[] = [];
   const submit = vi.fn(async (_options: unknown) => {});
   const api = {
-    key: "k1",
+    key,
     get text() { return state.text; },
     get draft() { return { text: state.text, mentions: state.mentions, attachments: [] }; },
     get isSubmittingBlocked() { return state.blocked; },
     get submittingBlockedReason() { return state.reason; },
     replace(next: (cur: unknown) => { text: string; mentions: Mention[] }) {
+      if (state.closed) throw new Error("This composer is no longer available.");
       const cur = api.draft;
       const r = next(cur);
       if (r !== cur) { state.text = r.text; state.mentions = r.mentions; }
     },
-    setInputLock: (on: boolean) => { lock.push(on); },
+    setInputLock: (on: boolean) => {
+      if (state.closed) throw new Error("This composer is no longer available.");
+      lock.push(on);
+    },
     submit,
   };
   return { api: api as unknown as PluginComposerApi, state, lock, submit };
@@ -32,8 +40,6 @@ function fakeComposer(text: string, mentions: Mention[] = []) {
 let handlers: StreamHandlers;
 let unregister: Array<() => void> = [];
 const register = (t: Target) => { unregister.push(controller.register(t)); };
-// a draft that differs from the last plugin edit makes submit wait out its bounded settle loop
-const SETTLE = { timeout: 3000 };
 
 beforeEach(() => {
   liveState.set({ anchor: null, tail: "", dropSeq: null });
@@ -87,7 +93,7 @@ test("an edit that lands on a mention stops dictation with a toast and leaves th
   // the user turns the dictated word into a pill, so the next rewrite of it would cut through it
   c.state.mentions = [pill(0, 5), pill(9, 12)];
   handlers.onPartial("fox", 2);
-  expect(notify).toHaveBeenCalledWith("The draft changed under dictation; dictation stopped.");
+  expect(notify).toHaveBeenCalledWith("The draft changed under dictation; dictation stopped.", "error");
   expect(controller.snapshot().phase).toBe("idle");
   expect(c.state.text).toBe("@Alex hi foo");
   expect(c.state.mentions).toEqual([pill(0, 5), pill(9, 12)]);
@@ -121,14 +127,14 @@ test("submit refuses when bb says submitting is blocked and shows the reason", a
   c.state.reason = "Uploads are still in progress";
   const notify = vi.fn();
   makeTarget("k1", () => c.api, notify).submit();
-  await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("Could not send: Uploads are still in progress"), SETTLE);
+  await vi.waitFor(() => expect(notify).toHaveBeenCalledWith("Could not send: Uploads are still in progress", "error"));
   expect(c.submit).not.toHaveBeenCalled();
 });
 
 test("submit sends through composer.submit", async () => {
   const c = fakeComposer("hi");
   makeTarget("k1", () => c.api, vi.fn()).submit();
-  await vi.waitFor(() => expect(c.submit).toHaveBeenCalledWith({ experimental_data: {} }), SETTLE);
+  await vi.waitFor(() => expect(c.submit).toHaveBeenCalledWith({ experimental_data: {} }));
 });
 
 test("end() releases the input lock", () => {
@@ -182,4 +188,74 @@ test("a mounted composer is used as is, without a second target", async () => {
   await vi.waitFor(() => expect(controller.snapshot().phase).toBe("streaming"));
   controller.cancel();
   expect(controller.has("k1")).toBe(true);
+});
+
+test("voice clear empties a draft that holds a mention, keeps the session, and releases the lock", async () => {
+  const c = fakeComposer("@Alex hi", [pill(0, 5)]);
+  const notify = vi.fn();
+  const t = makeTarget("k1", () => c.api, notify);
+  register(t);
+  await controller.start("k1");
+  handlers.onFinal("more.", 1);
+  expect(c.state.text).toBe("@Alex hi more.");
+  handlers.onCommand("clear");
+  expect(c.state.text).toBe("");
+  expect(c.state.mentions).toEqual([]);
+  expect(notify).not.toHaveBeenCalled();
+  expect(controller.snapshot().phase).toBe("streaming");
+  expect(c.lock.at(-1)).toBe(false);
+  handlers.onFinal("Take two.", 2);
+  expect(c.state.text).toBe("Take two.");
+});
+
+test("a composer that closes mid-session ends the session cleanly and nothing lands in another composer", async () => {
+  const c1 = fakeComposer("one", [], "k1");
+  const c2 = fakeComposer("two", [pill(0, 3)], "k2");
+  const notify = vi.fn();
+  const before = controller.targetCount();
+  const off1 = controller.register(makeTarget("k1", () => c1.api, notify));
+  register(makeTarget("k2", () => c2.api, vi.fn()));
+  await controller.start("k1");
+  handlers.onPartial("foo", 1);
+  expect(c1.state.text).toBe("one foo");
+  c1.state.closed = true; // the composer unmounts; its target unregisters
+  off1();
+  expect(() => handlers.onPartial("foo bar", 2)).not.toThrow();
+  expect(notify).toHaveBeenCalledWith("The composer closed; dictation stopped.");
+  expect(controller.snapshot().phase).toBe("idle");
+  expect(() => handlers.onFinal("foo bar.", 2)).not.toThrow();
+  expect(() => handlers.onCommand("send")).not.toThrow();
+  expect(c2.state.text).toBe("two");
+  expect(c2.lock).toEqual([]);
+  expect(controller.targetCount()).toBe(before + 1); // only k2 is left
+  expect(controller.has("k1")).toBe(false);
+});
+
+test("a selection that includes a mention is kept, dictation goes to the end and the user is told", () => {
+  const c = fakeComposer("@Alex hi", [pill(0, 5)]);
+  const notify = vi.fn();
+  const t = makeTarget("k1", () => c.api, notify);
+  t.begin();
+  t.setLive("zz", 1);
+  t.commitLive("zz", 1);
+  expect(c.state.text).toBe("@Alex hi zz");
+  // a stale anchor from the previous session must not win over the end
+  liveState.set({ anchor: 2, tail: "", dropSeq: null });
+  vi.mocked(takeCaret).mockReturnValueOnce({ start: 3, end: 8 }); // "ex hi" cuts through the pill
+  t.begin();
+  expect(c.state.text).toBe("@Alex hi zz");
+  expect(liveState.get().anchor).toBeNull();
+  expect(notify).toHaveBeenCalledWith("The selection includes a mention, so it was not replaced; dictating at the end.");
+  t.setLive("yo", 2);
+  expect(c.state.text).toBe("@Alex hi zz yo");
+  expect(c.state.mentions).toEqual([pill(0, 5)]);
+});
+
+test("a selection without a mention is replaced by the dictation", () => {
+  const c = fakeComposer("fix the bug now", []);
+  const t = makeTarget("k1", () => c.api, vi.fn());
+  vi.mocked(takeCaret).mockReturnValueOnce({ start: 4, end: 7 });
+  t.begin();
+  expect(c.state.text).toBe("fix  bug now");
+  expect(liveState.get().anchor).toBe(4);
 });
