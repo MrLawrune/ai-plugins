@@ -28,6 +28,8 @@ export function ServerSettings() {
   const sentUrl = useRef<string | null>(null);
   /** Counts edits of the URL field: a response never replaces the field after the user typed again. */
   const urlEdits = useRef(0);
+  /** False until the URL field holds a loaded or typed value; an unowned (blank) field is never saved. */
+  const urlOwned = useRef(false);
   /** Numbers the requests that return server info; only the newest one to have answered is shown. */
   const requestSeq = useRef(0);
   const shownSeq = useRef(0);
@@ -37,6 +39,11 @@ export function ServerSettings() {
    * `urlEditsAtSend` says the user has not typed since (null: this response is not about the URL).
    */
   const adopt = useCallback((seq: number, next: ServerResult, urlEditsAtSend: number | null): boolean => {
+    // Whatever answers first fills a field nobody has touched, even a response a newer one made stale.
+    if (!urlOwned.current) {
+      urlOwned.current = true;
+      setUrl(next.serverUrl);
+    }
     if (seq < shownSeq.current) return false;
     shownSeq.current = seq;
     sentUrl.current = next.serverUrl;
@@ -57,6 +64,7 @@ export function ServerSettings() {
   }, [rpc, adopt]);
 
   const saveUrl = async () => {
+    if (!urlOwned.current) return; // blank because nothing has loaded yet, not because the user emptied it
     const parsed = serverUrlSchema.safeParse(url);
     if (!parsed.success) {
       setUrlError(parsed.error.issues[0]!.message);
@@ -82,9 +90,10 @@ export function ServerSettings() {
   const saveKey = async (apiKey: string | null) => {
     setKeyError(null);
     const seq = ++requestSeq.current;
+    const issuedFor = typedKey; // a Clear removes the stored key and only the text that was showing when it went out
     try {
       adopt(seq, await rpc.call("setServer", { apiKey }), null);
-      setKey((now) => (apiKey === null || now.trim() === apiKey ? "" : now)); // keep text typed since this save went out
+      setKey((now) => (now.trim() === (apiKey ?? issuedFor) ? "" : now)); // keep text typed since this went out
       void refreshHealth();
     } catch (cause) {
       setKeyError(errorText(cause));
@@ -120,7 +129,7 @@ export function ServerSettings() {
           placeholder="https://"
           value={url}
           aria-invalid={urlError !== null}
-          onChange={(e) => { urlEdits.current++; setUrl(e.target.value); setUrlError(null); }}
+          onChange={(e) => { urlEdits.current++; urlOwned.current = true; setUrl(e.target.value); setUrlError(null); }}
           onBlur={() => void saveUrl()}
           onKeyDown={(e) => { if (e.key === "Enter") void saveUrl(); }}
         />

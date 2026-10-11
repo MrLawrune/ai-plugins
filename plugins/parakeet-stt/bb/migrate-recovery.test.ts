@@ -120,3 +120,15 @@ test("a failing delete of a legacy row is reported and does not fail the write",
   assert.equal((kv.data.settings as Row).shared.historyMaxEntries, 7);
   assert.ok(warnings.some((w) => w.includes("locked")), warnings.join("|"));
 });
+
+test("a recovered migration stores the note once, the failed-import one while the history waits", async () => {
+  const { kv } = failingWrite();
+  const result = await migrate({ kv, log: noLog, warn: () => {} });
+  assert.ok(result.recovered);
+  assert.equal(kv.data[MIGRATION_NOTE_KEY], MIGRATION_NOTE_FAILED_IMPORT);
+  const noHistory = memKv({ prefs: { autoSubmit: true } });
+  const realSet = noHistory.set.bind(noHistory);
+  noHistory.set = async (k, v) => { if (k === "settings") throw new Error("disk full"); return realSet(k, v); };
+  assert.ok((await migrate({ kv: noHistory, log: noLog, warn: () => {} })).recovered);
+  assert.equal(noHistory.data[MIGRATION_NOTE_KEY], MIGRATION_NOTE);
+});

@@ -55,8 +55,13 @@ export interface DictationDeps {
   now(): number;
 }
 
-/** The browser has no animation frame under node:test. */
-const nextFrame = (fn: () => void): void => (typeof requestAnimationFrame === "function" ? void requestAnimationFrame(fn) : void setTimeout(fn, 0));
+/** Runs `fn` once, on the first of an animation frame and a zero timeout: a hidden page gets no frames, node:test has none. */
+function soon(fn: () => void): void {
+  let done = false;
+  const once = () => { if (!done) { done = true; fn(); } };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(once);
+  setTimeout(once, 0);
+}
 
 /** Shown when the composer of the active session goes away. */
 export const COMPOSER_CLOSED = "The composer closed; dictation stopped.";
@@ -133,7 +138,7 @@ export class DictationController {
       // A surface that remounts under the same composer unregisters and registers within one commit;
       // judge "the composer is gone" only after that, and only if the session is still the same.
       const session = this.#session;
-      queueMicrotask(() => nextFrame(() => {
+      queueMicrotask(() => soon(() => {
         const { phase, targetId } = this.#state;
         const live = phase === "recording" || phase === "streaming" || phase === "finishing";
         if (live && session === this.#session && targetId === target.id && !this.has(target.id)) {

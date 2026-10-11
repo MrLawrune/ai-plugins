@@ -129,3 +129,23 @@ test("a session that finished before the deferred check is not cancelled again",
   await frame();
   assert.equal(h.log.filter((l) => l === "sound:cancel").length, 1);
 });
+
+test("the closed-composer check also runs when the page is hidden and no animation frame fires", async () => {
+  const g = globalThis as { requestAnimationFrame?: unknown };
+  const saved = g.requestAnimationFrame;
+  g.requestAnimationFrame = () => 0; // a hidden document never calls its frame callbacks
+  try {
+    const h = harness();
+    const ends: string[] = [];
+    const off = h.c.register(target({ id: "t2", end: () => ends.push("end") }));
+    await h.c.start("t2");
+    off();
+    await frame();
+    assert.equal(h.c.snapshot().phase, "idle");
+    assert.ok(h.log.includes("rec:cancel"), "mic released");
+    assert.deepEqual(ends, ["end"]);
+  } finally {
+    if (saved === undefined) delete g.requestAnimationFrame;
+    else g.requestAnimationFrame = saved;
+  }
+});

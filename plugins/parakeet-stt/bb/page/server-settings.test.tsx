@@ -254,3 +254,52 @@ test("a key save that completes clears only the key text it sent", async () => {
   await waitFor(() => expect(key.placeholder).toBe("Set"));
   expect(key.value).toBe("abcdef");
 });
+
+test("a key save answering before the initial load still leaves the URL shown, and a blur sends nothing", async () => {
+  const g = gate();
+  const { view } = await settings({
+    getServer: async () => { await g.opened; return SERVER; },
+    setServer: () => ({ ...SERVER, apiKeySet: true }),
+  });
+  const key = (await screen.findByLabelText("API key")) as HTMLInputElement;
+  fireEvent.change(key, { target: { value: "abc123" } });
+  fireEvent.keyDown(key, { key: "Enter" });
+  await waitFor(() => expect(key.placeholder).toBe("Set"));
+  const url = screen.getByLabelText("Server URL") as HTMLInputElement;
+  fireEvent.focus(url);
+  fireEvent.blur(url); // never loaded, never touched: nothing to save
+  g.open();
+  await waitFor(() => expect(url.value).toBe("https://stt.example"));
+  fireEvent.focus(url);
+  fireEvent.blur(url);
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls(view, "setServer")).toEqual([{ apiKey: "abc123" }]);
+});
+
+test("a blank URL field that was never loaded is not saved on blur", async () => {
+  const g = gate();
+  const { view } = await settings({ getServer: async () => { await g.opened; return SERVER; } });
+  const url = (await screen.findByLabelText("Server URL")) as HTMLInputElement;
+  fireEvent.focus(url);
+  fireEvent.blur(url);
+  fireEvent.keyDown(url, { key: "Enter" });
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls(view, "setServer")).toEqual([]);
+});
+
+test("a pending Clear keeps a new key typed since it was issued", async () => {
+  const g = gate();
+  const { view } = await settings({
+    getServer: () => ({ ...SERVER, apiKeySet: true }),
+    setServer: async () => { await g.opened; return SERVER; },
+  });
+  const clear = (await screen.findByRole("button", { name: "Clear" })) as HTMLButtonElement;
+  await waitFor(() => expect(clear.disabled).toBe(false));
+  const key = screen.getByLabelText("API key") as HTMLInputElement;
+  fireEvent.click(clear);
+  fireEvent.change(key, { target: { value: "new-key" } });
+  g.open();
+  await waitFor(() => expect(key.placeholder).toBe("Not set"));
+  expect(calls(view, "setServer")).toEqual([{ apiKey: null }]);
+  expect(key.value).toBe("new-key");
+});

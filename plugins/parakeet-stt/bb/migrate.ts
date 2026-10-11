@@ -156,7 +156,8 @@ export async function migrate(d: Deps): Promise<MigrateResult> {
     // with its next ordinary write, and a marker makes the history import retry on the next load.
     d.warn(`settings migration failed, keeping the old storage: ${errorText(e)}`);
     if (rawHistory !== undefined) await markHistoryPending(d);
-    // The history row is not touched: its retry imports it and deletes it.
+    // The history row is not touched: its retry imports it and deletes it (and replaces the failure note).
+    await setNote(d, rawHistory !== undefined ? MIGRATION_NOTE_FAILED_IMPORT : MIGRATION_NOTE);
     return { migrated: false, note: null, recovered: state, cleanup: async () => { for (const key of present) await deleteRow(d, key); } };
   }
 
