@@ -17,7 +17,7 @@ from parakeet_config import ConfigError, ServerConfig
 from parakeet_stream import StreamOptions, StreamSession
 from parakeet_text import postprocess
 
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 MODEL_ALIASES = {"whisper-1"}
 log = logging.getLogger("parakeet.server")
 
