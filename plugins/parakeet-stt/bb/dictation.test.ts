@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendDictation, DictationController, matchesShortcut, type DictationDeps, type Interruption } from "./dictation.ts";
+import { appendDictation, DictationController, matchesShortcut, type DictationDeps, type Interruption, type Target } from "./dictation.ts";
+
+/** A target that does nothing; override only what a test observes. */
+function target(over: Partial<Target> = {}): Target {
+  return { id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, end() {}, appendText() {}, submit() {}, ...over };
+}
 
 function harness(over: Partial<DictationDeps> = {}) {
   const log: string[] = [];
@@ -20,7 +25,7 @@ function harness(over: Partial<DictationDeps> = {}) {
   };
   const c = new DictationController(deps);
   let draft = "fix the";
-  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") });
+  c.register(target({ appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") }));
   return { c, log, draft: () => draft, interrupt: (w: Interruption) => interrupt!(w) };
 }
 
@@ -159,7 +164,7 @@ test("composer closed before the transcript arrives: user is told where the text
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  const unregister = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: () => log.push("appended"), submit: () => {} });
+  const unregister = c.register(target({ appendText: () => log.push("appended") }));
   await c.start("t1");
   unregister();
   await c.stop();
@@ -177,8 +182,8 @@ test("two surfaces for one composer: unmounting one keeps the other usable", asy
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => log.push(`action:${t}`), submit: () => {} });
-  const unregisterBanner = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
+  c.register(target({ appendText: (t) => log.push(`action:${t}`) }));
+  const unregisterBanner = c.register(target({ appendText: (t) => log.push(`banner:${t}`) }));
   unregisterBanner();
   await c.toggle("t1");
   assert.equal(c.snapshot().phase, "recording");
@@ -225,15 +230,15 @@ function streamHarness(over: Partial<DictationDeps> = {}) {
     ...over,
   };
   const c = new DictationController(deps);
-  c.register({
-    id: "t1",
+  c.register(target({
     appendText: (t) => { draft = `${draft} ${t}`; },
     submit: () => log.push("submit"),
     setLive: (t) => { live = t; },
     commitLive: (t) => { live = ""; if (t) draft = `${draft} ${t}`; },
     begin: () => log.push("begin"),
     clear: () => { draft = ""; log.push("clear"); },
-  });
+    end: () => log.push("end"),
+  }));
   return { c, log, h: () => handlers!, interrupt: (w: Interruption) => interrupt!(w), draft: () => draft, live: () => live };
 }
 
@@ -384,7 +389,7 @@ test("targetCount tracks registrations and notifies subscribers", () => {
   let notified = 0;
   c.subscribe(() => notified++);
   assert.equal(c.targetCount(), 0);
-  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {}, begin() {}, clear() {} });
+  const off = c.register(target({ id: "a" }));
   assert.equal(c.targetCount(), 1);
   off();
   assert.equal(c.targetCount(), 0);
@@ -396,4 +401,52 @@ test("each start captures the insertion point once, before recording", async () 
   await s.c.start();
   assert.equal(s.log.filter((l) => l === "begin").length, 1);
   assert.ok(s.log.indexOf("begin") < s.log.indexOf("stream:start"));
+});
+
+test("end() runs exactly once on every way a session finishes", async () => {
+  const ends = async (run: (s: ReturnType<typeof streamHarness>) => Promise<void> | void, over: Partial<DictationDeps> = {}) => {
+    const s = streamHarness(over);
+    await run(s);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(s.c.snapshot().phase, "idle");
+    return s.log.filter((l) => l === "end").length;
+  };
+  assert.equal(await ends(async (s) => { await s.c.start(); await s.c.stop(); }), 1, "stop");
+  assert.equal(await ends(async (s) => { await s.c.start(); s.c.cancel(); }), 1, "cancel");
+  assert.equal(await ends(async (s) => { await s.c.start(); s.h().onError("boom"); s.h().onEnded("error"); }), 1, "stream error");
+  assert.equal(await ends(async (s) => { await s.c.start(); s.h().onEnded("silence"); }), 1, "stream ended");
+  assert.equal(await ends(async (s) => { await s.c.start("t1", "oneshot"); await s.c.stop(); }), 1, "one-shot done");
+  assert.equal(await ends(async (s) => { await s.c.start("t1", "oneshot"); s.c.cancel(); }), 1, "one-shot cancel");
+  assert.equal(await ends(async (s) => { await s.c.start("t1", "oneshot"); await s.c.stop(); }, { async transcribe() { throw new Error("down"); } }), 1, "one-shot failure");
+  assert.equal(await ends((s) => s.c.start("t1", "oneshot"), { async startRecording() { throw new Error("no mic"); } }), 1, "mic refused");
+});
+
+test("end() is not called while a stream falls back to one-shot", async () => {
+  const s = streamHarness({ async startStream() { throw new Error("refused"); } });
+  await s.c.start();
+  assert.equal(s.log.filter((l) => l === "end").length, 0);
+  await s.c.stop();
+  assert.equal(s.log.filter((l) => l === "end").length, 1);
+});
+
+test("a fallback to one-shot never passes through idle", async () => {
+  const s = streamHarness({ async startStream() { throw new Error("refused"); } });
+  const phases: string[] = [];
+  s.c.subscribe(() => phases.push(s.c.snapshot().phase));
+  await s.c.start();
+  assert.ok(!phases.includes("idle"), phases.join(","));
+});
+
+test("targetCount counts distinct ids; has() reports a mounted id", () => {
+  const c = new DictationController(null);
+  const a1 = c.register(target({ id: "a" }));
+  const a2 = c.register(target({ id: "a" }));
+  assert.equal(c.targetCount(), 1);
+  assert.equal(c.has("a"), true);
+  assert.equal(c.has("b"), false);
+  a1();
+  assert.equal(c.targetCount(), 1);
+  a2();
+  assert.equal(c.targetCount(), 0);
+  assert.equal(c.has("a"), false);
 });

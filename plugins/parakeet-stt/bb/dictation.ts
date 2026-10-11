@@ -26,6 +26,8 @@ export interface Target {
   begin(): void;
   /** Empty the whole draft. */
   clear(): void;
+  /** The session on this target is over (stopped, cancelled, failed or ended); called exactly once. */
+  end(): void;
 }
 export interface StreamHandlers {
   onPartial(text: string, seq: number): void;
@@ -87,6 +89,8 @@ export class DictationController {
   /** stop() arrived while the mic prompt was still pending (e.g. hold-to-talk key released). */
   #stopRequested = false;
   #stream: StreamHandle | null = null;
+  /** The target of the session in flight; its `end()` runs when the session reaches a terminal state. */
+  #active: Target | null = null;
   #live = "";
   #liveSeq = 0;
 
@@ -120,9 +124,13 @@ export class DictationController {
     };
   }
 
-  /** Number of mounted composer targets (the floating mic shows only when one exists). */
+  /** Number of mounted composers (the floating mic shows only when one exists). */
   targetCount(): number {
-    return this.#targets.length;
+    return new Set(this.#targets.map((t) => t.id)).size;
+  }
+
+  has(id: string): boolean {
+    return this.#targets.some((t) => t.id === id);
   }
 
   async toggle(targetId?: string): Promise<void> {
@@ -137,6 +145,7 @@ export class DictationController {
     if (this.#state.phase !== "idle" || !deps) return;
     const target = this.#resolve(targetId);
     if (!target) return;
+    this.#active = target;
     target.begin();
     const wanted = mode ?? deps.prefs().mode;
     if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target);
@@ -179,7 +188,7 @@ export class DictationController {
         void this.stop();
       });
     } catch (e) {
-      this.#set(IDLE);
+      // No idle state here: the one-shot fallback keeps this session (and its target) alive.
       deps.notify("info", `Streaming unavailable (${e instanceof Error ? e.message : String(e)}); using one-shot.`);
       return this.#startOneShot(deps, target);
     }
@@ -205,7 +214,7 @@ export class DictationController {
     }
     this.#live = "";
     this.#stream = null;
-    this.#set(IDLE);
+    this.#finish();
   }
 
   async #startOneShot(deps: DictationDeps, target: Target): Promise<void> {
@@ -221,7 +230,7 @@ export class DictationController {
       });
     } catch (e) {
       this.#recording = null;
-      this.#set(IDLE);
+      this.#finish();
       this.#cue("error");
       deps.notify("error", `Microphone unavailable: ${e instanceof Error ? e.message : String(e)}`);
       return;
@@ -271,7 +280,7 @@ export class DictationController {
       this.#cue("error");
       deps.notify("error", e instanceof Error ? e.message : String(e));
     } finally {
-      this.#set(IDLE);
+      this.#finish();
     }
   }
 
@@ -282,15 +291,23 @@ export class DictationController {
       this.#stream = null;
       this.#live = "";
       target?.setLive("", this.#liveSeq);
-      this.#set(IDLE);
+      this.#finish();
       this.#cue("cancel");
       return;
     }
     if (this.#state.phase !== "recording") return;
     this.#recording?.cancel();
     this.#recording = null;
-    this.#set(IDLE);
+    this.#finish();
     this.#cue("cancel");
+  }
+
+  /** Terminal state of a session: back to idle, and the target hears about it exactly once. */
+  #finish(): void {
+    const target = this.#active;
+    this.#active = null;
+    this.#set(IDLE);
+    target?.end();
   }
 
   #resolve(targetId?: string): Target | undefined {
