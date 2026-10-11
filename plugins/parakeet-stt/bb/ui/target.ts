@@ -7,6 +7,7 @@ import { appendDictation, COMPOSER_CLOSED, controller, type Target } from "../di
 import { dictationPrefs } from "../dictation-prefs.ts";
 import { applyLive, beginAt, liveState } from "../draft-tail.ts";
 import { applyTextEdit } from "../draft-edit.ts";
+import { createSessionFollow } from "./session-follow.ts";
 
 const CONFLICT = "The draft changed under dictation; dictation stopped.";
 const SELECTION_KEPT = "The selection includes a mention, so it was not replaced; dictating at the end.";
@@ -52,6 +53,10 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
   let failed = false;
   /** The composer unmounted under us; every later write would throw. */
   let closed = false;
+  /** Keeps the newest dictated words in view in bb's collapsed composer, for the length of a session. */
+  const follow = createSessionFollow(() => {
+    try { return composer().layout; } catch { return "expanded"; }
+  });
   const lock = (on: boolean): void => {
     try {
       composer().setInputLock(on);
@@ -64,6 +69,7 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
     if (closed) return false;
     try {
       composer().replace(updater);
+      follow.sync();
       return true;
     } catch {
       closed = true;
@@ -103,6 +109,7 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
     begin: () => {
       failed = false;
       closed = false; // a write that threw for another reason must not disable this composer for good
+      follow.start();
       let kept = false;
       write((cur) => {
         const prev = liveState.get();
@@ -164,7 +171,10 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
       });
       lock(false);
     },
-    end: () => lock(false),
+    end: () => {
+      follow.stop();
+      lock(false);
+    },
   };
 }
 
