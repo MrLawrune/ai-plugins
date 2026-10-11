@@ -3,13 +3,12 @@
 import type { PluginComposerApi } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { notePluginEdit, takeCaret } from "../caret-tracker.ts";
-import { appendDictation, controller, type Target } from "../dictation.ts";
+import { appendDictation, COMPOSER_CLOSED, controller, type Target } from "../dictation.ts";
 import { dictationPrefs } from "../dictation-prefs.ts";
 import { applyLive, beginAt, liveState } from "../draft-tail.ts";
 import { applyTextEdit } from "../draft-edit.ts";
 
 const CONFLICT = "The draft changed under dictation; dictation stopped.";
-const CLOSED = "The composer closed; dictation stopped.";
 const SELECTION_KEPT = "The selection includes a mention, so it was not replaced; dictating at the end.";
 
 export type NotifyKind = "info" | "error";
@@ -69,7 +68,7 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
     } catch {
       closed = true;
       liveState.set(NOT_DICTATING);
-      notify(CLOSED);
+      notify(COMPOSER_CLOSED);
       // begin() runs before the controller enters its session, so cancel once that has happened
       if (deferCancel) queueMicrotask(() => controller.cancel());
       else controller.cancel();
@@ -103,6 +102,7 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
     id: key,
     begin: () => {
       failed = false;
+      closed = false; // a write that threw for another reason must not disable this composer for good
       let kept = false;
       write((cur) => {
         const prev = liveState.get();

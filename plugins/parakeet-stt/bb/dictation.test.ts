@@ -156,9 +156,11 @@ test("stop pressed before the mic resolves still stops once it does (hold-to-tal
 
 test("composer closed before the transcript arrives: user is told where the text went", async () => {
   const log: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
   const c = new DictationController({
     async startRecording() { return { async stop() { return new Blob(["x"]); }, cancel() {} }; },
-    async transcribe() { return "lost words"; },
+    async transcribe() { await gate; return "lost words"; },
     prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "oneshot" as const, livePreview: true }),
     playSound: () => {},
     notify: (k, m) => log.push(`${k}:${m}`),
@@ -166,8 +168,10 @@ test("composer closed before the transcript arrives: user is told where the text
   });
   const unregister = c.register(target({ appendText: () => log.push("appended") }));
   await c.start("t1");
+  const stopping = c.stop(); // transcribing: closing now cannot cancel, the text has nowhere to go
   unregister();
-  await c.stop();
+  release();
+  await stopping;
   assert.ok(!log.includes("appended"));
   assert.ok(log.some((l) => l.startsWith("info:") && l.includes("history")), log.join(" | "));
 });
@@ -461,4 +465,40 @@ test("cancel while the stream is connecting: a later connect failure does not st
   assert.equal(s.c.snapshot().phase, "idle");
   assert.ok(!s.log.includes("oneshot:start"), s.log.join(" | "));
   assert.equal(s.log.filter((l) => l === "end").length, 1);
+});
+
+test("the last target of the active session unregistering ends the session at once", async () => {
+  const h = harness();
+  const ends: string[] = [];
+  const off = h.c.register(target({ id: "t2", end: () => ends.push("end") }));
+  await h.c.start("t2");
+  assert.equal(h.c.snapshot().phase, "recording");
+  off(); // the composer closed
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.ok(h.log.includes("rec:cancel"), "mic released");
+  assert.deepEqual(ends, ["end"]);
+  assert.equal(h.log.filter((l) => l === "info:The composer closed; dictation stopped.").length, 1);
+});
+
+test("another registration with the same id keeps the session alive", async () => {
+  const h = harness();
+  const ends: string[] = [];
+  const off1 = h.c.register(target({ id: "t2", end: () => ends.push("end") }));
+  const off2 = h.c.register(target({ id: "t2", end: () => ends.push("end") }));
+  await h.c.start("t2");
+  off1();
+  assert.equal(h.c.snapshot().phase, "recording");
+  assert.deepEqual(ends, []);
+  assert.ok(!h.log.some((l) => l.includes("composer closed")));
+  off2();
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.equal(ends.length, 1);
+});
+
+test("an unrelated target unregistering leaves the session alone", async () => {
+  const h = harness();
+  const off = h.c.register(target({ id: "other" }));
+  await h.c.start("t1");
+  off();
+  assert.equal(h.c.snapshot().phase, "recording");
 });

@@ -49,8 +49,15 @@ export function notePluginEdit(): void {
   moves.pluginEdit(performance.now());
 }
 
+/**
+ * Costs nothing until an editor has focus: only focusin/focusout are always listened for, and the
+ * caret listeners live exactly as long as focus stays in a composer editor. The last snapshot
+ * outlives focus (the plus-menu and command paths read it after focus moved to a menu).
+ */
 export function trackCaret(signal: AbortSignal): void {
-  document.addEventListener("selectionchange", () => {
+  let focus: AbortController | null = null;
+  const release = () => { focus?.abort(); focus = null; };
+  const onSelection = () => {
     const sel = document.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const r = sel.getRangeAt(0);
@@ -58,10 +65,22 @@ export function trackCaret(signal: AbortSignal): void {
     if (!root || elementOf(r.endContainer)?.closest(EDITOR) !== root) return;
     last = { root, start: point(r.startContainer, r.startOffset), end: point(r.endContainer, r.endOffset) };
     moves.selectionChanged(performance.now());
-  }, { signal });
+  };
   const mark = (e: Event) => { if (elementOf(e.target as Node | null)?.closest(INPUT_REGION)) moves.userInput(); };
-  document.addEventListener("pointerup", mark, { capture: true, signal });
-  document.addEventListener("keyup", mark, { capture: true, signal });
+  const inEditor = (t: EventTarget | null) => elementOf(t as Node | null)?.closest(EDITOR) != null;
+  document.addEventListener("focusin", (e) => {
+    if (!inEditor(e.target)) return;
+    release();
+    focus = new AbortController();
+    const s = AbortSignal.any([signal, focus.signal]);
+    document.addEventListener("selectionchange", onSelection, { signal: s });
+    document.addEventListener("pointerup", mark, { capture: true, signal: s });
+    document.addEventListener("keyup", mark, { capture: true, signal: s });
+  }, { capture: true, signal });
+  document.addEventListener("focusout", (e) => {
+    if (inEditor(e.target) && !inEditor((e as FocusEvent).relatedTarget)) release();
+  }, { capture: true, signal });
+  signal.addEventListener("abort", release, { once: true });
 }
 
 /** The user-placed caret as draft offsets, or null (not moved, gone, or not mappable). Consumes it. */

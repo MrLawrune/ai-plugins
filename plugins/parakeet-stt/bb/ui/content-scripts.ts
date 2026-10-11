@@ -3,7 +3,6 @@ import { matchesShortcut, controller } from "../dictation.ts";
 import { dictationPrefs as prefsNow, onDictationPrefs, setDictationPrefs } from "../dictation-prefs.ts";
 import { trackCaret } from "../caret-tracker.ts";
 import { thisDevice } from "../device.ts";
-import { followBottom } from "../follow-bottom.ts";
 import type { Prefs } from "../schemas.ts";
 import { PLUGIN_BASE } from "./constants.ts";
 
@@ -58,7 +57,6 @@ export function mountCompactDraft(signal: AbortSignal): void {
   };
   apply();
   const off = onDictationPrefs(apply);
-  followBottom(document, "[data-promptbox-compact-content] .ProseMirror", signal);
   signal.addEventListener("abort", () => { off(); style.remove(); });
 }
 

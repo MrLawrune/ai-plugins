@@ -1,8 +1,11 @@
+import { useEffect, useRef } from "react";
+import { useComposer } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { controller } from "../dictation.ts";
-import { useComposerTarget, useControllerDeps, useDictationState, usePress } from "./hooks.ts";
+import { followBottom } from "../follow-bottom.ts";
+import { useComposerTarget, useControllerDeps, useDictationState, usePrefs, usePress } from "./hooks.ts";
 
 export function MicAction() {
   useControllerDeps();
@@ -13,9 +16,22 @@ export function MicAction() {
   const busy = mine && (s.phase === "transcribing" || s.phase === "finishing");
   const waiting = live && s.waiting;
   const press = usePress(id);
+  const layout = useComposer().layout;
+  const { expandCompactDraft } = usePrefs();
+  const ref = useRef<HTMLButtonElement>(null);
+  // bb's collapsed composer wraps the draft (see compact-draft); keep this composer's newest words in view
+  useEffect(() => {
+    if (layout !== "compact" || !expandCompactDraft) return;
+    const editor = ref.current?.closest("form[data-promptbox]")?.querySelector<HTMLElement>("[data-promptbox-compact-content] .ProseMirror");
+    if (!editor) return;
+    const stop = new AbortController();
+    followBottom(editor, stop.signal);
+    return () => stop.abort();
+  }, [layout, expandCompactDraft]);
   const label = waiting ? "Stop dictation (waiting for the start phrase)" : live ? "Stop dictation" : busy ? "Finishing…" : "Dictate — tap, or hold to talk";
   return (
     <Button
+      ref={ref}
       type="button"
       variant="ghost"
       size="icon"

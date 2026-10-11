@@ -38,6 +38,7 @@ function fakeComposer(text: string, mentions: Mention[] = [], key = "k1") {
 }
 
 let handlers: StreamHandlers;
+const told = vi.fn();
 let unregister: Array<() => void> = [];
 const register = (t: Target) => { unregister.push(controller.register(t)); };
 
@@ -49,9 +50,10 @@ beforeEach(() => {
     async startStream(h) { handlers = h; return { async stop() { h.onEnded("stopped"); }, cancel() {} }; },
     prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "continuous", livePreview: true }),
     playSound() {},
-    notify() {},
+    notify: told,
     now: () => 0,
   } satisfies DictationDeps);
+  told.mockClear();
 });
 
 afterEach(() => {
@@ -220,9 +222,9 @@ test("a composer that closes mid-session ends the session cleanly and nothing la
   expect(c1.state.text).toBe("one foo");
   c1.state.closed = true; // the composer unmounts; its target unregisters
   off1();
-  expect(() => handlers.onPartial("foo bar", 2)).not.toThrow();
-  expect(notify).toHaveBeenCalledWith("The composer closed; dictation stopped.");
+  expect(told).toHaveBeenCalledWith("info", "The composer closed; dictation stopped.");
   expect(controller.snapshot().phase).toBe("idle");
+  expect(() => handlers.onPartial("foo bar", 2)).not.toThrow();
   expect(() => handlers.onFinal("foo bar.", 2)).not.toThrow();
   expect(() => handlers.onCommand("send")).not.toThrow();
   expect(c2.state.text).toBe("two");
@@ -258,4 +260,18 @@ test("a selection without a mention is replaced by the dictation", () => {
   t.begin();
   expect(c.state.text).toBe("fix  bug now");
   expect(liveState.get().anchor).toBe(4);
+});
+
+test("a failed write does not disable the composer for later sessions", () => {
+  const c = fakeComposer("hi");
+  const notify = vi.fn();
+  const t = makeTarget("k1", () => c.api, notify);
+  c.state.closed = true; // replace throws once, e.g. a transient failure
+  t.begin();
+  expect(notify).toHaveBeenCalledWith("The composer closed; dictation stopped.");
+  c.state.closed = false;
+  t.begin();
+  t.setLive("hello", 1);
+  t.commitLive("hello.", 1);
+  expect(c.state.text).toBe("hi hello.");
 });

@@ -53,6 +53,9 @@ export interface DictationDeps {
   now(): number;
 }
 
+/** Shown when the composer of the active session goes away. */
+export const COMPOSER_CLOSED = "The composer closed; dictation stopped.";
+
 const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null, waiting: false, heard: null };
 const INTERRUPT_NOTICE: Record<Interruption, string> = {
   hidden: "Recording stopped because the page was hidden; transcribing what was captured.",
@@ -120,6 +123,13 @@ export class DictationController {
     this.#emit();
     return () => {
       this.#targets = this.#targets.filter((t) => t !== target);
+      const { phase, targetId } = this.#state;
+      const live = phase === "recording" || phase === "streaming" || phase === "finishing";
+      if (live && targetId === target.id && !this.has(target.id)) {
+        // the composer is gone: release the mic now instead of recording into nothing
+        this.#deps?.notify("info", COMPOSER_CLOSED);
+        this.cancel();
+      }
       this.#emit();
     };
   }
@@ -264,13 +274,14 @@ export class DictationController {
       return;
     }
     this.#stopRequested = false;
-    const target = this.#resolve(this.#state.targetId ?? undefined);
+    const targetId = this.#state.targetId ?? undefined;
     this.#recording = null;
     this.#set({ ...this.#state, phase: "transcribing" });
     try {
       const audio = await recording.stop();
       this.#cue("stop");
       const text = (await deps.transcribe(audio)).trim();
+      const target = this.#resolve(targetId); // the composer may have closed while transcribing
       if (!text) deps.notify("info", "No speech detected");
       else if (!target) deps.notify("info", "The composer closed before the text arrived; it is saved in Parakeet STT history.");
       else {
