@@ -187,7 +187,8 @@ export class PrefsStore {
   #stored = new Map<string, number>();
   /** Set while the stored row could not be read: the state is defaults and nothing may be written over the row. */
   #unreadable: string | null = null;
-  #fallback: State | undefined;
+  #recovered: { state: State; done?: () => Promise<void> } | undefined;
+  #afterFirstWrite: (() => Promise<void>) | undefined; // runs once, after the first successful write of a recovered state
 
   constructor(kv: KvLike) {
     this.#kv = kv;
@@ -198,13 +199,18 @@ export class PrefsStore {
    * 0.1.0 rows by a failed migration) or the defaults in place; a row that cannot be read at all leaves
    * read-only defaults, see `unreadable`. Never throws.
    */
-  async load(fallback: State | undefined = this.#fallback): Promise<void> {
-    this.#fallback = fallback;
+  async load(fallback?: State, done?: () => Promise<void>): Promise<void> {
+    if (fallback) this.#recovered = { state: fallback, done };
+    const recovered = this.#recovered;
+    this.#afterFirstWrite = undefined;
     try {
-      this.#state = parseState(await this.#kv.get<unknown>(SETTINGS_KEY)) ?? (fallback ? structuredClone(fallback) : freshState(DEFAULT_PREFS));
+      const stored = parseState(await this.#kv.get<unknown>(SETTINGS_KEY));
+      this.#state = stored ?? (recovered ? structuredClone(recovered.state) : freshState(DEFAULT_PREFS));
+      if (!stored) this.#afterFirstWrite = recovered?.done;
       this.#unreadable = null;
     } catch (e) {
-      this.#state = fallback ? structuredClone(fallback) : freshState(DEFAULT_PREFS);
+      this.#state = recovered ? structuredClone(recovered.state) : freshState(DEFAULT_PREFS);
+      this.#afterFirstWrite = recovered?.done;
       this.#unreadable = e instanceof Error && e.message ? e.message : String(e);
     }
     this.#rememberStored(this.#state);
@@ -367,6 +373,9 @@ export class PrefsStore {
     await this.#kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...draft });
     this.#state = draft;
     this.#rememberStored(draft);
+    const after = this.#afterFirstWrite;
+    this.#afterFirstWrite = undefined;
+    await after?.().catch(() => undefined); // best-effort: the settings row exists now
   }
 
   #rememberStored(state: State): void {

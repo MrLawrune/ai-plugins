@@ -77,3 +77,46 @@ test("a successful history-import retry replaces the failure note with the succe
   await run(dismissed);
   assert.equal(dismissed.data[MIGRATION_NOTE_KEY], undefined);
 });
+
+function failingWrite() {
+  const kv = memKv({
+    "profiles-v1": { shared: { customWords: ["tmux"], historyLimit: 7 }, profiles: { desktop: { name: "Desktop", prefs: {} } } },
+    prefs: { autoSubmit: true },
+    history: [{ text: "x", at: 1, durationMs: 1 }],
+  });
+  const realSet = kv.set.bind(kv);
+  const control = { fail: true };
+  kv.set = async (k, v) => { if (control.fail && k === "settings") throw new Error("disk full"); return realSet(k, v); };
+  return { kv, control };
+}
+
+test("the first successful write of a recovered state deletes the legacy rows, never before the settings row exists", async () => {
+  const { kv, control } = failingWrite();
+  const result = await migrate({ kv, log: noLog, warn: () => {} });
+  const store = new PrefsStore(kv);
+  await store.load(result.recovered, result.cleanup);
+  // a write that fails leaves everything in place
+  await assert.rejects(store.hello("d1", "Laptop", "desktop", 1000));
+  assert.deepEqual(kv.deleted, []);
+  control.fail = false;
+  await store.hello("d1", "Laptop", "desktop", 1000);
+  assert.deepEqual([...kv.deleted].sort(), ["prefs", "profiles-v1"]);
+  assert.deepEqual((kv.data.settings as Row).shared.customWords, ["tmux"]);
+  assert.equal((kv.data.settings as Row).shared.historyMaxEntries, 7);
+  assert.ok(kv.data.history && kv.data[HISTORY_PENDING_KEY], "the history row stays for its retry");
+  await store.hello("d2", "Phone", "touch", 2000);
+  assert.equal(kv.deleted.length, 2, "cleanup runs once");
+});
+
+test("a failing delete of a legacy row is reported and does not fail the write", async () => {
+  const { kv, control } = failingWrite();
+  const warnings: string[] = [];
+  const result = await migrate({ kv, log: noLog, warn: (m) => warnings.push(m) });
+  control.fail = false;
+  kv.delete = async () => { throw new Error("locked"); };
+  const store = new PrefsStore(kv);
+  await store.load(result.recovered, result.cleanup);
+  await assert.doesNotReject(store.hello("d1", "Laptop", "desktop", 1000));
+  assert.equal((kv.data.settings as Row).shared.historyMaxEntries, 7);
+  assert.ok(warnings.some((w) => w.includes("locked")), warnings.join("|"));
+});

@@ -27,7 +27,13 @@ const OLD_PREFS_KEY = "prefs";
 const OLD_HISTORY_KEY = "history";
 
 /** `recovered`: the validated 0.1.0 state when the `settings` write failed; the store serves it from memory. */
-export interface MigrateResult { migrated: boolean; note: string | null; recovered?: State }
+export interface MigrateResult {
+  migrated: boolean;
+  note: string | null;
+  recovered?: State;
+  /** With `recovered`: deletes the legacy rows (best-effort); the store runs it after its first successful write. */
+  cleanup?: () => Promise<void>;
+}
 
 interface MigrateKv {
   get<T>(k: string): Promise<T | undefined>;
@@ -150,7 +156,8 @@ export async function migrate(d: Deps): Promise<MigrateResult> {
     // with its next ordinary write, and a marker makes the history import retry on the next load.
     d.warn(`settings migration failed, keeping the old storage: ${errorText(e)}`);
     if (rawHistory !== undefined) await markHistoryPending(d);
-    return { migrated: false, note: null, recovered: state };
+    // The history row is not touched: its retry imports it and deletes it.
+    return { migrated: false, note: null, recovered: state, cleanup: async () => { for (const key of present) await deleteRow(d, key); } };
   }
 
   let note = MIGRATION_NOTE;

@@ -68,7 +68,7 @@ export default async function plugin(bb: BbPluginApi) {
   // unavailable for this load, and unreadable settings leave read-only defaults.
   log.init();
   const migration = await migrate({ kv: bb.storage.kv, log, warn: (m) => bb.log.warn(m) });
-  await prefs.load(migration.recovered);
+  await prefs.load(migration.recovered, migration.cleanup);
   if (prefs.unreadable !== null) bb.log.warn(`stored settings could not be read, using read-only defaults: ${prefs.unreadable}`);
   prefsLoaded = true;
   log.prune();
