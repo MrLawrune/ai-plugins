@@ -49,7 +49,7 @@ const MAX_DEVICES = 50;
 /** Stored `{ v: 2, shared, profiles, devices }` row. */
 export const SETTINGS_KEY = "settings";
 const SETTINGS_VERSION = 2;
-/** A device that is only seen again (same name and kind) is written back at most this often. */
+/** A known device's stored last-seen time is refreshed at most this often. */
 const LAST_SEEN_WRITE_MS = 600_000;
 
 export interface KvLike {
@@ -134,6 +134,8 @@ export class PrefsStore {
   #state: State = freshState(DEFAULT_PREFS);
   #listeners = new Set<Listener>();
   #queue: Promise<void> = Promise.resolve();
+  /** `lastSeen` per device as last written to kv (the in-memory value runs ahead of it between writes). */
+  #stored = new Map<string, number>();
 
   constructor(kv: KvLike) {
     this.#kv = kv;
@@ -142,6 +144,7 @@ export class PrefsStore {
   /** Read the `settings` row; a missing or unusable row leaves the defaults in place. */
   async load(): Promise<void> {
     this.#state = parseState(await this.#kv.get<unknown>(SETTINGS_KEY)) ?? freshState(DEFAULT_PREFS);
+    this.#rememberStored(this.#state);
   }
 
   /** Effective prefs for a profile (unknown ids fall back to the first profile). */
@@ -165,13 +168,13 @@ export class PrefsStore {
   /**
    * Register a browser (or refresh its last-seen time). New devices get their kind's profile; a
    * known device keeps its name, kind and profile (the browser only guesses a name, the user renames it).
-   * The row is written only for a new device or when the stored last-seen is 10 minutes old; other
-   * page loads just update the time in memory.
+   * The row is written only for a new device or when the last-seen time in the stored row is 10
+   * minutes old; other page loads just update the time in memory.
    */
   hello(id: string, name: string, kind: DeviceKind, now: number): Promise<DeviceRecord> {
     return this.#enqueue(async () => {
       const known = this.#state.devices[id];
-      if (known && now - known.lastSeen < LAST_SEEN_WRITE_MS) {
+      if (known && now - (this.#stored.get(id) ?? known.lastSeen) < LAST_SEEN_WRITE_MS) {
         const device = { ...known, lastSeen: now };
         this.#state.devices[id] = device;
         return device;
@@ -282,6 +285,11 @@ export class PrefsStore {
   async #commit(draft: State): Promise<void> {
     await this.#kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...draft });
     this.#state = draft;
+    this.#rememberStored(draft);
+  }
+
+  #rememberStored(state: State): void {
+    this.#stored = new Map(Object.values(state.devices).map((d) => [d.id, d.lastSeen]));
   }
 
   /** The profile for a device kind, created from Desktop when missing. */

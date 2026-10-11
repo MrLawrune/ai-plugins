@@ -108,6 +108,26 @@ test("hello writes only for a new device or after ten minutes", async () => {
   assert.equal(kv.writes, 3);
 });
 
+test("hello measures ten minutes from the stored last-seen, not the in-memory one", async () => {
+  const kv = memKv();
+  const store = new PrefsStore(kv);
+  await store.load();
+  await store.hello("d1", "Linux PC", "desktop", 1_000);
+  await store.hello("d1", "Linux PC", "desktop", 400_000);
+  assert.equal(kv.writes, 1);
+  await store.hello("d1", "Linux PC", "desktop", 700_000);
+  assert.equal(kv.writes, 2);
+  assert.equal((kv.data[SETTINGS_KEY] as { devices: Record<string, { lastSeen: number }> }).devices.d1!.lastSeen, 700_000);
+  await store.hello("d1", "Linux PC", "desktop", 1_000_000); // 300 s after the write
+  assert.equal(kv.writes, 2);
+  const reloaded = new PrefsStore(kv);
+  await reloaded.load();
+  await reloaded.hello("d1", "Linux PC", "desktop", 1_000_000); // load seeds the stored times
+  assert.equal(kv.writes, 2);
+  await reloaded.hello("d1", "Linux PC", "desktop", 1_300_000);
+  assert.equal(kv.writes, 3);
+});
+
 test("a renamed device keeps its name when the browser says hello with its guessed name", async () => {
   const kv = memKv();
   const store = new PrefsStore(kv);
@@ -130,7 +150,7 @@ test("history size prefs are shared, bounded, and persisted", async () => {
   await store.update("touch", { historyMaxEntries: 0 });
   assert.equal(store.get().historyMaxEntries, 0);
   for (const patch of [{ historyMaxEntries: 1001 }, { historyMaxEntries: -1 }, { historyMaxAgeDays: 0 }, { historyMaxAgeDays: 91 }, { historyMaxAgeDays: 1.5 }]) {
-    await assert.rejects(store.update("touch", patch), patch.toString());
+    await assert.rejects(store.update("touch", patch), /historyMax/, JSON.stringify(patch));
   }
   assert.equal(store.get().historyMaxEntries, 0);
 });
