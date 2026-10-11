@@ -162,7 +162,7 @@ export class DictationController {
     target.begin();
     const wanted = mode ?? deps.prefs().mode;
     if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target, session);
-    return this.#startOneShot(deps, target);
+    return this.#startOneShot(deps, target, session);
   }
 
   async #startStream(deps: DictationDeps, target: Target, session: number): Promise<void> {
@@ -204,7 +204,7 @@ export class DictationController {
       if (session !== this.#session || this.snapshot().phase !== "streaming") return; // cancelled or superseded while connecting
       // No idle state here: the one-shot fallback keeps this session (and its target) alive.
       deps.notify("info", `Streaming unavailable (${e instanceof Error ? e.message : String(e)}); using one-shot.`);
-      return this.#startOneShot(deps, target);
+      return this.#startOneShot(deps, target, session);
     }
     if (session !== this.#session || this.snapshot().phase !== "streaming") {
       handle.cancel(); // cancelled or superseded while connecting: release its mic and socket
@@ -231,7 +231,7 @@ export class DictationController {
     this.#finish();
   }
 
-  async #startOneShot(deps: DictationDeps, target: Target): Promise<void> {
+  async #startOneShot(deps: DictationDeps, target: Target, session: number): Promise<void> {
     // Enter "recording" before the mic prompt resolves so a double press is ignored.
     this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
     this.#stopRequested = false;
@@ -243,14 +243,15 @@ export class DictationController {
         void this.stop();
       });
     } catch (e) {
+      if (session !== this.#session) return; // superseded while the mic prompt was pending
       this.#recording = null;
       this.#finish();
       this.#cue("error");
       deps.notify("error", `Microphone unavailable: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
-    if (this.snapshot().phase !== "recording") {
-      handle.cancel(); // cancelled while the mic prompt was pending
+    if (session !== this.#session || this.snapshot().phase !== "recording") {
+      handle.cancel(); // cancelled or superseded while the mic prompt was pending
       return;
     }
     this.#recording = handle;

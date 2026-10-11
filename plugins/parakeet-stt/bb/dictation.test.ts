@@ -514,6 +514,43 @@ test("a superseded connect that fails late does not fall back or disturb the new
   assert.equal(s.c.snapshot().phase, "streaming");
 });
 
+test("a superseded one-shot mic prompt that resolves late is cancelled and leaves the new session alone", async () => {
+  const prompts: Array<{ resolve: (h: import("./dictation.ts").RecordingHandle) => void; reject: (e: Error) => void }> = [];
+  const h = harness({ startRecording: () => new Promise((resolve, reject) => { prompts.push({ resolve, reject }); }) });
+  const first = h.c.start();
+  h.c.cancel();
+  const second = h.c.start();
+  assert.equal(prompts.length, 2);
+  const late = { cancelled: 0, stopped: 0 };
+  prompts[0].resolve({ async stop() { late.stopped++; return new Blob(["x"]); }, cancel() { late.cancelled++; } });
+  await first;
+  assert.equal(late.cancelled, 1);
+  assert.equal(late.stopped, 0);
+  assert.equal(h.c.snapshot().phase, "recording");
+  const live = { cancelled: 0 };
+  prompts[1].resolve({ async stop() { return new Blob(["x"]); }, cancel() { live.cancelled++; } });
+  await second;
+  assert.equal(live.cancelled, 0);
+  await h.c.stop();
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.equal(h.draft(), "fix the hello world");
+});
+
+test("a superseded one-shot mic prompt that fails late is ignored", async () => {
+  const prompts: Array<{ resolve: (h: import("./dictation.ts").RecordingHandle) => void; reject: (e: Error) => void }> = [];
+  const h = harness({ startRecording: () => new Promise((resolve, reject) => { prompts.push({ resolve, reject }); }) });
+  const first = h.c.start();
+  h.c.cancel();
+  const second = h.c.start();
+  prompts[0].reject(new Error("denied"));
+  await first;
+  assert.equal(h.c.snapshot().phase, "recording");
+  assert.ok(!h.log.some((l) => l.startsWith("error:")), h.log.join(" | "));
+  prompts[1].resolve({ async stop() { return new Blob(["x"]); }, cancel() {} });
+  await second;
+  assert.equal(h.c.snapshot().phase, "recording");
+});
+
 test("the last target of the active session unregistering ends the session at once", async () => {
   const h = harness();
   const ends: string[] = [];
