@@ -68,19 +68,21 @@ export function trackCaret(signal: AbortSignal): void {
   };
   const mark = (e: Event) => { if (elementOf(e.target as Node | null)?.closest(INPUT_REGION)) moves.userInput(); };
   const inEditor = (t: EventTarget | null) => elementOf(t as Node | null)?.closest(EDITOR) != null;
-  document.addEventListener("focusin", (e) => {
-    if (!inEditor(e.target)) return;
+  const attach = () => {
     release();
     focus = new AbortController();
     const s = AbortSignal.any([signal, focus.signal]);
     document.addEventListener("selectionchange", onSelection, { signal: s });
     document.addEventListener("pointerup", mark, { capture: true, signal: s });
     document.addEventListener("keyup", mark, { capture: true, signal: s });
-  }, { capture: true, signal });
+  };
+  document.addEventListener("focusin", (e) => { if (inEditor(e.target)) attach(); }, { capture: true, signal });
   document.addEventListener("focusout", (e) => {
     if (inEditor(e.target) && !inEditor((e as FocusEvent).relatedTarget)) release();
   }, { capture: true, signal });
   signal.addEventListener("abort", release, { once: true });
+  // the composer may already be focused (plugin reload, autofocus before this script mounted)
+  if (inEditor(document.activeElement)) attach();
 }
 
 /** The user-placed caret as draft offsets, or null (not moved, gone, or not mappable). Consumes it. */

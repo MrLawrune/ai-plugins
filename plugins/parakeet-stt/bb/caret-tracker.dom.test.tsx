@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { trackCaret } from "./caret-tracker.ts";
+import { takeCaret, trackCaret } from "./caret-tracker.ts";
 
 type Reg = { type: string; signal: AbortSignal | undefined };
 let registered: Reg[];
@@ -54,4 +54,27 @@ test("aborting the outer signal removes everything, including the per-focus list
   editor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
   ctl.abort();
   expect(live()).toEqual([]);
+});
+
+test("an editor that is already focused when tracking starts is tracked", () => {
+  editor.focus();
+  expect(document.activeElement).toBe(editor);
+  trackCaret(ctl.signal);
+  expect(live()).toEqual(["focusin", "focusout", "keyup", "pointerup", "selectionchange"]);
+});
+
+test("the last caret survives focus loss", () => {
+  trackCaret(ctl.signal);
+  editor.focus();
+  const text = editor.querySelector("p")!.firstChild!;
+  const range = document.createRange();
+  range.setStart(text, 2);
+  range.collapse(true);
+  const sel = document.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(range);
+  document.dispatchEvent(new Event("selectionchange"));
+  outside.focus(); // e.g. the plus menu took focus
+  expect(live()).toEqual(["focusin", "focusout"]);
+  expect(takeCaret("hi")).toEqual({ start: 2, end: 2 });
 });
