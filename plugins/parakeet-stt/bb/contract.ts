@@ -29,4 +29,7 @@ export const rpcContract = defineRpcContract({
   forgetDevice: { input: z.object({ id: idSchema }).strict(), output: z.object({ forgotten: z.literal(true) }) },
   listHistory: { input: z.null(), output: z.object({ entries: z.array(historyEntrySchema) }) },
   clearHistory: { input: z.null(), output: z.object({ cleared: z.literal(true) }) },
+  /** The one-time note left by the 0.1.0 migration, or null once dismissed. */
+  getNote: { input: z.null(), output: z.object({ note: z.string().nullable() }) },
+  dismissNote: { input: z.null(), output: z.object({ dismissed: z.literal(true) }) },
 });

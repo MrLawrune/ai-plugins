@@ -44,11 +44,11 @@ export const DEFAULT_PREFS: Prefs = {
 };
 
 export const KIND_PROFILE_NAMES: Record<DeviceKind, string> = { touch: "Touch screen", desktop: "Desktop" };
-const MAX_PROFILES = 20;
+export const MAX_PROFILES = 20;
 const MAX_DEVICES = 50;
 /** Stored `{ v: 2, shared, profiles, devices }` row. */
 export const SETTINGS_KEY = "settings";
-const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 2;
 /** A known device's stored last-seen time is refreshed at most this often. */
 const LAST_SEEN_WRITE_MS = 600_000;
 
@@ -57,8 +57,8 @@ export interface KvLike {
   set(key: string, value: unknown): Promise<void>;
 }
 
-interface Profile { name: string; prefs: ProfilePrefs }
-interface State {
+export interface Profile { name: string; prefs: ProfilePrefs }
+export interface State {
   shared: SharedPrefs;
   profiles: Record<string, Profile>;
   devices: Record<string, DeviceRecord>;
@@ -68,7 +68,7 @@ type Listener = (next: Prefs, prev: Prefs) => void;
 
 const isProfileKey = (k: string): k is ProfileKey => (PROFILE_KEYS as readonly string[]).includes(k);
 
-function split(p: Prefs): { shared: SharedPrefs; profile: ProfilePrefs } {
+export function split(p: Prefs): { shared: SharedPrefs; profile: ProfilePrefs } {
   const shared: Record<string, unknown> = {};
   const profile: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(p)) (isProfileKey(k) ? profile : shared)[k] = v;
@@ -81,7 +81,7 @@ function parsePrefs(raw: unknown): Prefs {
 }
 
 /** Starter state: `base` becomes the shared settings and the Desktop and Touch screen profiles. */
-function freshState(base: Prefs): State {
+export function freshState(base: Prefs): State {
   const { shared, profile } = split(base);
   return {
     shared,
@@ -93,7 +93,7 @@ function freshState(base: Prefs): State {
   };
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
+export function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
@@ -118,7 +118,7 @@ function parseState(raw: unknown): State | null {
   return { shared, profiles, devices: trimDevices(devices) };
 }
 
-function trimDevices(devices: Record<string, DeviceRecord>): Record<string, DeviceRecord> {
+export function trimDevices(devices: Record<string, DeviceRecord>): Record<string, DeviceRecord> {
   const kept = Object.values(devices).sort((a, b) => b.lastSeen - a.lastSeen).slice(0, MAX_DEVICES);
   return Object.fromEntries(kept.map((d) => [d.id, d]));
 }

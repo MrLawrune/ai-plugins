@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createAiService } from "./ai-service.ts";
 import { DictationLog } from "./dictation-log.ts";
+import { migrate } from "./migrate.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers } from "./rpc.ts";
 import { rpcContract } from "./contract.ts";
@@ -13,6 +14,9 @@ import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
 
 const PRUNE_EVERY_MS = 3_600_000;
+/** The schema maxima for the history limits. */
+const HISTORY_MAX_ENTRIES = 1000;
+const HISTORY_MAX_AGE_DAYS = 90;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -39,15 +43,22 @@ export default async function plugin(bb: BbPluginApi) {
   let client: SttClient = createSttClient({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" });
 
   const prefs = new PrefsStore(bb.storage.kv);
-  await prefs.load();
+  // Until the prefs are loaded the log must not prune to the default limits (the stored ones may be larger).
+  let prefsLoaded = false;
   const log = new DictationLog({
     db: () => bb.storage.database(),
     migrate: (db, s) => bb.storage.migrate(db, s),
-    limits: () => ({ maxEntries: prefs.get().historyMaxEntries, maxAgeDays: prefs.get().historyMaxAgeDays }),
+    limits: () => (prefsLoaded
+      ? { maxEntries: prefs.get().historyMaxEntries, maxAgeDays: prefs.get().historyMaxAgeDays }
+      : { maxEntries: HISTORY_MAX_ENTRIES, maxAgeDays: HISTORY_MAX_AGE_DAYS }),
     now: Date.now,
     warn: (m) => bb.log.warn(m),
   });
   log.init();
+  await migrate({ kv: bb.storage.kv, log, warn: (m) => bb.log.warn(m) });
+  await prefs.load();
+  prefsLoaded = true;
+  log.prune();
   prefs.onChange(() => log.prune());
   bb.background.service("history-prune", {
     async start(signal) {
@@ -63,6 +74,7 @@ export default async function plugin(bb: BbPluginApi) {
     configured: () => current.serverUrl.trim() !== "",
     prefs,
     history: log,
+    kv: bb.storage.kv,
     now: Date.now,
   }));
 

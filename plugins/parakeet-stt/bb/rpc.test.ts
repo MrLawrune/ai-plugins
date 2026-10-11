@@ -21,8 +21,8 @@ async function setup(client: Partial<SttClient>, configured = true) {
   });
   history.init();
   let t = 1000;
-  const handlers = createRpcHandlers({ client: () => client as SttClient, configured: () => configured, prefs, history, now: () => (t += 50) });
-  return { handlers, history };
+  const handlers = createRpcHandlers({ client: () => client as SttClient, configured: () => configured, prefs, history, kv, now: () => (t += 50) });
+  return { handlers, history, kv };
 }
 
 test("transcribe decodes base64, applies prefs, records history", async () => {
@@ -67,4 +67,16 @@ test("listHistory and clearHistory read and empty the log", async () => {
   assert.deepEqual((await handlers.listHistory()).entries.map((e) => [e.text, e.source]), [["x", "stream"]]);
   assert.deepEqual(await handlers.clearHistory(), { cleared: true });
   assert.deepEqual((await handlers.listHistory()).entries, []);
+});
+
+test("getNote returns the migration note until dismissNote deletes it", async () => {
+  const { handlers, kv } = await setup({});
+  assert.deepEqual(await handlers.getNote(), { note: null });
+  await kv.set("migration-note", "Moved.");
+  assert.deepEqual(await handlers.getNote(), { note: "Moved." });
+  assert.deepEqual(await handlers.dismissNote(), { dismissed: true });
+  assert.deepEqual(kv.deleted, ["migration-note"]);
+  assert.deepEqual(await handlers.getNote(), { note: null });
+  await kv.set("migration-note", 5);
+  assert.deepEqual(await handlers.getNote(), { note: null });
 });

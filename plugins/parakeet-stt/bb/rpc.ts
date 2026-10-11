@@ -1,4 +1,5 @@
 import type { DictationLog } from "./dictation-log.ts";
+import { MIGRATION_NOTE_KEY } from "./migrate.ts";
 import type { PrefsStore } from "./prefs.ts";
 import type { DeviceKind, HealthResult, Prefs } from "./schemas.ts";
 import type { SttClient } from "./stt-client.ts";
@@ -10,6 +11,7 @@ export interface RpcDeps {
   configured: () => boolean;
   prefs: PrefsStore;
   history: DictationLog;
+  kv: { get<T>(key: string): Promise<T | undefined>; delete(key: string): Promise<void> };
   now: () => number;
 }
 
@@ -55,5 +57,10 @@ export function createRpcHandlers(deps: RpcDeps) {
     async forgetDevice(input: { id: string }) { await deps.prefs.forgetDevice(input.id); return { forgotten: true as const }; },
     async listHistory() { return { entries: deps.history.list() }; },
     async clearHistory() { deps.history.clear(); return { cleared: true as const }; },
+    async getNote() {
+      const note = await deps.kv.get<unknown>(MIGRATION_NOTE_KEY);
+      return { note: typeof note === "string" && note !== "" ? note : null };
+    },
+    async dismissNote() { await deps.kv.delete(MIGRATION_NOTE_KEY); return { dismissed: true as const }; },
   };
 }
