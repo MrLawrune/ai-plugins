@@ -72,7 +72,13 @@ export const deviceSchema = z.object({
 });
 export type DeviceRecord = z.infer<typeof deviceSchema>;
 
-export const historyEntrySchema = z.object({ id: z.string(), text: z.string(), at: z.number(), durationMs: z.number() });
+export const historyEntrySchema = z.object({
+  id: z.number(),
+  text: z.string(),
+  at: z.number(),
+  durationMs: z.number(),
+  source: z.enum(["oneshot", "stream", "voice"]),
+});
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 
 export const healthResultSchema = z.object({

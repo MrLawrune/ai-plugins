@@ -4,12 +4,17 @@ import { createAiService } from "./ai-service.ts";
 import { PrefsStore } from "./prefs.ts";
 import { SttError, type SttClient, type TranscribeOptions } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
+import type { DictationLog } from "./dictation-log.ts";
 
-async function setup(client: Partial<SttClient>, configured = true) {
+type Added = Parameters<DictationLog["add"]>[0];
+
+async function setup(client: Partial<SttClient>, configured = true, added: Added[] = []) {
   const prefs = new PrefsStore(memKv());
   await prefs.load();
   await prefs.update("desktop", { customWords: ["tmux"], removeFillers: false, correctionThreshold: 0.3 });
-  return createAiService({ client: () => client as SttClient, configured: () => configured, prefs });
+  let t = 100;
+  const log = { add: (e: Added) => { added.push(e); } } as unknown as DictationLog;
+  return createAiService({ client: () => client as SttClient, configured: () => configured, prefs, log, now: () => (t += 40) });
 }
 
 test("declares a transcribe-only service", async () => {
@@ -52,4 +57,18 @@ test("status is not ready until a server URL is set", async () => {
   const unconfigured = await (await setup({}, false)).status!();
   assert.equal(unconfigured.ready, false);
   assert.match(unconfigured.ready ? "" : unconfigured.message, /server URL/);
+});
+
+test("a successful transcription is logged with source voice", async () => {
+  const added: Added[] = [];
+  const service = await setup({ async transcribe() { return "hello there"; } }, true, added);
+  await service.transcribe!(new File(["a"], "a.webm"), { signal: new AbortController().signal, hint: null });
+  assert.deepEqual(added, [{ text: "hello there", durationMs: 40, source: "voice", deviceId: null }]);
+});
+
+test("a failed transcription is not logged", async () => {
+  const added: Added[] = [];
+  const service = await setup({ async transcribe() { throw new SttError("unreachable", "down", null); } }, true, added);
+  await assert.rejects(service.transcribe!(new File(["a"], "a.webm"), { signal: new AbortController().signal, hint: null }));
+  assert.deepEqual(added, []);
 });

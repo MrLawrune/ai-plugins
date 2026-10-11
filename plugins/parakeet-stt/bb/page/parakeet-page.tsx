@@ -197,7 +197,7 @@ export function ParakeetPage() {
         {history.length === 0 ? (
           <p className="text-sm opacity-70">No transcriptions yet.</p>
         ) : history.map((h) => (
-          <Row key={h.id} label={new Date(h.at).toLocaleTimeString()} hint={`${h.durationMs} ms`}>
+          <Row key={h.id} label={new Date(h.at).toLocaleTimeString()} hint={`${h.source} · ${h.durationMs} ms`}>
             <div className="flex items-center gap-2">
               <span className="text-sm">{h.text}</span>
               <Button size="sm" variant="ghost" onClick={() => void navigator.clipboard.writeText(h.text).then(() => toast("Copied"))}>Copy</Button>

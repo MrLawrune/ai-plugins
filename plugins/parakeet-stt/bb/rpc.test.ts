@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HistoryStore } from "./history.ts";
+import Database from "better-sqlite3";
+import { DictationLog } from "./dictation-log.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers } from "./rpc.ts";
 import { SttError, type SttClient } from "./stt-client.ts";
@@ -11,7 +12,14 @@ async function setup(client: Partial<SttClient>, configured = true) {
   const prefs = new PrefsStore(kv);
   await prefs.load();
   await prefs.update("desktop", { customWords: ["tmux"] });
-  const history = new HistoryStore(kv, () => prefs.get().historyMaxEntries);
+  const db = new Database(":memory:");
+  const history = new DictationLog({
+    db: () => db,
+    migrate: (d, stmts) => { for (const sql of stmts) d.exec(sql); },
+    limits: () => ({ maxEntries: prefs.get().historyMaxEntries, maxAgeDays: prefs.get().historyMaxAgeDays }),
+    now: () => 1_800_000_000_000,
+  });
+  history.init();
   let t = 1000;
   const handlers = createRpcHandlers({ client: () => client as SttClient, configured: () => configured, prefs, history, now: () => (t += 50) });
   return { handlers, history };
@@ -26,13 +34,13 @@ test("transcribe decodes base64, applies prefs, records history", async () => {
   assert.equal(out.text, "hello");
   assert.equal(out.durationMs, 50);
   assert.deepEqual(got, { bytes: "abc", words: ["tmux"] });
-  assert.deepEqual((await history.list()).map((e) => e.text), ["hello"]);
+  assert.deepEqual(history.list().map((e) => [e.text, e.source]), [["hello", "oneshot"]]);
 });
 
 test("empty transcript is returned but not stored", async () => {
   const { handlers, history } = await setup({ async transcribe() { return ""; } });
   assert.equal((await handlers.transcribe({ audioBase64: "YQ==", mimeType: "a", filename: "b" })).text, "");
-  assert.deepEqual(await history.list(), []);
+  assert.deepEqual(history.list(), []);
 });
 
 test("transcribe errors surface the server message", async () => {
@@ -51,4 +59,12 @@ test("health reports server errors as down", async () => {
   const { handlers } = await setup({ async health() { throw new SttError("unreachable", "unreachable at x", null); } });
   const h = await handlers.health();
   assert.deepEqual([h.configured, h.up, h.error], [true, false, "unreachable at x"]);
+});
+
+test("listHistory and clearHistory read and empty the log", async () => {
+  const { handlers, history } = await setup({});
+  history.add({ text: "x", durationMs: 1, source: "stream", deviceId: null });
+  assert.deepEqual((await handlers.listHistory()).entries.map((e) => [e.text, e.source]), [["x", "stream"]]);
+  assert.deepEqual(await handlers.clearHistory(), { cleared: true });
+  assert.deepEqual((await handlers.listHistory()).entries, []);
 });

@@ -4,13 +4,24 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createAiService } from "./ai-service.ts";
-import { HistoryStore } from "./history.ts";
+import { DictationLog } from "./dictation-log.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers } from "./rpc.ts";
 import { rpcContract } from "./contract.ts";
 import { SOUNDS } from "./schemas.ts";
 import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
+
+const PRUNE_EVERY_MS = 3_600_000;
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 export { rpcContract } from "./contract.ts";
 
@@ -29,13 +40,28 @@ export default async function plugin(bb: BbPluginApi) {
 
   const prefs = new PrefsStore(bb.storage.kv);
   await prefs.load();
-  const history = new HistoryStore(bb.storage.kv, () => prefs.get().historyMaxEntries);
+  const log = new DictationLog({
+    db: () => bb.storage.database(),
+    migrate: (db, s) => bb.storage.migrate(db, s),
+    limits: () => ({ maxEntries: prefs.get().historyMaxEntries, maxAgeDays: prefs.get().historyMaxAgeDays }),
+    now: Date.now,
+  });
+  log.init();
+  prefs.onChange(() => log.prune());
+  bb.background.service("history-prune", {
+    async start(signal) {
+      while (!signal.aborted) {
+        log.prune();
+        await sleep(PRUNE_EVERY_MS, signal);
+      }
+    },
+  });
 
   bb.rpc.register(rpcContract, createRpcHandlers({
     client: () => client,
     configured: () => current.serverUrl.trim() !== "",
     prefs,
-    history,
+    history: log,
     now: Date.now,
   }));
 
@@ -44,6 +70,8 @@ export default async function plugin(bb: BbPluginApi) {
     prefs: (device) => prefs.forDevice(device),
     connect: (url) => new WebSocket(url) as unknown as UpstreamSocket,
     log: (m) => bb.log.warn(m),
+    onSession: (s) => log.add({ ...s, source: "stream" }),
+    now: Date.now,
   }));
   bb.http.route("GET", "/prefs", (c) => Response.json(prefs.forDevice(c.req.query("device"))));
 
@@ -51,6 +79,8 @@ export default async function plugin(bb: BbPluginApi) {
     client: () => client,
     configured: () => current.serverUrl.trim() !== "",
     prefs,
+    log,
+    now: Date.now,
   }));
 
   settings.onChange((next) => {

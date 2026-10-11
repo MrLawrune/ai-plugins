@@ -24,13 +24,17 @@ function upstream() {
   return u;
 }
 
-function relay(serverUrl = "https://stt.example", devices: (string | null)[] = []) {
+type Session = { text: string; durationMs: number; deviceId: string | null };
+
+function relay(serverUrl = "https://stt.example", devices: (string | null)[] = [], sessions: Session[] = [], now: () => number = () => 0) {
   const up = upstream();
   const handler = createStreamRelay({
     config: () => ({ serverUrl, apiKey: "k" }),
     prefs: (device) => { devices.push(device); return { ...DEFAULT_PREFS, customWords: ["tmux"], pauseMs: device === "phone-1" ? 900 : 600 }; },
     connect: (url) => { up.url = url; return up; },
     log: () => {},
+    onSession: (s) => sessions.push(s),
+    now,
   })();
   return { up, handler };
 }
@@ -115,4 +119,68 @@ test("ended from server passes through and does not add a second ended", () => {
   up.onmessage!({ data: '{"type":"ended","reason":"stopped"}' });
   up.onclose!({ code: 1000, reason: "" });
   assert.equal(p.sent.filter((m) => (m as string).includes('"ended"')).length, 1);
+});
+
+test("two finals then ended -> onSession once with the joined text", () => {
+  const sessions: Session[] = [];
+  let t = 1000;
+  const { up, handler } = relay("https://stt.example", [], sessions, () => t);
+  const p = page();
+  handler.onMessage(p, '{"type":"start","device":"phone-1"}');
+  up.onmessage!({ data: '{"type":"final","text":"one"}' });
+  up.onmessage!({ data: '{"type":"partial","text":"tw"}' });
+  up.onmessage!({ data: '{"type":"final","text":"two"}' });
+  t = 3500;
+  up.onmessage!({ data: '{"type":"ended","reason":"stopped"}' });
+  up.onclose!({ code: 1000, reason: "" });
+  handler.onClose();
+  assert.deepEqual(sessions, [{ text: "one two", durationMs: 2500, deviceId: "phone-1" }]);
+});
+
+test("page closing mid-session logs the finals heard so far, once", () => {
+  const sessions: Session[] = [];
+  const { up, handler } = relay("https://stt.example", [], sessions);
+  const p = page();
+  handler.onMessage(p, '{"type":"start"}');
+  up.onmessage!({ data: '{"type":"final","text":"half"}' });
+  handler.onClose();
+  handler.onClose();
+  assert.deepEqual(sessions.map((s) => [s.text, s.deviceId]), [["half", null]]);
+});
+
+test("upstream closing without ended logs the finals once", () => {
+  const sessions: Session[] = [];
+  const { up, handler } = relay("https://stt.example", [], sessions);
+  const p = page();
+  handler.onMessage(p, '{"type":"start"}');
+  up.onmessage!({ data: '{"type":"final","text":"kept"}' });
+  up.onclose!({ code: 1006, reason: "" });
+  handler.onClose();
+  assert.deepEqual(sessions.map((s) => s.text), ["kept"]);
+});
+
+test("a session with no finals is not logged", () => {
+  const sessions: Session[] = [];
+  const { up, handler } = relay("https://stt.example", [], sessions);
+  const p = page();
+  handler.onMessage(p, '{"type":"start"}');
+  up.onmessage!({ data: '{"type":"partial","text":"x"}' });
+  up.onmessage!({ data: '{"type":"final","text":"  "}' });
+  up.onmessage!({ data: '{"type":"ended","reason":"stopped"}' });
+  handler.onClose();
+  assert.deepEqual(sessions, []);
+});
+
+test("messages without a final are not JSON-parsed", () => {
+  const sessions: Session[] = [];
+  const { up, handler } = relay("https://stt.example", [], sessions);
+  handler.onMessage(page(), '{"type":"start"}');
+  const realParse = JSON.parse;
+  let parses = 0;
+  JSON.parse = ((...a: Parameters<typeof JSON.parse>) => { parses++; return realParse(...a); }) as typeof JSON.parse;
+  try {
+    up.onmessage!({ data: '{"type":"partial","text":"x"}' });
+    up.onmessage!({ data: '{"type":"ready"}' });
+  } finally { JSON.parse = realParse; }
+  assert.equal(parses, 0);
 });

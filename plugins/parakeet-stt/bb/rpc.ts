@@ -1,4 +1,4 @@
-import type { HistoryStore } from "./history.ts";
+import type { DictationLog } from "./dictation-log.ts";
 import type { PrefsStore } from "./prefs.ts";
 import type { DeviceKind, HealthResult, Prefs } from "./schemas.ts";
 import type { SttClient } from "./stt-client.ts";
@@ -9,7 +9,7 @@ export interface RpcDeps {
   client: () => SttClient;
   configured: () => boolean;
   prefs: PrefsStore;
-  history: HistoryStore;
+  history: DictationLog;
   now: () => number;
 }
 
@@ -38,7 +38,7 @@ export function createRpcHandlers(deps: RpcDeps) {
       });
       const durationMs = deps.now() - started;
       lastLatencyMs = durationMs;
-      await deps.history.add(text, durationMs);
+      deps.history.add({ text, durationMs, source: "oneshot", deviceId: null });
       return { text, durationMs };
     },
     async hello(input: { deviceId: string; name: string; kind: DeviceKind }) {
@@ -53,7 +53,7 @@ export function createRpcHandlers(deps: RpcDeps) {
     async deleteProfile(input: { id: string }) { await deps.prefs.deleteProfile(input.id); return { deleted: true as const }; },
     async updateDevice(input: { id: string; name?: string; profileId?: string }) { return deps.prefs.updateDevice(input.id, input); },
     async forgetDevice(input: { id: string }) { await deps.prefs.forgetDevice(input.id); return { forgotten: true as const }; },
-    async listHistory() { return { entries: await deps.history.list() }; },
-    async clearHistory() { await deps.history.clear(); return { cleared: true as const }; },
+    async listHistory() { return { entries: deps.history.list() }; },
+    async clearHistory() { deps.history.clear(); return { cleared: true as const }; },
   };
 }

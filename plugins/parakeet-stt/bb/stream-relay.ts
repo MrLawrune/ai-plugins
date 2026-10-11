@@ -28,6 +28,9 @@ export function createStreamRelay(deps: {
   prefs(device: string | null): Prefs;
   connect(url: string): UpstreamSocket;
   log(msg: string): void;
+  /** Called once per session with the joined final texts, when the session finishes. */
+  onSession(s: { text: string; durationMs: number; deviceId: string | null }): void;
+  now(): number;
 }) {
   return () => {
     let up: UpstreamSocket | null = null;
@@ -36,6 +39,23 @@ export function createStreamRelay(deps: {
     let sawError = false;
     let queuedBytes = 0;
     const queue: (string | Uint8Array)[] = [];
+    const finals: string[] = [];
+    let reported = false;
+    let startedAt = 0;
+    let sessionDevice: string | null = null;
+
+    const report = () => {
+      if (reported) return;
+      reported = true;
+      const text = finals.join(" ").trim();
+      if (text) deps.onSession({ text, durationMs: deps.now() - startedAt, deviceId: sessionDevice });
+    };
+    const collectFinal = (data: string) => {
+      try {
+        const m = JSON.parse(data) as { type?: unknown; text?: unknown };
+        if (m.type === "final" && typeof m.text === "string" && m.text.trim()) finals.push(m.text.trim());
+      } catch { /* not JSON: nothing to log */ }
+    };
 
     const toPage = (page: PageSocket, msg: object) => { if (page.readyState === 1) page.send(JSON.stringify(msg)); };
     const end = (page: PageSocket, message: string | null) => {
@@ -48,6 +68,8 @@ export function createStreamRelay(deps: {
 
     const openUpstream = (page: PageSocket, device: string | null) => {
       const { serverUrl, apiKey } = deps.config();
+      startedAt = deps.now();
+      sessionDevice = device;
       if (!serverUrl.trim()) return end(page, "Parakeet STT server URL is not set");
       let url: string;
       try { url = upstreamUrl(serverUrl); } catch { return end(page, `invalid server URL ${serverUrl}`); }
@@ -62,12 +84,14 @@ export function createStreamRelay(deps: {
       };
       sock.onmessage = (ev) => {
         if (typeof ev.data !== "string" || finished) return;
-        if (ev.data.includes('"type":"ended"')) finished = true;
+        if (ev.data.includes('"type":"final"')) collectFinal(ev.data);
+        if (ev.data.includes('"type":"ended"')) { finished = true; report(); }
         if (ev.data.includes('"type":"error"')) sawError = true;
         if (page.readyState === 1) page.send(ev.data);
       };
       sock.onerror = () => deps.log("upstream stream error");
       sock.onclose = (ev) => {
+        report();
         if (finished) { page.close(1000, "done"); return; }
         end(page, sawError ? null : ev.reason || `Parakeet STT stream closed (${ev.code})`);
       };
@@ -93,6 +117,7 @@ export function createStreamRelay(deps: {
       },
       onClose() {
         finished = true;
+        report();
         up?.close(1000, "page closed");
       },
     };
