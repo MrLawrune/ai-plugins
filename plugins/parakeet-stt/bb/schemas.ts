@@ -18,7 +18,8 @@ export const prefsSchema = z.object({
   customWords: customWordsSchema,
   removeFillers: z.boolean(),
   correctionThreshold: z.number().min(0).max(0.5),
-  historyLimit: z.number().int().min(0).max(50),
+  historyMaxEntries: z.number().int().min(0).max(1000),
+  historyMaxAgeDays: z.number().int().min(1).max(90),
   mode: z.enum(["continuous", "oneshot"]),
   livePreview: z.boolean(),
   pauseMs: z.number().int().min(300).max(1500),
@@ -40,7 +41,7 @@ export const prefsSchema = z.object({
 }).strict();
 export type Prefs = z.output<typeof prefsSchema>;
 
-/** Settings that differ per device profile; everything else (vocabulary, phrase wording, history) is shared. */
+/** Settings that differ per device profile; everything else (vocabulary, phrase wording, history size) is shared. */
 export const PROFILE_KEYS = [
   "shortcut", "holdToTalk", "autoSubmit", "trailingSpace", "soundCues", "mode", "livePreview", "pauseMs",
   "endOnSilence", "silenceTimeoutS", "voiceCommands", "waitForStart", "hideNativeMic", "keepListeningHidden",

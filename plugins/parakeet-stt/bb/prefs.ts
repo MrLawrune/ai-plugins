@@ -2,7 +2,8 @@
 // Each browser registers with a random id (see device.ts) and gets the profile for its kind until
 // it is assigned another one.
 import {
-  deviceKindSchema,
+  deviceSchema,
+  nameSchema,
   PROFILE_KEYS,
   prefsSchema,
   type DeviceKind,
@@ -23,7 +24,8 @@ export const DEFAULT_PREFS: Prefs = {
   customWords: [],
   removeFillers: true,
   correctionThreshold: 0.18,
-  historyLimit: 5,
+  historyMaxEntries: 50,
+  historyMaxAgeDays: 7,
   mode: "continuous",
   livePreview: true,
   pauseMs: 600,
@@ -44,7 +46,11 @@ export const DEFAULT_PREFS: Prefs = {
 export const KIND_PROFILE_NAMES: Record<DeviceKind, string> = { touch: "Touch screen", desktop: "Desktop" };
 const MAX_PROFILES = 20;
 const MAX_DEVICES = 50;
-const STATE_KEY = "profiles-v1";
+/** Stored `{ v: 2, shared, profiles, devices }` row. */
+export const SETTINGS_KEY = "settings";
+const SETTINGS_VERSION = 2;
+/** A device that is only seen again (same name and kind) is written back at most this often. */
+const LAST_SEEN_WRITE_MS = 600_000;
 
 export interface KvLike {
   get<T>(key: string): Promise<T | undefined>;
@@ -87,44 +93,60 @@ function freshState(base: Prefs): State {
   };
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Validate a stored row field by field; null when it is not a usable v2 row. */
+function parseState(raw: unknown): State | null {
+  if (!isRecord(raw) || raw.v !== SETTINGS_VERSION || !isRecord(raw.profiles)) return null;
+  const shared = split(parsePrefs(raw.shared)).shared;
+  const profiles: Record<string, Profile> = {};
+  for (const [id, p] of Object.entries(raw.profiles).slice(0, MAX_PROFILES)) {
+    const name = nameSchema.safeParse(isRecord(p) ? p.name : undefined);
+    if (!name.success) continue;
+    profiles[id] = { name: name.data, prefs: split(parsePrefs({ ...shared, ...(isRecord(p) && isRecord(p.prefs) ? p.prefs : {}) })).profile };
+  }
+  if (!Object.keys(profiles).length) return null;
+  const devices: Record<string, DeviceRecord> = {};
+  if (isRecord(raw.devices)) {
+    for (const d of Object.values(raw.devices)) {
+      const parsed = deviceSchema.safeParse(d);
+      if (parsed.success) devices[parsed.data.id] = parsed.data;
+    }
+  }
+  return { shared, profiles, devices: trimDevices(devices) };
+}
+
+function trimDevices(devices: Record<string, DeviceRecord>): Record<string, DeviceRecord> {
+  const kept = Object.values(devices).sort((a, b) => b.lastSeen - a.lastSeen).slice(0, MAX_DEVICES);
+  return Object.fromEntries(kept.map((d) => [d.id, d]));
+}
+
+/** Effective prefs of one profile in `state` (unknown ids fall back to the first profile). */
+function effective(state: State, profileId?: string): Prefs {
+  const profile = (profileId && state.profiles[profileId]) || Object.values(state.profiles)[0]!;
+  return { ...state.shared, ...profile.prefs };
+}
+
 export class PrefsStore {
   #kv: KvLike;
   #state: State = freshState(DEFAULT_PREFS);
   #listeners = new Set<Listener>();
+  #queue: Promise<void> = Promise.resolve();
 
   constructor(kv: KvLike) {
     this.#kv = kv;
   }
 
+  /** Read the `settings` row; a missing or unusable row leaves the defaults in place. */
   async load(): Promise<void> {
-    const stored = await this.#kv.get<State>(STATE_KEY);
-    if (stored?.profiles && Object.keys(stored.profiles).length) {
-      const shared = split(parsePrefs(stored.shared)).shared;
-      const profiles: Record<string, Profile> = {};
-      for (const [id, p] of Object.entries(stored.profiles)) {
-        profiles[id] = { name: p.name, prefs: split(parsePrefs({ ...shared, ...p.prefs })).profile };
-      }
-      const devices: Record<string, DeviceRecord> = {};
-      for (const [id, d] of Object.entries(stored.devices ?? {})) {
-        devices[id] = { ...d, kind: deviceKindSchema.catch("desktop").parse(d.kind) };
-      }
-      // The earlier Phone profile is the touch-screen profile.
-      if (profiles.phone && !profiles.touch) {
-        profiles.touch = { ...profiles.phone, name: profiles.phone.name === "Phone" ? KIND_PROFILE_NAMES.touch : profiles.phone.name };
-        delete profiles.phone;
-        for (const d of Object.values(devices)) if (d.profileId === "phone") d.profileId = "touch";
-      }
-      this.#state = { shared, profiles, devices };
-      return;
-    }
-    // Settings saved before profiles existed seed every starter profile.
-    this.#state = freshState(parsePrefs(await this.#kv.get<object>("prefs")));
+    this.#state = parseState(await this.#kv.get<unknown>(SETTINGS_KEY)) ?? freshState(DEFAULT_PREFS);
   }
 
   /** Effective prefs for a profile (unknown ids fall back to the first profile). */
   get(profileId?: string): Prefs {
-    const profile = (profileId && this.#state.profiles[profileId]) || Object.values(this.#state.profiles)[0]!;
-    return { ...this.#state.shared, ...profile.prefs };
+    return effective(this.#state, profileId);
   }
 
   /** Effective prefs for a registered device, or the first profile when unknown. */
@@ -140,73 +162,103 @@ export class PrefsStore {
     return Object.values(this.#state.devices).sort((a, b) => b.lastSeen - a.lastSeen);
   }
 
-  /** Register a browser (or refresh its last-seen time). New devices get their kind's profile. */
-  async hello(id: string, name: string, kind: DeviceKind, now: number): Promise<DeviceRecord> {
-    const known = this.#state.devices[id];
-    const device: DeviceRecord = known
-      ? { ...known, lastSeen: now }
-      : { id, name, kind, profileId: this.#kindProfile(kind), lastSeen: now };
-    this.#state.devices[id] = device;
-    for (const d of this.devices().slice(MAX_DEVICES)) delete this.#state.devices[d.id];
-    await this.#save();
-    return device;
+  /**
+   * Register a browser (or refresh its last-seen time). New devices get their kind's profile.
+   * The row is written only for a new, renamed or retyped device, or when the stored last-seen is
+   * 10 minutes old; other page loads just update the time in memory.
+   */
+  hello(id: string, name: string, kind: DeviceKind, now: number): Promise<DeviceRecord> {
+    return this.#enqueue(async () => {
+      const known = this.#state.devices[id];
+      if (known && known.name === name && known.kind === kind && now - known.lastSeen < LAST_SEEN_WRITE_MS) {
+        const device = { ...known, lastSeen: now };
+        this.#state.devices[id] = device;
+        return device;
+      }
+      const draft = this.#draft();
+      const device: DeviceRecord = known
+        ? { ...known, name, kind, lastSeen: now }
+        : { id, name, kind, profileId: this.#kindProfile(draft, kind), lastSeen: now };
+      draft.devices[id] = device;
+      draft.devices = trimDevices(draft.devices);
+      await this.#commit(draft);
+      return device;
+    });
   }
 
-  async updateDevice(id: string, patch: { name?: string; profileId?: string }): Promise<DeviceRecord> {
-    const d = this.#state.devices[id];
-    if (!d) throw new Error("unknown device");
-    if (patch.profileId !== undefined && !this.#state.profiles[patch.profileId]) throw new Error("unknown profile");
-    const next: DeviceRecord = { ...d, name: patch.name ?? d.name, profileId: patch.profileId ?? d.profileId };
-    this.#state.devices[id] = next;
-    await this.#save();
-    return next;
+  updateDevice(id: string, patch: { name?: string; profileId?: string }): Promise<DeviceRecord> {
+    return this.#enqueue(async () => {
+      const draft = this.#draft();
+      const d = draft.devices[id];
+      if (!d) throw new Error("unknown device");
+      if (patch.profileId !== undefined && !draft.profiles[patch.profileId]) throw new Error("unknown profile");
+      const next: DeviceRecord = { ...d, name: patch.name ?? d.name, profileId: patch.profileId ?? d.profileId };
+      draft.devices[id] = next;
+      await this.#commit(draft);
+      return next;
+    });
   }
 
-  async forgetDevice(id: string): Promise<void> {
-    delete this.#state.devices[id];
-    await this.#save();
+  forgetDevice(id: string): Promise<void> {
+    return this.#enqueue(async () => {
+      const draft = this.#draft();
+      delete draft.devices[id];
+      await this.#commit(draft);
+    });
   }
 
-  async createProfile(name: string, copyFrom: string): Promise<ProfileInfo> {
-    if (Object.keys(this.#state.profiles).length >= MAX_PROFILES) throw new Error(`at most ${MAX_PROFILES} profiles`);
-    const id = this.#newId(name);
-    this.#state.profiles[id] = { name, prefs: split(this.get(copyFrom)).profile };
-    await this.#save();
-    return { id, name };
+  createProfile(name: string, copyFrom: string): Promise<ProfileInfo> {
+    return this.#enqueue(async () => {
+      const draft = this.#draft();
+      if (Object.keys(draft.profiles).length >= MAX_PROFILES) throw new Error(`at most ${MAX_PROFILES} profiles`);
+      const id = this.#newId(draft, name);
+      draft.profiles[id] = { name, prefs: split(effective(draft, copyFrom)).profile };
+      await this.#commit(draft);
+      return { id, name };
+    });
   }
 
-  async renameProfile(id: string, name: string): Promise<ProfileInfo> {
-    const p = this.#state.profiles[id];
-    if (!p) throw new Error("unknown profile");
-    p.name = name;
-    await this.#save();
-    return { id, name };
+  renameProfile(id: string, name: string): Promise<ProfileInfo> {
+    return this.#enqueue(async () => {
+      const draft = this.#draft();
+      const p = draft.profiles[id];
+      if (!p) throw new Error("unknown profile");
+      p.name = name;
+      await this.#commit(draft);
+      return { id, name };
+    });
   }
 
   /** Delete a profile; its devices move to their kind's profile (or the first). The last cannot be deleted. */
-  async deleteProfile(id: string): Promise<void> {
-    if (!this.#state.profiles[id]) throw new Error("unknown profile");
-    if (Object.keys(this.#state.profiles).length === 1) throw new Error("the last profile cannot be deleted");
-    delete this.#state.profiles[id];
-    const first = Object.keys(this.#state.profiles)[0]!;
-    for (const d of Object.values(this.#state.devices)) {
-      if (d.profileId === id) d.profileId = this.#state.profiles[d.kind] ? d.kind : first;
-    }
-    await this.#save();
+  deleteProfile(id: string): Promise<void> {
+    return this.#enqueue(async () => {
+      const draft = this.#draft();
+      if (!draft.profiles[id]) throw new Error("unknown profile");
+      if (Object.keys(draft.profiles).length === 1) throw new Error("the last profile cannot be deleted");
+      delete draft.profiles[id];
+      const first = Object.keys(draft.profiles)[0]!;
+      for (const d of Object.values(draft.devices)) {
+        if (d.profileId === id) d.profileId = draft.profiles[d.kind] ? d.kind : first;
+      }
+      await this.#commit(draft);
+    });
   }
 
   /** Apply a patch: shared keys change every profile, the rest only `profileId`. */
-  async update(profileId: string, patch: Partial<Prefs>): Promise<Prefs> {
-    const profile = this.#state.profiles[profileId];
-    if (!profile) throw new Error("unknown profile");
-    const prev = this.get(profileId);
-    const next = prefsSchema.parse({ ...prev, ...patch });
-    const parts = split(next);
-    this.#state.shared = parts.shared;
-    profile.prefs = parts.profile;
-    await this.#save();
-    for (const l of this.#listeners) l(next, prev);
-    return next;
+  update(profileId: string, patch: Partial<Prefs>): Promise<Prefs> {
+    return this.#enqueue(async () => {
+      const draft = this.#draft();
+      const profile = draft.profiles[profileId];
+      if (!profile) throw new Error("unknown profile");
+      const prev = effective(this.#state, profileId);
+      const next = prefsSchema.parse({ ...prev, ...patch });
+      const parts = split(next);
+      draft.shared = parts.shared;
+      profile.prefs = parts.profile;
+      await this.#commit(draft);
+      for (const l of this.#listeners) l(next, prev);
+      return next;
+    });
   }
 
   onChange(listener: Listener): () => void {
@@ -214,23 +266,36 @@ export class PrefsStore {
     return () => this.#listeners.delete(listener);
   }
 
+  /** Run `op` after every earlier mutation settled; a rejected op does not block the ones behind it. */
+  #enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const result = this.#queue.then(op);
+    this.#queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  #draft(): State {
+    return structuredClone(this.#state);
+  }
+
+  /** Persist `draft`, then make it the committed state; a failed write leaves the committed state alone. */
+  async #commit(draft: State): Promise<void> {
+    await this.#kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...draft });
+    this.#state = draft;
+  }
+
   /** The profile for a device kind, created from Desktop when missing. */
-  #kindProfile(kind: DeviceKind): string {
-    if (this.#state.profiles[kind]) return kind;
-    const ids = Object.keys(this.#state.profiles);
+  #kindProfile(state: State, kind: DeviceKind): string {
+    if (state.profiles[kind]) return kind;
+    const ids = Object.keys(state.profiles);
     if (ids.length >= MAX_PROFILES) return ids[0]!;
-    this.#state.profiles[kind] = { name: KIND_PROFILE_NAMES[kind], prefs: split(this.get("desktop")).profile };
+    state.profiles[kind] = { name: KIND_PROFILE_NAMES[kind], prefs: split(effective(state, "desktop")).profile };
     return kind;
   }
 
-  #newId(name: string): string {
+  #newId(state: State, name: string): string {
     const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "profile";
     let id = base;
-    for (let n = 2; this.#state.profiles[id]; n++) id = `${base}-${n}`;
+    for (let n = 2; state.profiles[id]; n++) id = `${base}-${n}`;
     return id;
-  }
-
-  async #save(): Promise<void> {
-    await this.#kv.set(STATE_KEY, this.#state);
   }
 }

@@ -169,6 +169,31 @@ export function ParakeetPage() {
         title="History"
         actions={<Button size="sm" variant="ghost" onClick={() => void rpc.call("clearHistory").then(() => setHistory([]), (e) => toast.error(errorText(e)))}>Clear</Button>}
       >
+        <SliderRow
+          id="history-entries"
+          label="Entries to keep"
+          hint="0 records nothing"
+          value={prefs.historyMaxEntries}
+          min={0}
+          max={1000}
+          step={10}
+          format={(v) => String(v)}
+          onChange={(v) => void patch({ historyMaxEntries: v })}
+        />
+        <Row label="Keep for (days)" hint="1–90" htmlFor="history-days">
+          <Input
+            id="history-days"
+            type="number"
+            min={1}
+            max={90}
+            step={1}
+            value={prefs.historyMaxAgeDays}
+            onChange={(e) => {
+              const days = e.target.valueAsNumber;
+              if (Number.isInteger(days) && days >= 1 && days <= 90) void patch({ historyMaxAgeDays: days });
+            }}
+          />
+        </Row>
         {history.length === 0 ? (
           <p className="text-sm opacity-70">No transcriptions yet.</p>
         ) : history.map((h) => (

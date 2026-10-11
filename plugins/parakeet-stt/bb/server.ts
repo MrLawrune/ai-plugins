@@ -29,7 +29,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const prefs = new PrefsStore(bb.storage.kv);
   await prefs.load();
-  const history = new HistoryStore(bb.storage.kv, () => prefs.get().historyLimit);
+  const history = new HistoryStore(bb.storage.kv, () => prefs.get().historyMaxEntries);
 
   bb.rpc.register(rpcContract, createRpcHandlers({
     client: () => client,

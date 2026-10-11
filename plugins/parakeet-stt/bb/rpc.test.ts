@@ -11,7 +11,7 @@ async function setup(client: Partial<SttClient>, configured = true) {
   const prefs = new PrefsStore(kv);
   await prefs.load();
   await prefs.update("desktop", { customWords: ["tmux"] });
-  const history = new HistoryStore(kv, () => prefs.get().historyLimit);
+  const history = new HistoryStore(kv, () => prefs.get().historyMaxEntries);
   let t = 1000;
   const handlers = createRpcHandlers({ client: () => client as SttClient, configured: () => configured, prefs, history, now: () => (t += 50) });
   return { handlers, history };
