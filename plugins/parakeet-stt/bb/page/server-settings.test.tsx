@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { DOWN, NOT_SET_UP, SERVER, UP } from "./fixtures.ts";
+import { DOWN, LOADING, NOT_SET_UP, SERVER, UP } from "./fixtures.ts";
 
 type Stubs = Record<string, (input: never) => unknown>;
 
@@ -144,4 +144,41 @@ test("Open dictation settings goes to the plugin panel", async () => {
   const { view } = await settings();
   fireEvent.click(await screen.findByRole("button", { name: "Open dictation settings" }));
   expect(view.inspection.navigateCalls).toEqual([{ method: "toPluginPanel", path: "parakeet" }]);
+});
+
+test("a server that answered but is still loading its model is not an error", async () => {
+  await settings({ health: () => LOADING });
+  expect(await screen.findByText("Loading model…")).toBeTruthy();
+  expect(screen.queryByText(/Can't reach/)).toBeNull();
+});
+
+test("a late getServer does not overwrite what the user already typed", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  await settings({ getServer: async () => { await gate; return { ...SERVER, needsReload: true }; } });
+  const url = (await screen.findByLabelText("Server URL")) as HTMLInputElement;
+  fireEvent.change(url, { target: { value: "http://typed.example" } });
+  release();
+  expect(await screen.findByText("Reload the plugin to clear the setup badge")).toBeTruthy();
+  expect(url.value).toBe("http://typed.example");
+});
+
+test("a whitespace-only API key cannot be saved and a typed one is sent trimmed", async () => {
+  const { view } = await settings();
+  const key = await screen.findByLabelText("API key");
+  const save = screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  fireEvent.change(key, { target: { value: "   " } });
+  expect(save.disabled).toBe(true);
+  fireEvent.keyDown(key, { key: "Enter" });
+  expect(calls(view, "setServer")).toEqual([]);
+  fireEvent.change(key, { target: { value: " abc123\n" } });
+  expect(save.disabled).toBe(false);
+});
+
+test("Enter in the API key field saves it", async () => {
+  const { view } = await settings();
+  const key = await screen.findByLabelText("API key");
+  fireEvent.change(key, { target: { value: "abc123" } });
+  fireEvent.keyDown(key, { key: "Enter" });
+  await waitFor(() => expect(calls(view, "setServer")).toEqual([{ apiKey: "abc123" }]));
 });

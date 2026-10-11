@@ -18,7 +18,7 @@ export function ServerSettings() {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const health = useHealth();
-  const [server, setServer] = useState<ServerResult | null>(null);
+  const [server, setServerInfo] = useState<ServerResult | null>(null);
   const [url, setUrl] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
   const [key, setKey] = useState("");
@@ -27,16 +27,27 @@ export function ServerSettings() {
   /** The URL last sent or loaded, so Enter followed by blur saves once. */
   const sentUrl = useRef<string | null>(null);
 
+  /** The user has typed in the URL field, so a late load must not replace it. */
+  const urlTouched = useRef(false);
+
   const adopt = useCallback((next: ServerResult) => {
     sentUrl.current = next.serverUrl;
-    setServer(next);
+    setServerInfo(next);
     setUrl(next.serverUrl);
   }, []);
 
   useEffect(() => {
     let live = true;
     rpc.call("getServer").then(
-      (s) => { if (live) adopt(s); },
+      (s) => {
+        if (!live) return;
+        if (urlTouched.current) {
+          sentUrl.current = s.serverUrl;
+          setServerInfo(s);
+        } else {
+          adopt(s);
+        }
+      },
       (cause) => { if (live) setUrlError(errorText(cause)); },
     );
     return () => { live = false; };
@@ -67,7 +78,7 @@ export function ServerSettings() {
   const saveKey = async (apiKey: string | null) => {
     setKeyError(null);
     try {
-      setServer(await rpc.call("setServer", { apiKey }));
+      setServerInfo(await rpc.call("setServer", { apiKey }));
       setKey("");
       void refreshHealth();
     } catch (cause) {
@@ -75,6 +86,7 @@ export function ServerSettings() {
     }
   };
 
+  const typedKey = key.trim();
   const check = async () => {
     setChecking(true);
     try {
@@ -103,7 +115,7 @@ export function ServerSettings() {
           placeholder="https://"
           value={url}
           aria-invalid={urlError !== null}
-          onChange={(e) => { setUrl(e.target.value); setUrlError(null); }}
+          onChange={(e) => { urlTouched.current = true; setUrl(e.target.value); setUrlError(null); }}
           onBlur={() => void saveUrl()}
           onKeyDown={(e) => { if (e.key === "Enter") void saveUrl(); }}
         />
@@ -119,8 +131,9 @@ export function ServerSettings() {
             placeholder={keySet ? "Set" : "Not set"}
             value={key}
             onChange={(e) => { setKey(e.target.value); setKeyError(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && typedKey !== "") void saveKey(typedKey); }}
           />
-          <Button size="sm" disabled={key === ""} onClick={() => void saveKey(key)}>Save</Button>
+          <Button size="sm" disabled={typedKey === ""} onClick={() => void saveKey(typedKey)}>Save</Button>
           <Button size="sm" variant="outline" disabled={!keySet} onClick={() => void saveKey(null)}>Clear</Button>
         </div>
         {fieldError(keyError)}

@@ -9,9 +9,7 @@ import { cn } from "@/lib/utils";
 import type { SaveState } from "./patch-queue.ts";
 import type { Tone } from "./status.ts";
 
-export function errorText(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
+export { errorText } from "./error-text.ts";
 
 export function Section({ title, description, children, actions }: {
   title: string;

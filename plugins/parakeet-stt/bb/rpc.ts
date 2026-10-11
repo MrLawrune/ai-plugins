@@ -1,7 +1,7 @@
 import type { DictationLog } from "./dictation-log.ts";
 import { MIGRATION_NOTE_KEY } from "./migrate.ts";
 import type { PrefsStore } from "./prefs.ts";
-import { serverUrlSchema, type DeviceKind, type HealthResult, type Prefs, type ServerResult } from "./schemas.ts";
+import { MODEL_LOADING, serverUrlSchema, type DeviceKind, type HealthResult, type Prefs, type ServerResult } from "./schemas.ts";
 import type { SttClient } from "./stt-client.ts";
 
 export const TRANSCRIBE_TIMEOUT_MS = 120_000;
@@ -37,7 +37,7 @@ export function createRpcHandlers(deps: RpcDeps) {
       if (!deps.configured()) return { configured: false, up: false, model: null, version: null, error: null, lastLatencyMs };
       try {
         const h = await deps.client().health();
-        return { configured: true, up: h.ready, model: h.model, version: h.version, error: h.ready ? null : "model loading", lastLatencyMs };
+        return { configured: true, up: h.ready, model: h.model, version: h.version, error: h.ready ? null : MODEL_LOADING, lastLatencyMs };
       } catch (e) {
         return { configured: true, up: false, model: null, version: null, error: message(e), lastLatencyMs };
       }

@@ -94,6 +94,8 @@ export const healthResultSchema = z.object({
   lastLatencyMs: z.number().nullable(),
 });
 export type HealthResult = z.infer<typeof healthResultSchema>;
+/** `error` of a health result whose server answered but has not finished loading its model. */
+export const MODEL_LOADING = "model loading";
 
 /** Server URL setting: empty (unset) or an absolute http(s) URL. */
 export const SERVER_URL_ERROR = "Enter an http or https URL";

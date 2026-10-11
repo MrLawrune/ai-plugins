@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { DictationLog } from "./dictation-log.ts";
 import { PrefsStore } from "./prefs.ts";
 import { rpcContract } from "./contract.ts";
+import { MODEL_LOADING } from "./schemas.ts";
 import { createRpcHandlers, type RpcDeps } from "./rpc.ts";
 import { SttError, type SttClient } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
@@ -71,6 +72,13 @@ test("health reports not configured without calling the server", async () => {
   const h = await handlers.health();
   assert.equal(h.configured, false);
   assert.equal(h.up, false);
+});
+
+test("health marks a server that answered but is not ready with the shared loading marker", async () => {
+  const { handlers } = await setup({ async health() { return { status: "loading", ready: false, model: "m", version: "1", uptime_s: 1 }; } });
+  const h = await handlers.health();
+  assert.equal(h.up, false);
+  assert.equal(h.error, MODEL_LOADING);
 });
 
 test("health reports server errors as down", async () => {

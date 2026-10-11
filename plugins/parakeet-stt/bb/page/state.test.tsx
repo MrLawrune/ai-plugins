@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { act } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { UP } from "./fixtures.ts";
+import { DOWN, UP } from "./fixtures.ts";
 import { refreshHealth, useHealth } from "./state.ts";
 
 beforeEach(() => vi.useFakeTimers());
@@ -52,15 +52,75 @@ test("the poll stops completely when the last consumer unmounts", async () => {
   expect(healthCalls(view)).toBe(before);
 });
 
-test("a consumer that mounts after others unmounted starts the poll again", async () => {
+test("a consumer that mounts after others unmounted restarts the poll, with one check at most every 5 s", async () => {
   const first = renderSlot({ component: Probe }, { id: "a" }, { rpc: { health: () => UP } });
   await tick(0);
   first.unmount();
   expect(vi.getTimerCount()).toBe(0);
-  const second = renderSlot({ component: Probe }, { id: "a" }, { rpc: { health: () => UP } });
+  // Remounted straight away: the last result is still fresh, so no immediate call.
+  const quick = renderSlot({ component: Probe }, { id: "a" }, { rpc: { health: () => UP } });
   await tick(0);
   expect(vi.getTimerCount()).toBe(1);
-  expect(healthCalls(second)).toBe(1);
+  expect(quick.getByTestId("a").textContent).toBe("up");
+  expect(healthCalls(quick)).toBe(0);
+  await tick(5_000);
+  expect(healthCalls(quick)).toBe(1);
+  quick.unmount();
+  // Remounted after the result went stale: check at once.
+  await tick(5_000);
+  const late = renderSlot({ component: Probe }, { id: "a" }, { rpc: { health: () => UP } });
+  await tick(0);
+  expect(healthCalls(late)).toBe(1);
+});
+
+test("a consumer mounting while a check is in flight still gets its result", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const rpc = { health: async () => { await gate; return UP; } };
+  const a = renderSlot({ component: Probe }, { id: "a" }, { rpc });
+  await tick(0);
+  const b = renderSlot({ component: Probe }, { id: "b" }, { rpc });
+  release();
+  await tick(0);
+  expect(a.getByTestId("a").textContent).toBe("up");
+  expect(b.getByTestId("b").textContent).toBe("up");
+});
+
+test("a consumer that renders just before a result lands is not left on the old value", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const rpc = { health: async () => { await gate; return UP; } };
+  const a = renderSlot({ component: Probe }, { id: "a" }, { rpc });
+  await tick(0);
+  release();
+  await tick(0);
+  // Mounted after the result: initial state and subscription both see it.
+  const b = renderSlot({ component: Probe }, { id: "b" }, { rpc });
+  expect(b.getByTestId("b").textContent).toBe("up");
+  expect(a.getByTestId("a").textContent).toBe("up");
+});
+
+test("refreshHealth during a poll in flight runs one more check after it", async () => {
+  const results = [DOWN, UP];
+  const resolvers: (() => void)[] = [];
+  let n = 0;
+  const view = renderSlot({ component: Probe }, { id: "a" }, {
+    rpc: { health: () => new Promise((r) => { const v = results[n++]!; resolvers.push(() => r(v)); }) },
+  });
+  await tick(0);
+  expect(n).toBe(1);
+  let done = false;
+  void refreshHealth().then(() => { done = true; });
+  await tick(0);
+  expect(n).toBe(1);
+  await act(async () => { resolvers[0]!(); });
+  await tick(0);
+  expect(n).toBe(2);
+  expect(done).toBe(false);
+  await act(async () => { resolvers[1]!(); });
+  await tick(0);
+  expect(done).toBe(true);
+  expect(view.getByTestId("a").textContent).toBe("up");
 });
 
 test("refreshHealth forces one call now without a second timer", async () => {

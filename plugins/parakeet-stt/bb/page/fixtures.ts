@@ -1,4 +1,4 @@
-import type { HealthResult, ServerResult } from "../schemas.ts";
+import { MODEL_LOADING, type HealthResult, type ServerResult } from "../schemas.ts";
 
 export const UP: HealthResult = {
   configured: true, up: true, model: "parakeet-tdt-0.6b", version: "1.4.0", error: null, lastLatencyMs: 320,
@@ -11,3 +11,6 @@ export const DOWN: HealthResult = {
 };
 
 export const SERVER: ServerResult = { serverUrl: "https://stt.example", apiKeySet: false, needsReload: false };
+export const LOADING: HealthResult = {
+  configured: true, up: false, model: "parakeet-tdt-0.6b", version: "1.4.0", error: MODEL_LOADING, lastLatencyMs: null,
+};
