@@ -45,6 +45,7 @@ export default async function plugin(bb: BbPluginApi) {
     migrate: (db, s) => bb.storage.migrate(db, s),
     limits: () => ({ maxEntries: prefs.get().historyMaxEntries, maxAgeDays: prefs.get().historyMaxAgeDays }),
     now: Date.now,
+    warn: (m) => bb.log.warn(m),
   });
   log.init();
   prefs.onChange(() => log.prune());

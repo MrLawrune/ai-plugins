@@ -48,7 +48,10 @@ export function createStreamRelay(deps: {
       if (reported) return;
       reported = true;
       const text = finals.join(" ").trim();
-      if (text) deps.onSession({ text, durationMs: deps.now() - startedAt, deviceId: sessionDevice });
+      if (!text) return;
+      // History is best-effort: a failure here must not stop the socket cleanup around it.
+      try { deps.onSession({ text, durationMs: deps.now() - startedAt, deviceId: sessionDevice }); }
+      catch (e) { deps.log(`dictation history write failed: ${e instanceof Error ? e.message : String(e)}`); }
     };
     const collectFinal = (data: string) => {
       try {
@@ -117,8 +120,8 @@ export function createStreamRelay(deps: {
       },
       onClose() {
         finished = true;
-        report();
         up?.close(1000, "page closed");
+        report();
       },
     };
   };

@@ -96,7 +96,58 @@ test("importLegacy adds entries as oneshot at their own time, newest-first on re
   ]);
 });
 
-test("init is idempotent-safe: migrations run through the injected migrate", () => {
+test("init twice is safe when migrate is a no-op on repeat", () => {
+  const db = new Database(":memory:");
+  let applied = 0;
+  const log = new DictationLog({
+    db: () => db,
+    migrate: (d, stmts) => { if (applied++ === 0) for (const sql of stmts) d.exec(sql); },
+    limits: () => ({ maxEntries: 50, maxAgeDays: 7 }),
+    now: () => 1_800_000_000_000,
+  });
+  log.init();
+  log.add(entry("a"));
+  log.init();
+  assert.deepEqual(log.list().map((e) => e.text), ["a"]);
+});
+
+test("legacy rows imported after newer rows still list and cap by their real time", () => {
+  const { log, now } = setup({ maxEntries: 2, maxAgeDays: 7 });
+  log.add(entry("live1")); now.t += 10;
+  log.add(entry("live2"));
+  log.importLegacy([{ text: "legacy", at: now.t - 5000, durationMs: 1 }]);
+  assert.deepEqual(log.list().map((e) => e.text), ["live2", "live1"]);
+  log.importLegacy([{ text: "legacy2", at: now.t - 4000, durationMs: 1 }]);
+  assert.deepEqual(log.list().map((e) => e.text), ["live2", "live1"]);
+});
+
+test("truncation never splits a surrogate pair", () => {
   const { log } = setup();
+  log.add(entry("x".repeat(3999) + "😀tail"));
+  const text = log.list()[0].text;
+  assert.equal(Array.from(text).length, 4000);
+  assert.equal(text.endsWith("😀"), true);
+});
+
+test("list(0) returns nothing", () => {
+  const { log } = setup();
+  log.add(entry("a"));
+  assert.deepEqual(log.list(0), []);
+});
+
+test("a database error in add or prune is reported, not thrown", () => {
+  const warnings: string[] = [];
+  const db = new Database(":memory:");
+  const log = new DictationLog({
+    db: () => db,
+    migrate: (d, stmts) => { for (const sql of stmts) d.exec(sql); },
+    limits: () => ({ maxEntries: 50, maxAgeDays: 7 }),
+    now: () => 1_800_000_000_000,
+    warn: (m) => warnings.push(m),
+  });
+  log.init();
+  db.close();
   assert.doesNotThrow(() => log.add(entry("a")));
+  assert.doesNotThrow(() => log.prune());
+  assert.equal(warnings.length, 2);
 });

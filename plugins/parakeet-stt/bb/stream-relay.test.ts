@@ -26,14 +26,14 @@ function upstream() {
 
 type Session = { text: string; durationMs: number; deviceId: string | null };
 
-function relay(serverUrl = "https://stt.example", devices: (string | null)[] = [], sessions: Session[] = [], now: () => number = () => 0) {
+function relay(serverUrl = "https://stt.example", devices: (string | null)[] = [], sessions: Session[] = [], now: () => number = () => 0, onSession?: (s: Session) => void) {
   const up = upstream();
   const handler = createStreamRelay({
     config: () => ({ serverUrl, apiKey: "k" }),
     prefs: (device) => { devices.push(device); return { ...DEFAULT_PREFS, customWords: ["tmux"], pauseMs: device === "phone-1" ? 900 : 600 }; },
     connect: (url) => { up.url = url; return up; },
     log: () => {},
-    onSession: (s) => sessions.push(s),
+    onSession: onSession ?? ((s) => { sessions.push(s); }),
     now,
   })();
   return { up, handler };
@@ -183,4 +183,23 @@ test("messages without a final are not JSON-parsed", () => {
     up.onmessage!({ data: '{"type":"ready"}' });
   } finally { JSON.parse = realParse; }
   assert.equal(parses, 0);
+});
+
+test("a failing history write does not stop cleanup: upstream closes and the page still gets ended", () => {
+  const boom = () => { throw new Error("db closed"); };
+  const a = relay("https://stt.example", [], [], () => 0, boom);
+  const p = page();
+  a.handler.onMessage(p, '{"type":"start"}');
+  a.up.onmessage!({ data: '{"type":"final","text":"x"}' });
+  a.up.onmessage!({ data: '{"type":"ended","reason":"stopped"}' });
+  assert.deepEqual(p.sent.map((m) => JSON.parse(m as string).type), ["final", "ended"]);
+  a.up.onclose!({ code: 1000, reason: "" });
+  assert.equal(p.closed, 1000);
+
+  const b = relay("https://stt.example", [], [], () => 0, boom);
+  const p2 = page();
+  b.handler.onMessage(p2, '{"type":"start"}');
+  b.up.onmessage!({ data: '{"type":"final","text":"x"}' });
+  assert.doesNotThrow(() => b.handler.onClose());
+  assert.equal(b.up.closedWith, 1000);
 });
