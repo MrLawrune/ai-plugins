@@ -23,6 +23,16 @@ export interface UpstreamSocket {
 
 const MAX_QUEUED_BYTES = 5 * 16000 * 2; // ~5 s of PCM16
 
+/** The `type` and `text` of an upstream JSON object frame; null for anything else (forwarded, ignored for state). */
+function parseFrame(data: string): { type?: unknown; text?: unknown } | null {
+  try {
+    const v: unknown = JSON.parse(data);
+    return typeof v === "object" && v !== null ? (v as { type?: unknown; text?: unknown }) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createStreamRelay(deps: {
   config(): { serverUrl: string; apiKey: string };
   /** Prefs for the page's device (from its start message; null when it sent none). */
@@ -92,13 +102,6 @@ export function createStreamRelay(deps: {
       try { deps.onSession({ text, durationMs: deps.now() - startedAt, deviceId: sessionDevice }); }
       catch (e) { deps.log(`dictation history write failed: ${e instanceof Error ? e.message : String(e)}`); }
     };
-    const collectFinal = (data: string) => {
-      try {
-        const m = JSON.parse(data) as { type?: unknown; text?: unknown };
-        if (m.type === "final" && typeof m.text === "string" && m.text.trim()) finals.push(m.text.trim());
-      } catch { /* not JSON: nothing to log */ }
-    };
-
     const toPage = (page: PageSocket, msg: object) => { if (page.readyState === 1) page.send(JSON.stringify(msg)); };
     const end = (page: PageSocket, message: string | null) => {
       if (finished) return;
@@ -147,9 +150,13 @@ export function createStreamRelay(deps: {
       };
       sock.onmessage = (ev) => {
         if (typeof ev.data !== "string" || finished) return;
-        if (ev.data.includes('"type":"final"')) collectFinal(ev.data);
-        if (ev.data.includes('"type":"ended"')) { finished = true; stopTimers(); report(); }
-        if (ev.data.includes('"type":"error"')) sawError = true;
+        // Classify by the parsed type, not the text: the server's JSON spacing is its own business.
+        const frame = parseFrame(ev.data);
+        if (frame) {
+          if (frame.type === "final" && typeof frame.text === "string" && frame.text.trim()) finals.push(frame.text.trim());
+          else if (frame.type === "ended") { finished = true; stopTimers(); report(); }
+          else if (frame.type === "error") sawError = true;
+        }
         if (page.readyState === 1) page.send(ev.data);
       };
       sock.onerror = () => deps.log("upstream stream error");

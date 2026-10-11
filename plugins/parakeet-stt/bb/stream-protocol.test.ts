@@ -13,6 +13,11 @@ test("parses known events and rejects junk", () => {
   assert.equal(parseServerEvent(new Uint8Array([1])), null);
 });
 
+test("parses Python-style spaced JSON like compact JSON", () => {
+  assert.deepEqual(parseServerEvent('{"type": "final", "seq": 0, "text": "hi there"}'), { type: "final", seq: 0, text: "hi there" });
+  assert.deepEqual(parseServerEvent('{"type": "ended", "reason": "stopped"}'), { type: "ended", reason: "stopped" });
+});
+
 test("options follow prefs", () => {
   assert.deepEqual(streamOptionsFrom({ ...DEFAULT_PREFS, customWords: ["tmux"] }), {
     pause_ms: 600, silence_timeout_s: null, commands: null, start: [], preview: true,

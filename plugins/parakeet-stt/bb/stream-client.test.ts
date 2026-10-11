@@ -137,6 +137,22 @@ test("a normal stop clears the 30 s stop timer once the server ends the stream",
   assert.deepEqual(log, ["ended:stopped"]);
 });
 
+test("server frames with Python-style spacing are handled like compact ones", async () => {
+  const { env, rec } = build();
+  const log: string[] = [];
+  const h = { ...handlers(log), onFinal: (t: string, seq: number) => log.push(`final:${seq}:${t}`) };
+  const starting = startBrowserStream("ws://x/stream", h, () => {}, () => true, "dev", env);
+  await new Promise((r) => setTimeout(r, 0));
+  const sock = rec.sockets[0];
+  sock.onmessage!({ data: '{"type": "ready"}' });
+  const handle = await starting;
+  sock.onmessage!({ data: '{"type": "final", "seq": 3, "text": "hello world"}' });
+  const stopping = handle.stop();
+  sock.onmessage!({ data: '{"type": "ended", "reason": "stopped"}' });
+  await stopping;
+  assert.deepEqual(log, ["final:3:hello world", "ended:stopped"]);
+});
+
 test("cancel clears a pending stop timer", async () => {
   const { env, rec } = build();
   const starting = start(env);
