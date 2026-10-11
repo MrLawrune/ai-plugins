@@ -182,3 +182,75 @@ test("Enter in the API key field saves it", async () => {
   fireEvent.keyDown(key, { key: "Enter" });
   await waitFor(() => expect(calls(view, "setServer")).toEqual([{ apiKey: "abc123" }]));
 });
+
+/** A promise and its resolver, to hold an RPC answer until the test says so. */
+const gate = () => {
+  let open!: () => void;
+  const opened = new Promise<void>((r) => { open = r; });
+  return { opened, open };
+};
+
+test("typing while a URL save is pending keeps the newer input and saves it next", async () => {
+  const g = gate();
+  const { view } = await settings({
+    setServer: async ({ serverUrl }: { serverUrl: string }) => { if (serverUrl === "http://one.example") await g.opened; return { ...SERVER, serverUrl }; },
+  });
+  const url = (await screen.findByLabelText("Server URL")) as HTMLInputElement;
+  await waitFor(() => expect(url.value).toBe("https://stt.example"));
+  fireEvent.change(url, { target: { value: "http://one.example" } });
+  fireEvent.blur(url);
+  fireEvent.change(url, { target: { value: "http://two.example" } });
+  g.open();
+  await new Promise((r) => setTimeout(r, 30));
+  expect(url.value).toBe("http://two.example");
+  fireEvent.blur(url);
+  await waitFor(() => expect(calls(view, "setServer")).toEqual([{ serverUrl: "http://one.example" }, { serverUrl: "http://two.example" }]));
+  await waitFor(() => expect(url.value).toBe("http://two.example"));
+});
+
+test("an older save that completes last does not replace the newer result", async () => {
+  const first = gate();
+  const { view } = await settings({
+    setServer: async ({ serverUrl }: { serverUrl: string }) => { if (serverUrl === "http://one.example") await first.opened; return { ...SERVER, serverUrl }; },
+  });
+  const url = (await screen.findByLabelText("Server URL")) as HTMLInputElement;
+  await waitFor(() => expect(url.value).toBe("https://stt.example"));
+  fireEvent.change(url, { target: { value: "http://one.example" } });
+  fireEvent.blur(url);
+  fireEvent.change(url, { target: { value: "http://two.example" } });
+  fireEvent.blur(url);
+  await waitFor(() => expect(calls(view, "setServer")).toHaveLength(2));
+  first.open();
+  await new Promise((r) => setTimeout(r, 30));
+  expect(url.value).toBe("http://two.example");
+  fireEvent.blur(url);
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls(view, "setServer")).toHaveLength(2); // the saved URL is still the newer one: nothing to save
+});
+
+test("the initial getServer answering after a key save does not bring back Not set", async () => {
+  const g = gate();
+  await settings({
+    getServer: async () => { await g.opened; return SERVER; },
+    setServer: () => ({ ...SERVER, apiKeySet: true }),
+  });
+  const key = (await screen.findByLabelText("API key")) as HTMLInputElement;
+  fireEvent.change(key, { target: { value: "abc123" } });
+  fireEvent.keyDown(key, { key: "Enter" });
+  await waitFor(() => expect(key.placeholder).toBe("Set"));
+  g.open();
+  await new Promise((r) => setTimeout(r, 30));
+  expect(key.placeholder).toBe("Set");
+});
+
+test("a key save that completes clears only the key text it sent", async () => {
+  const g = gate();
+  await settings({ setServer: async () => { await g.opened; return { ...SERVER, apiKeySet: true }; } });
+  const key = (await screen.findByLabelText("API key")) as HTMLInputElement;
+  fireEvent.change(key, { target: { value: "abc" } });
+  fireEvent.keyDown(key, { key: "Enter" });
+  fireEvent.change(key, { target: { value: "abcdef" } });
+  g.open();
+  await waitFor(() => expect(key.placeholder).toBe("Set"));
+  expect(key.value).toBe("abcdef");
+});

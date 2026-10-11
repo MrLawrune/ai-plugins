@@ -26,28 +26,31 @@ export function ServerSettings() {
   const [checking, setChecking] = useState(false);
   /** The URL last sent or loaded, so Enter followed by blur saves once. */
   const sentUrl = useRef<string | null>(null);
+  /** Counts edits of the URL field: a response never replaces the field after the user typed again. */
+  const urlEdits = useRef(0);
+  /** Numbers the requests that return server info; only the newest one to have answered is shown. */
+  const requestSeq = useRef(0);
+  const shownSeq = useRef(0);
 
-  /** The user has typed in the URL field, so a late load must not replace it. */
-  const urlTouched = useRef(false);
-
-  const adopt = useCallback((next: ServerResult) => {
+  /**
+   * Show a response unless a newer request already answered. The URL field follows it only when
+   * `urlEditsAtSend` says the user has not typed since (null: this response is not about the URL).
+   */
+  const adopt = useCallback((seq: number, next: ServerResult, urlEditsAtSend: number | null): boolean => {
+    if (seq < shownSeq.current) return false;
+    shownSeq.current = seq;
     sentUrl.current = next.serverUrl;
     setServerInfo(next);
-    setUrl(next.serverUrl);
+    if (urlEditsAtSend !== null && urlEdits.current === urlEditsAtSend) setUrl(next.serverUrl);
+    return true;
   }, []);
 
   useEffect(() => {
     let live = true;
+    const seq = ++requestSeq.current;
+    const edits = urlEdits.current;
     rpc.call("getServer").then(
-      (s) => {
-        if (!live) return;
-        if (urlTouched.current) {
-          sentUrl.current = s.serverUrl;
-          setServerInfo(s);
-        } else {
-          adopt(s);
-        }
-      },
+      (s) => { if (live) adopt(seq, s, edits); },
       (cause) => { if (live) setUrlError(errorText(cause)); },
     );
     return () => { live = false; };
@@ -66,20 +69,22 @@ export function ServerSettings() {
     }
     sentUrl.current = parsed.data;
     setUrlError(null);
+    const seq = ++requestSeq.current;
+    const edits = urlEdits.current;
     try {
-      adopt(await rpc.call("setServer", { serverUrl: parsed.data }));
-      void refreshHealth();
+      if (adopt(seq, await rpc.call("setServer", { serverUrl: parsed.data }), edits)) void refreshHealth();
     } catch (cause) {
-      sentUrl.current = server?.serverUrl ?? null;
+      if (sentUrl.current === parsed.data) sentUrl.current = server?.serverUrl ?? null;
       setUrlError(errorText(cause));
     }
   };
 
   const saveKey = async (apiKey: string | null) => {
     setKeyError(null);
+    const seq = ++requestSeq.current;
     try {
-      setServerInfo(await rpc.call("setServer", { apiKey }));
-      setKey("");
+      adopt(seq, await rpc.call("setServer", { apiKey }), null);
+      setKey((now) => (apiKey === null || now.trim() === apiKey ? "" : now)); // keep text typed since this save went out
       void refreshHealth();
     } catch (cause) {
       setKeyError(errorText(cause));
@@ -115,7 +120,7 @@ export function ServerSettings() {
           placeholder="https://"
           value={url}
           aria-invalid={urlError !== null}
-          onChange={(e) => { urlTouched.current = true; setUrl(e.target.value); setUrlError(null); }}
+          onChange={(e) => { urlEdits.current++; setUrl(e.target.value); setUrlError(null); }}
           onBlur={() => void saveUrl()}
           onKeyDown={(e) => { if (e.key === "Enter") void saveUrl(); }}
         />

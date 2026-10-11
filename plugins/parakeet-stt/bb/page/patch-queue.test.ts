@@ -106,3 +106,55 @@ test("a failed batch followed by a successful one in the same drain still ends i
   assert.deepEqual(sent, [{ speed: 1.4 }, { mode: "full" }, { speed: 1.4 }]);
   assert.equal(h.last().kind, "saved");
 });
+
+/** A queue whose first send waits for `release()` and then throws; later sends succeed. */
+function failFirstThenSucceed() {
+  const sent: Partial<P>[] = [];
+  const states: SaveState[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  const q = createPatchQueue<P, Partial<P>>({
+    send: async (p) => { sent.push(p); if (sent.length === 1) { await gate; throw new Error("server busy"); } return p; },
+    onCommitted: () => {}, onFailed: () => {}, onState: (s) => states.push(s),
+  });
+  return { q, sent, states, release, last: () => states.at(-1)! };
+}
+
+test("a failed value that a later value for the same key replaced and saved leaves no Retry", async () => {
+  const f = failFirstThenSucceed();
+  f.q.set({ speed: 1.4 });
+  f.q.set({ speed: 0.9 }); // supersedes the in-flight value
+  f.release();
+  await f.q.flush();
+  assert.deepEqual(f.sent, [{ speed: 1.4 }, { speed: 0.9 }]);
+  assert.equal(f.last().kind, "saved");
+});
+
+test("a Retry offered earlier is a no-op once a later value for its key saved", async () => {
+  const f = failFirstThenSucceed();
+  f.q.set({ speed: 1.4 });
+  f.release();
+  await f.q.flush();
+  const retry = (f.last() as Extract<SaveState, { kind: "error" }>).retry;
+  f.q.set({ speed: 0.9 });
+  await f.q.flush();
+  assert.equal(f.last().kind, "saved");
+  retry();
+  await f.q.flush();
+  assert.deepEqual(f.sent, [{ speed: 1.4 }, { speed: 0.9 }]);
+});
+
+test("a partly superseded batch stays in error and Retry sends only the keys still failed, with their latest values", async () => {
+  const f = failFirstThenSucceed();
+  f.q.set({ speed: 1.4, mode: "full" });
+  f.q.set({ speed: 0.9 });
+  f.release();
+  await f.q.flush();
+  assert.deepEqual(f.sent, [{ speed: 1.4, mode: "full" }, { speed: 0.9 }]);
+  const s = f.last();
+  assert.equal(s.kind, "error");
+  if (s.kind === "error") s.retry();
+  await f.q.flush();
+  assert.deepEqual(f.sent.slice(2), [{ mode: "full" }]);
+  assert.equal(f.last().kind, "saved");
+});
