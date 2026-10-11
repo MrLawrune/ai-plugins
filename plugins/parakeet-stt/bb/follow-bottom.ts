@@ -10,5 +10,6 @@ export function followBottom(el: HTMLElement, signal: AbortSignal): void {
   el.addEventListener("scroll", () => { stick = nearBottom(el); }, { passive: true, signal });
   const mo = new MutationObserver(() => { if (stick) el.scrollTop = el.scrollHeight; });
   mo.observe(el, { childList: true, subtree: true, characterData: true });
+  el.scrollTop = el.scrollHeight; // the write that re-attached us may already be in the editor
   signal.addEventListener("abort", () => mo.disconnect(), { once: true });
 }

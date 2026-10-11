@@ -7,41 +7,12 @@ import { followBottom } from "../follow-bottom.ts";
 import { DEFAULT_PREFS } from "../prefs.ts";
 import { setDictationPrefs } from "../dictation-prefs.ts";
 import { makeTarget, runDictation } from "./target.ts";
+import { fakeComposer, pill } from "./test-composer.ts";
 
 vi.mock("../follow-bottom.ts", () => ({ followBottom: vi.fn() }));
 
 // the real tracker reads the DOM selection; tests script the caret instead
 vi.mock("../caret-tracker.ts", () => ({ notePluginEdit: vi.fn(), takeCaret: vi.fn(() => null) }));
-
-type Mention = { from: number; to: number; label: string; kind: "project"; projectId: string };
-const pill = (from: number, to: number): Mention => ({ from, to, label: "Alex", kind: "project", projectId: "p" });
-
-/** The slice of PluginComposerApi the target uses, over an in-memory draft. */
-function fakeComposer(text: string, mentions: Mention[] = [], key = "k1") {
-  const state = { text, mentions, blocked: false, reason: null as string | null, closed: false, layout: "expanded" as "compact" | "expanded" };
-  const lock: boolean[] = [];
-  const submit = vi.fn(async (_options: unknown) => {});
-  const api = {
-    key,
-    get layout() { return state.layout; },
-    get text() { return state.text; },
-    get draft() { return { text: state.text, mentions: state.mentions, attachments: [] }; },
-    get isSubmittingBlocked() { return state.blocked; },
-    get submittingBlockedReason() { return state.reason; },
-    replace(next: (cur: unknown) => { text: string; mentions: Mention[] }) {
-      if (state.closed) throw new Error("This composer is no longer available.");
-      const cur = api.draft;
-      const r = next(cur);
-      if (r !== cur) { state.text = r.text; state.mentions = r.mentions; }
-    },
-    setInputLock: (on: boolean) => {
-      if (state.closed) throw new Error("This composer is no longer available.");
-      lock.push(on);
-    },
-    submit,
-  };
-  return { api: api as unknown as PluginComposerApi, state, lock, submit };
-}
 
 let handlers: StreamHandlers;
 const told = vi.fn();
@@ -106,6 +77,49 @@ test("an edit that lands on a mention stops dictation with a toast and leaves th
   expect(c.state.text).toBe("@Alex hi foo");
   expect(c.state.mentions).toEqual([pill(0, 5), pill(9, 12)]);
   expect(c.lock.at(-1)).toBe(false);
+});
+
+test("another writer editing the dictated range ends the session instead of re-appending", async () => {
+  const c = fakeComposer("base");
+  const notify = vi.fn();
+  register(makeTarget("k1", () => c.api, notify));
+  await controller.start("k1");
+  handlers.onPartial("hello", 1);
+  expect(c.state.text).toBe("base hello");
+  c.state.text = "base edited"; // another draft writer changed the live range
+  handlers.onPartial("hello world", 2);
+  expect(notify).toHaveBeenCalledWith("The draft changed under dictation; dictation stopped.", "error");
+  expect(controller.snapshot().phase).toBe("idle");
+  expect(c.state.text).toBe("base edited");
+  expect(c.lock.at(-1)).toBe(false);
+});
+
+test("an anchored session whose live text moved away from its anchor also stops", async () => {
+  const c = fakeComposer("abc");
+  vi.mocked(takeCaret).mockReturnValueOnce({ start: 1, end: 1 });
+  const notify = vi.fn();
+  register(makeTarget("k1", () => c.api, notify));
+  await controller.start("k1");
+  handlers.onPartial("mid", 1);
+  expect(c.state.text).toBe("a mid bc");
+  c.state.text = "XX a mid bc"; // text inserted before the anchor shifts the live range
+  handlers.onPartial("middle", 2);
+  expect(notify).toHaveBeenCalledWith("The draft changed under dictation; dictation stopped.", "error");
+  expect(c.state.text).toBe("XX a mid bc");
+});
+
+test("a draft that was sent or cleared while a partial showed still drops the rest of that phrase", async () => {
+  const c = fakeComposer("");
+  const notify = vi.fn();
+  register(makeTarget("k1", () => c.api, notify));
+  await controller.start("k1");
+  handlers.onPartial("hello", 1);
+  c.state.text = ""; // the draft was sent
+  handlers.onPartial("hello there", 1);
+  handlers.onFinal("hello there.", 1);
+  expect(c.state.text).toBe("");
+  expect(notify).not.toHaveBeenCalled();
+  expect(controller.snapshot().phase).toBe("streaming");
 });
 
 test("after a conflict the session cannot auto-send a draft that lacks the dictated text", async () => {
@@ -228,6 +242,7 @@ test("a composer that closes mid-session ends the session cleanly and nothing la
   expect(c1.state.text).toBe("one foo");
   c1.state.closed = true; // the composer unmounts; its target unregisters
   off1();
+  await new Promise((r) => setTimeout(r, 50)); // the controller judges a closed composer after a frame
   expect(told).toHaveBeenCalledWith("info", "The composer closed; dictation stopped.");
   expect(controller.snapshot().phase).toBe("idle");
   expect(() => handlers.onPartial("foo bar", 2)).not.toThrow();
@@ -280,80 +295,4 @@ test("a failed write does not disable the composer for later sessions", () => {
   t.setLive("hello", 1);
   t.commitLive("hello.", 1);
   expect(c.state.text).toBe("hi hello.");
-});
-
-// Follow-bottom exists only while a session writes into a compact composer.
-function compactEditor(): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.setAttribute("data-promptbox-compact-content", "");
-  wrap.innerHTML = '<div class="ProseMirror" contenteditable="true"></div>';
-  document.body.appendChild(wrap);
-  return wrap.querySelector<HTMLElement>(".ProseMirror")!;
-}
-const followed = () => vi.mocked(followBottom).mock.calls;
-
-afterEach(() => {
-  document.body.innerHTML = "";
-  vi.mocked(followBottom).mockClear();
-  setDictationPrefs(DEFAULT_PREFS);
-});
-
-test("no session, no follow: nothing attaches before begin or after end", () => {
-  const editor = compactEditor();
-  const c = fakeComposer("hi");
-  c.state.layout = "compact";
-  const t = makeTarget("k1", () => c.api, vi.fn());
-  t.setLive("x", 1);
-  expect(followBottom).not.toHaveBeenCalled();
-  t.begin();
-  expect(followed().map((a) => a[0])).toEqual([editor]);
-  t.end();
-  expect(followed()[0]![1].aborted).toBe(true);
-  t.commitLive("later", 2);
-  expect(followBottom).toHaveBeenCalledTimes(1);
-});
-
-test("a session in a compact composer follows once across partials and finals", () => {
-  const editor = compactEditor();
-  const c = fakeComposer("");
-  c.state.layout = "compact";
-  const t = makeTarget("k1", () => c.api, vi.fn());
-  t.begin();
-  t.setLive("hel", 1);
-  t.setLive("hello", 1);
-  t.commitLive("hello.", 1);
-  t.appendText("more");
-  expect(followed()).toHaveLength(1);
-  expect(followed()[0]![0]).toBe(editor);
-  t.end();
-});
-
-test("an expanded composer or expandCompactDraft off follows nothing", () => {
-  compactEditor();
-  const c = fakeComposer("");
-  const t = makeTarget("k1", () => c.api, vi.fn());
-  t.begin();
-  t.commitLive("hi", 1);
-  t.end();
-  c.state.layout = "compact";
-  setDictationPrefs({ ...DEFAULT_PREFS, expandCompactDraft: false });
-  t.begin();
-  t.commitLive("hi", 2);
-  t.end();
-  expect(followBottom).not.toHaveBeenCalled();
-});
-
-test("an editor replaced mid-session is followed again on the next write", () => {
-  const first = compactEditor();
-  const c = fakeComposer("");
-  c.state.layout = "compact";
-  const t = makeTarget("k1", () => c.api, vi.fn());
-  t.begin();
-  first.closest("[data-promptbox-compact-content]")!.remove();
-  const second = compactEditor();
-  t.setLive("x", 1);
-  expect(followed().map((a) => a[0])).toEqual([first, second]);
-  expect(followed()[0]![1].aborted).toBe(true);
-  t.end();
-  expect(followed()[1]![1].aborted).toBe(true);
 });

@@ -40,6 +40,11 @@ test("content added under the element keeps it pinned to the bottom", async () =
   expect(top).toBe(200);
 });
 
+test("attaching scrolls to the bottom once, so a write made just before it is visible", () => {
+  followBottom(el, new AbortController().signal);
+  expect(top).toBe(200);
+});
+
 test("after the user scrolls up, new content no longer moves it", async () => {
   followBottom(el, new AbortController().signal);
   top = 0;
@@ -52,8 +57,9 @@ test("after the user scrolls up, new content no longer moves it", async () => {
 test("aborting stops following", async () => {
   const ctl = new AbortController();
   followBottom(el, ctl.signal);
+  top = 50;
   ctl.abort();
   el.append(document.createElement("p"));
   await tick();
-  expect(top).toBe(0);
+  expect(top).toBe(50);
 });

@@ -29,3 +29,20 @@ test("a failed hello does not poison later mounts", async () => {
   await ensureHello(rpc);
   expect(call).toHaveBeenCalledTimes(2);
 });
+
+test("the preflight reports an unset server URL and stops asking once a URL is set", async () => {
+  const { createDictationDeps, SERVER_NOT_SET } = await import("./hooks.ts");
+  const call = vi.fn().mockResolvedValueOnce({ serverUrl: "  " }).mockResolvedValue({ serverUrl: "https://stt.example" });
+  const deps = createDictationDeps(rpcWith(call));
+  expect(await deps.preflight!()).toBe(SERVER_NOT_SET);
+  expect(await deps.preflight!()).toBeNull();
+  expect(await deps.preflight!()).toBeNull();
+  expect(call).toHaveBeenCalledTimes(2);
+  expect(call).toHaveBeenCalledWith("getServer", null);
+});
+
+test("a failing getServer does not block dictation", async () => {
+  const { createDictationDeps } = await import("./hooks.ts");
+  const deps = createDictationDeps(rpcWith(vi.fn().mockRejectedValue(new Error("backend down"))));
+  expect(await deps.preflight!()).toBeNull();
+});

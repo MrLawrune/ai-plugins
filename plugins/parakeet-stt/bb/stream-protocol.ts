@@ -18,6 +18,14 @@ const serverEventSchema = z.discriminatedUnion("type", [
 export type ServerEvent = z.infer<typeof serverEventSchema>;
 export type CommandName = Extract<ServerEvent, { type: "command" }>["name"];
 
+/** A stream that failed to start for a reason the server side reported (not configured, unreachable, busy, refused). One-shot cannot help then. */
+export class StreamServerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StreamServerError";
+  }
+}
+
 export function parseServerEvent(data: unknown): ServerEvent | null {
   if (typeof data !== "string") return null;
   try {

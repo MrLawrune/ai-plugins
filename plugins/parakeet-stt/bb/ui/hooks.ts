@@ -30,13 +30,23 @@ export function ensureHello(rpc: Rpc): Promise<void> {
   return hello;
 }
 
-let configured = false;
+export const SERVER_NOT_SET = "The Parakeet server URL is not set. Set it in Settings → Plugins → Parakeet STT.";
 
-function configureController(rpc: Rpc): void {
-  if (configured) return;
-  configured = true;
+/** The controller's browser deps: mic, the plugin's RPC and stream socket, sounds and toasts. */
+export function createDictationDeps(rpc: Rpc): DictationDeps {
   let recordingMime = "audio/webm";
-  const deps: DictationDeps = {
+  let serverSet = false;
+  return {
+    // A session cannot succeed without a server URL: say so before the mic opens. Once seen set, no more asking.
+    preflight: async () => {
+      if (serverSet) return null;
+      try {
+        serverSet = (await rpc.call("getServer", null)).serverUrl.trim() !== "";
+      } catch {
+        return null; // the real request will report whatever is wrong
+      }
+      return serverSet ? null : SERVER_NOT_SET;
+    },
     startRecording: async (onInterrupt) => {
       const handle = await startBrowserRecording(onInterrupt, () => prefsNow().keepListeningHidden);
       recordingMime = handle.mimeType;
@@ -59,7 +69,14 @@ function configureController(rpc: Rpc): void {
     notify: (kind, message) => toastNotify(message, kind),
     now: Date.now,
   };
-  controller.configure(deps);
+}
+
+let configured = false;
+
+function configureController(rpc: Rpc): void {
+  if (configured) return;
+  configured = true;
+  controller.configure(createDictationDeps(rpc));
 }
 
 /** Configures the shared controller (and says hello) once per page load, from the first composer surface. */

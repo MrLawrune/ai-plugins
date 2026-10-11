@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { notePluginEdit, takeCaret } from "../caret-tracker.ts";
 import { appendDictation, COMPOSER_CLOSED, controller, type Target } from "../dictation.ts";
 import { dictationPrefs } from "../dictation-prefs.ts";
-import { applyLive, beginAt, liveState } from "../draft-tail.ts";
+import { applyLive, beginAt, liveState, tailMoved } from "../draft-tail.ts";
 import { applyTextEdit } from "../draft-edit.ts";
 import { createSessionFollow } from "./session-follow.ts";
 
@@ -85,6 +85,12 @@ export function makeTarget(key: string, composer: () => PluginComposerApi, notif
     let conflict = false;
     const at = liveState.get().anchor;
     const done = write((cur) => {
+      if (tailMoved(cur.text, liveState.get())) {
+        // someone else rewrote the dictated range: appending again would duplicate it
+        conflict = true;
+        liveState.set(NOT_DICTATING);
+        return cur;
+      }
       const next = fn(cur.text);
       const r = applyTextEdit(cur, next, at ?? cur.text.length);
       if (r === null) {

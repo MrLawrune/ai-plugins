@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { StreamHandlers } from "./dictation.ts";
 import { startBrowserStream, type StreamEnv } from "./stream-client.ts";
+import { StreamServerError } from "./stream-protocol.ts";
 
 type Fail = "AudioContext" | "addModule" | "createMediaStreamSource" | "AudioWorkletNode" | "WebSocket";
 
@@ -178,4 +179,20 @@ test("cancel clears a pending stop timer", async () => {
     globalThis.clearTimeout = realClear;
   }
   assert.ok(cleared.includes(stopTimers[0]), "stop timer was left pending");
+});
+
+test("a failure the server reported before ready is a StreamServerError; a browser-side one is not", async () => {
+  const a = build();
+  const reported = start(a.env);
+  await new Promise((r) => setTimeout(r, 0));
+  a.rec.sockets[0].emit({ type: "error", message: "Parakeet STT server URL is not set" });
+  await assert.rejects(reported, (e: Error) => e instanceof StreamServerError && e.message === "Parakeet STT server URL is not set");
+
+  const b = build();
+  const closed = start(b.env);
+  await new Promise((r) => setTimeout(r, 0));
+  b.rec.sockets[0].onclose!();
+  await assert.rejects(closed, (e: Error) => e instanceof StreamServerError);
+
+  await assert.rejects(start(build("addModule").env), (e: Error) => !(e instanceof StreamServerError) && /addModule failed/.test(e.message));
 });

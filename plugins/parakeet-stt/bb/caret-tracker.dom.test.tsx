@@ -78,3 +78,33 @@ test("the last caret survives focus loss", () => {
   expect(live()).toEqual(["focusin", "focusout"]);
   expect(takeCaret("hi")).toEqual({ start: 2, end: 2 });
 });
+
+const full = ["focusin", "focusout", "keyup", "pointerup", "selectionchange"];
+
+test("removing the focused editor and then focusing elsewhere releases the caret listeners", () => {
+  trackCaret(ctl.signal);
+  editor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  expect(live()).toEqual(full);
+  editor.closest("form")!.remove(); // the composer closed under the focus: no focusout reaches us
+  outside.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  expect(live()).toEqual(["focusin", "focusout"]);
+});
+
+test("a selection change after the focused editor was removed releases them too", () => {
+  trackCaret(ctl.signal);
+  editor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  editor.closest("form")!.remove();
+  document.dispatchEvent(new Event("selectionchange"));
+  expect(live()).toEqual(["focusin", "focusout"]);
+});
+
+test("a selection outside any editor releases them only once focus has left the editor", () => {
+  trackCaret(ctl.signal);
+  editor.focus();
+  editor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  document.dispatchEvent(new Event("selectionchange")); // focus is still in the editor: keep listening
+  expect(live()).toEqual(full);
+  outside.focus();
+  document.dispatchEvent(new Event("selectionchange"));
+  expect(live()).toEqual(["focusin", "focusout"]);
+});

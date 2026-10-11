@@ -2,7 +2,7 @@
 import { guardCapture } from "./capture-guard.ts";
 import type { Interruption, StreamHandle, StreamHandlers } from "./dictation.ts";
 import { Resampler16k } from "./pcm.ts";
-import { parseServerEvent } from "./stream-protocol.ts";
+import { parseServerEvent, StreamServerError } from "./stream-protocol.ts";
 import { WORKLET_SOURCE } from "./worklet.ts";
 
 const READY_TIMEOUT_MS = 5000;
@@ -60,14 +60,14 @@ export async function startBrowserStream(url: string, h: StreamHandlers, onInter
     socket.binaryType = "arraybuffer";
 
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { socket.close(); release(); reject(new Error("stream did not become ready")); }, READY_TIMEOUT_MS);
+      const timer = setTimeout(() => { socket.close(); release(); reject(new StreamServerError("Dictation stream did not become ready")); }, READY_TIMEOUT_MS);
       socket.onopen = () => socket.send(JSON.stringify({ type: "start", device }));
       socket.onmessage = (ev) => {
         const e = parseServerEvent(ev.data);
         if (!e) return;
         if (!ready) {
           if (e.type === "ready") { ready = true; clearTimeout(timer); resolve(); return; }
-          if (e.type === "error") { clearTimeout(timer); socket.close(); release(); reject(new Error(e.message)); }
+          if (e.type === "error") { clearTimeout(timer); socket.close(); release(); reject(new StreamServerError(e.message)); }
           return;
         }
         switch (e.type) {
@@ -81,7 +81,7 @@ export async function startBrowserStream(url: string, h: StreamHandlers, onInter
         }
       };
       socket.onclose = () => {
-        if (!ready) { clearTimeout(timer); release(); reject(new Error("stream connection failed")); return; }
+        if (!ready) { clearTimeout(timer); release(); reject(new StreamServerError("Dictation stream connection failed")); return; }
         if (!ended) { ended = true; release(); h.onError("Dictation stream closed unexpectedly"); h.onEnded("error"); onEnd?.(); }
       };
     });
