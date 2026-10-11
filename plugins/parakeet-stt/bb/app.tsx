@@ -3,7 +3,7 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { controller } from "./dictation.ts";
 import { liveRange, liveState } from "./draft-tail.ts";
-import { ParakeetPage } from "./page/parakeet-page.tsx";
+import { ParakeetHeader, ParakeetPanel } from "./page/panel.tsx";
 import { ServerSettings } from "./page/server-settings.tsx";
 import { mountCaret, mountCompactDraft, mountNativeMic, mountShortcuts } from "./ui/content-scripts.ts";
 import { FloatingMic } from "./ui/floating-mic.tsx";
@@ -49,7 +49,14 @@ export default definePluginApp((app) => {
 
   app.slots.experimental_appOverlay({ id: "floating-mic", component: FloatingMic });
 
-  app.slots.navPanel({ id: "parakeet-stt", title: "Parakeet STT", icon: "Mic", path: "parakeet", component: ParakeetPage });
+  app.slots.navPanel({
+    id: "parakeet-stt",
+    title: "Dictation",
+    icon: "Mic",
+    path: "parakeet",
+    component: ParakeetPanel,
+    headerContent: ParakeetHeader,
+  });
 
   app.slots.settingsSection({
     id: "server",
