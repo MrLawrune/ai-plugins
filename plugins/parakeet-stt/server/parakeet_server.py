@@ -27,24 +27,39 @@ LOCK = web.AppKey("lock", asyncio.Lock)
 STARTED = web.AppKey("started", float)
 LOADER = web.AppKey("loader", asyncio.Task)
 VAD_FACTORY = web.AppKey("vad_factory", object)
+WAITING = web.AppKey("waiting", list)  # one-item list: finals queued on the inference slot
 
 
 class Busy(Exception):
     pass
 
 
+def _release_abandoned(fut: asyncio.Future, lock: asyncio.Lock) -> None:
+    """The worker thread of a cancelled request has ended: log its failure, free the slot."""
+    try:
+        if not fut.cancelled() and (exc := fut.exception()) is not None:
+            log.warning("transcription failed after its request was cancelled: %s", exc)
+    finally:
+        lock.release()
+
+
 async def run_transcription(app: web.Application, audio, *, partial: bool) -> str | None:
     """Serialize inference. Partials never wait: they return None if the model is busy."""
     lock, cfg, engine = app[LOCK], app[CFG], app[ENGINE]
     if partial:
-        if lock.locked():
+        # True try-acquire: a queued final counts as busy, because release() hands the
+        # lock to it before it resumes and locked() is briefly False in between.
+        if lock.locked() or app[WAITING][0]:
             return None
         await lock.acquire()
     else:
+        app[WAITING][0] += 1
         try:
             await asyncio.wait_for(lock.acquire(), timeout=cfg.queue_timeout_s)
         except TimeoutError as exc:
             raise Busy() from exc
+        finally:
+            app[WAITING][0] -= 1
     # The slot is held until the worker thread ends, even if this request is cancelled
     # mid-flight: cancelling the await does not stop the thread, so releasing now would
     # let a second inference run alongside it. The shield keeps `fut` pending until the
@@ -55,7 +70,7 @@ async def run_transcription(app: web.Application, audio, *, partial: bool) -> st
         return await asyncio.shield(fut)
     except asyncio.CancelledError:
         handed_off = True
-        fut.add_done_callback(lambda done: (done.cancelled() or done.exception(), lock.release()))
+        fut.add_done_callback(lambda done: _release_abandoned(done, lock))
         raise
     finally:
         if not handed_off:
@@ -228,6 +243,7 @@ async def stream(request: web.Request) -> web.WebSocketResponse:
 def create_app(cfg: ServerConfig, engine, *, load_in_background: bool = True, vad_factory=None) -> web.Application:
     app = web.Application(client_max_size=cfg.max_upload_bytes, middlewares=[errors_and_auth])
     app[CFG], app[ENGINE], app[LOCK], app[STARTED] = cfg, engine, asyncio.Lock(), time.time()
+    app[WAITING] = [0]
     app.router.add_get("/health", health)
     app.router.add_get("/v1/models", models)
     app.router.add_post("/v1/audio/transcriptions", transcriptions)
