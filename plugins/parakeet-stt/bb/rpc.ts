@@ -6,6 +6,9 @@ import type { SttClient } from "./stt-client.ts";
 
 export const TRANSCRIBE_TIMEOUT_MS = 120_000;
 
+/** Duration of the latest transcription (one-shot or voice button), for the health readout. */
+export interface Latency { ms: number | null }
+
 export interface RpcDeps {
   client: () => SttClient;
   configured: () => boolean;
@@ -22,27 +25,31 @@ export interface RpcDeps {
   };
   /** Aborts when the plugin unloads; cancels in-flight transcriptions. */
   signal: AbortSignal;
+  /** Keeps a transcription in the plugin load's in-flight set, so disposal waits for it. */
+  track?: <T>(work: Promise<T>) => Promise<T>;
+  latency?: Latency;
 }
 
 const message = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
 export function createRpcHandlers(deps: RpcDeps) {
-  let lastLatencyMs: number | null = null;
+  const latency = deps.latency ?? { ms: null };
+  const track = deps.track ?? (<T>(work: Promise<T>) => work);
   const serverResult = (): ServerResult => {
     const { serverUrl, apiKey } = deps.server.get();
     return { serverUrl, apiKeySet: !!apiKey, needsReload: deps.server.needsConfiguration && serverUrl.trim() !== "" };
   };
   return {
     async health(): Promise<HealthResult> {
-      if (!deps.configured()) return { configured: false, up: false, model: null, version: null, error: null, lastLatencyMs };
+      if (!deps.configured()) return { configured: false, up: false, model: null, version: null, error: null, lastLatencyMs: latency.ms };
       try {
         const h = await deps.client().health();
-        return { configured: true, up: h.ready, model: h.model, version: h.version, error: h.ready ? null : MODEL_LOADING, lastLatencyMs };
+        return { configured: true, up: h.ready, model: h.model, version: h.version, error: h.ready ? null : MODEL_LOADING, lastLatencyMs: latency.ms };
       } catch (e) {
-        return { configured: true, up: false, model: null, version: null, error: message(e), lastLatencyMs };
+        return { configured: true, up: false, model: null, version: null, error: message(e), lastLatencyMs: latency.ms };
       }
     },
-    async transcribe(input: { audioBase64: string; mimeType: string; filename: string }) {
+    transcribe: (input: { audioBase64: string; mimeType: string; filename: string }) => track((async () => {
       const p = deps.prefs.get();
       const started = deps.now();
       const text = await deps.client().transcribe(Buffer.from(input.audioBase64, "base64"), input.mimeType, input.filename, {
@@ -52,11 +59,12 @@ export function createRpcHandlers(deps: RpcDeps) {
         timeoutMs: TRANSCRIBE_TIMEOUT_MS,
         signal: deps.signal,
       });
+      if (deps.signal.aborted) throw new Error("Parakeet STT is restarting");
       const durationMs = deps.now() - started;
-      lastLatencyMs = durationMs;
+      latency.ms = durationMs;
       deps.history.add({ text, durationMs, source: "oneshot", deviceId: null });
       return { text, durationMs };
-    },
+    })()),
     async hello(input: { deviceId: string; name: string; kind: DeviceKind }) {
       const device = await deps.prefs.hello(input.deviceId, input.name, input.kind, deps.now());
       return { device, prefs: deps.prefs.get(device.profileId) };

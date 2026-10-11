@@ -69,3 +69,60 @@ test("an unreadable settings row loads read-only defaults and never writes over 
   assert.equal(next.autoSubmit, true);
   await fake.dispose();
 });
+
+/** Runs `body` with `fetch` replaced by one that never answers until its request signal aborts. */
+async function withHangingFetch(body: (seen: AbortSignal[]) => Promise<void>): Promise<void> {
+  const real = globalThis.fetch;
+  const seen: AbortSignal[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    seen.push(init!.signal!);
+    return new Promise((_r, reject) => init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+  }) as typeof fetch;
+  try { await body(seen); } finally { globalThis.fetch = real; }
+}
+
+test("reload while a voice transcription is in flight: it is aborted, awaited and writes no history", async () => {
+  await withHangingFetch(async (seen) => {
+    const fake = fakeBb();
+    await plugin(fake.bb);
+    const pending = fake.reg.ai.transcribe(new File(["a"], "v.webm", { type: "audio/webm" }), { signal: new AbortController().signal, hint: null });
+    let settled = false;
+    const outcome = pending.then(() => "ok", () => "rejected").finally(() => { settled = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    await fake.dispose();
+    assert.equal(seen[0]!.aborted, true);
+    assert.equal(settled, true, "disposal waited for the transcription");
+    assert.equal(await outcome, "rejected");
+    assert.deepEqual(fake.logs.warn.filter((m) => /not open|history/.test(m)), []);
+  });
+});
+
+test("reload while the audio is still being read: the transcription never starts", async () => {
+  await withHangingFetch(async (seen) => {
+    const fake = fakeBb();
+    await plugin(fake.bb);
+    let release!: () => void;
+    const audio = { type: "audio/webm", name: "v.webm", arrayBuffer: () => new Promise<ArrayBuffer>((r) => { release = () => r(new ArrayBuffer(1)); }) } as unknown as File;
+    const outcome = fake.reg.ai.transcribe(audio, { signal: new AbortController().signal, hint: null }).then(() => "ok", () => "rejected");
+    const disposed = fake.dispose();
+    release();
+    await disposed;
+    assert.equal(await outcome, "rejected");
+    assert.equal(seen.length, 0);
+  });
+});
+
+test("reload while a one-shot RPC transcription is in flight: aborted and awaited", async () => {
+  await withHangingFetch(async (seen) => {
+    const fake = fakeBb();
+    await plugin(fake.bb);
+    let settled = false;
+    const outcome = fake.reg.rpc.transcribe({ audioBase64: Buffer.from("a").toString("base64"), mimeType: "audio/webm", filename: "x.webm" } as never)
+      .then(() => "ok", () => "rejected").finally(() => { settled = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    await fake.dispose();
+    assert.equal(seen[0]!.aborted, true);
+    assert.equal(settled, true);
+    assert.equal(await outcome, "rejected");
+  });
+});

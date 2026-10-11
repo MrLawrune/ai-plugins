@@ -81,9 +81,16 @@ export function createStreamRelay(deps: {
     };
     const release = () => { stopTimers(); sessions.delete(closeSession); };
     const closeUp = (code: number, reason: string) => { try { up?.close(code, reason); } catch { /* already closed */ } };
+    const closePage = (code: number, reason: string) => {
+      if (pageClosed || !pageRef) return;
+      pageClosed = true;
+      try { pageRef.close(code, reason); } catch { /* already closed */ }
+    };
+    // Disposal closes both sides itself, also for a session that already ended: it must not wait for
+    // the upstream's close handshake.
     const closeSession = () => {
       if (pageRef && !finished) end(pageRef, "Parakeet STT is restarting");
-      else { closeUp(1001, "plugin stopping"); release(); }
+      else { closeUp(1001, "plugin stopping"); closePage(1001, "plugin stopping"); release(); }
     };
     const armIdle = (page: PageSocket) => {
       if (idleTimer !== null) deps.clearTimer(idleTimer);
@@ -162,8 +169,9 @@ export function createStreamRelay(deps: {
       sock.onerror = () => deps.log("upstream stream error");
       sock.onclose = (ev) => {
         report();
-        if (finished) { release(); if (!pageClosed) page.close(1000, "done"); return; }
-        end(page, sawError ? null : ev.reason || `Parakeet STT stream closed (${ev.code})`);
+        if (finished) { release(); closePage(1000, "done"); return; }
+        const reason = !open ? `Can't reach the Parakeet server at ${serverUrl.trim()}` : ev.reason || `Parakeet STT stream closed (${ev.code})`;
+        end(page, sawError ? null : reason);
       };
     };
 

@@ -8,11 +8,11 @@ import { DictationLog } from "./dictation-log.ts";
 import { LoadScope } from "./lifecycle.ts";
 import { migrate } from "./migrate.ts";
 import { PrefsStore } from "./prefs.ts";
-import { createRpcHandlers } from "./rpc.ts";
+import { createRpcHandlers, type Latency } from "./rpc.ts";
+import { createServerConfig } from "./server-config.ts";
 import { rpcContract } from "./contract.ts";
 import { HISTORY_MAX_AGE_DAYS, HISTORY_MAX_ENTRIES, SOUNDS } from "./schemas.ts";
 import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
-import { createSttClient, type SttClient } from "./stt-client.ts";
 
 const PRUNE_EVERY_MS = 3_600_000;
 const NEEDS_URL_MESSAGE = "Set the Parakeet server URL in Settings → Plugins → Parakeet STT";
@@ -45,15 +45,11 @@ export default async function plugin(bb: BbPluginApi) {
     },
     apiKey: { type: "string", label: "API key", secret: true },
   });
-  let current = await settings.get();
-  let client: SttClient = createSttClient({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" });
+  const server = createServerConfig(await settings.get());
   // Saving settings does not reload the plugin, so this status only clears on the next load.
-  const needsConfiguration = current.serverUrl.trim() === "";
+  const needsConfiguration = !server.configured();
   if (needsConfiguration) bb.status.needsConfiguration(NEEDS_URL_MESSAGE);
-  const apply = (next: typeof current) => {
-    current = next;
-    client = createSttClient({ serverUrl: next.serverUrl, apiKey: next.apiKey ?? "" });
-  };
+  const latency: Latency = { ms: null };
 
   const prefs = new PrefsStore(bb.storage.kv);
   // Until the prefs are loaded the log must not prune to the default limits (the stored ones may be larger).
@@ -87,16 +83,16 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, createRpcHandlers({
-    client: () => client,
-    configured: () => current.serverUrl.trim() !== "",
+    client: server.client,
+    configured: server.configured,
     prefs,
     history: log,
     kv: bb.storage.kv,
     now: Date.now,
     server: {
-      get: () => current,
+      get: server.current,
       async set(values) {
-        apply(await settings.experimental_set({
+        server.apply(await settings.experimental_set({
           ...(values.serverUrl !== undefined ? { serverUrl: values.serverUrl === "" ? null : values.serverUrl } : {}),
           ...(values.apiKey !== undefined ? { apiKey: values.apiKey } : {}),
         }));
@@ -104,10 +100,12 @@ export default async function plugin(bb: BbPluginApi) {
       needsConfiguration,
     },
     signal: scope.signal,
+    track: (work) => scope.track(work),
+    latency,
   }));
 
   const relay = createStreamRelay({
-    config: () => ({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" }),
+    config: () => ({ serverUrl: server.current().serverUrl, apiKey: server.current().apiKey ?? "" }),
     prefs: (device) => prefs.forDevice(device),
     connect: (url) => new WebSocket(url) as unknown as UpstreamSocket,
     log: (m) => bb.log.warn(m),
@@ -125,14 +123,16 @@ export default async function plugin(bb: BbPluginApi) {
   bb.http.route("GET", "/prefs", (c) => Response.json(prefs.forDevice(c.req.query("device"))));
 
   bb.experimental_aiServices.register(createAiService({
-    client: () => client,
-    configured: () => current.serverUrl.trim() !== "",
+    client: server.client,
+    configured: server.configured,
     prefs,
     log,
     now: Date.now,
+    scope,
+    latency,
   }));
 
-  settings.onChange(apply);
+  settings.onChange(server.apply);
 
   const assets = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets");
   for (const sound of SOUNDS) {
@@ -141,5 +141,5 @@ export default async function plugin(bb: BbPluginApi) {
       return new Response(wav, { headers: { "content-type": "audio/wav", "cache-control": "max-age=86400" } });
     });
   }
-  bb.log.info(current.serverUrl ? `using ${current.serverUrl}` : "serverUrl not set; configure it in the plugin settings");
+  bb.log.info(server.current().serverUrl ? `using ${server.current().serverUrl}` : "serverUrl not set; configure it in the plugin settings");
 }

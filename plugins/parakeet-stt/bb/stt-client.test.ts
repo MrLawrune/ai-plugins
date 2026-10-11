@@ -66,3 +66,46 @@ test("health hits /health", async () => {
   assert.equal(h.ready, true);
   assert.equal(calls[0].url, "https://stt.example/health");
 });
+
+const loadingBody = { status: "loading", version: "0.2.0", model: "parakeet-tdt-0.6b-v2", ready: false, uptime_s: 1 };
+
+test("health recognises the server's 503 loading body as a not-ready result", async () => {
+  const { f } = fakeFetch(() => Response.json(loadingBody, { status: 503 }));
+  const h = await createSttClient(cfg, f).health();
+  assert.deepEqual([h.ready, h.model, h.version], [false, "parakeet-tdt-0.6b-v2", "0.2.0"]);
+});
+
+test("health still fails for any other 503", async () => {
+  for (const body of [{ error: { message: "busy" } }, { ready: true, model: "m", version: "1" }, { ready: false }, "nope", null]) {
+    const { f } = fakeFetch(() => Response.json(body, { status: 503 }));
+    await assert.rejects(createSttClient(cfg, f).health(), (e: SttError) => e.code === "unavailable" && e.status === 503, JSON.stringify(body));
+  }
+});
+
+test("a signal that is already aborted never reaches fetch", async () => {
+  const { f, calls } = fakeFetch(() => Response.json({ text: "x" }));
+  const ctl = new AbortController();
+  ctl.abort();
+  await assert.rejects(createSttClient(cfg, f).transcribe(audio, "a", "b", { ...opts, signal: ctl.signal }), (e: SttError) => e.code === "unreachable");
+  assert.equal(calls.length, 0);
+});
+
+/** A response whose headers arrive at once and whose body only ends when `init.signal` aborts. */
+const stalledBody = (init: RequestInit) => ({
+  ok: true, status: 200,
+  json: () => new Promise((_r, reject) => init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+}) as unknown as Response;
+
+test("the timeout still applies while the response body stalls", async () => {
+  const f = (async (_u: string, init: RequestInit) => stalledBody(init)) as unknown as typeof fetch;
+  await assert.rejects(createSttClient(cfg, f).transcribe(audio, "a", "b", { ...opts, timeoutMs: 20 }), (e: SttError) => e.code === "timeout");
+  await assert.rejects(createSttClient(cfg, f).health(20), (e: SttError) => e.code === "timeout");
+});
+
+test("the caller's abort cancels a stalled body", async () => {
+  const f = (async (_u: string, init: RequestInit) => stalledBody(init)) as unknown as typeof fetch;
+  const ctl = new AbortController();
+  const pending = createSttClient(cfg, f).transcribe(audio, "a", "b", { ...opts, signal: ctl.signal });
+  setTimeout(() => ctl.abort(), 10);
+  await assert.rejects(pending, (e: SttError) => e.code === "unreachable");
+});

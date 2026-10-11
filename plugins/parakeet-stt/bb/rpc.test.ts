@@ -6,7 +6,7 @@ import { PrefsStore } from "./prefs.ts";
 import { rpcContract } from "./contract.ts";
 import { MODEL_LOADING } from "./schemas.ts";
 import { createRpcHandlers, type RpcDeps } from "./rpc.ts";
-import { SttError, type SttClient } from "./stt-client.ts";
+import { createSttClient, SttError, type SttClient } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
 
 type SetCall = { serverUrl?: string | null; apiKey?: string | null };
@@ -156,4 +156,11 @@ test("transcribe passes an abort signal that follows the scope signal", async ()
   assert.equal(got!.aborted, false);
   ctl.abort();
   assert.equal(got!.aborted, true);
+});
+
+test("the real server's 503 loading response reads as Loading model, not as unreachable", async () => {
+  const body = { status: "loading", version: "0.2.0", model: "parakeet-tdt-0.6b-v2", ready: false, uptime_s: 1 };
+  const client = createSttClient({ serverUrl: "https://stt.example", apiKey: "" }, (async () => Response.json(body, { status: 503 })) as typeof fetch);
+  const { handlers } = await setup(client);
+  assert.deepEqual(await handlers.health(), { configured: true, up: false, model: body.model, version: "0.2.0", error: MODEL_LOADING, lastLatencyMs: null });
 });
