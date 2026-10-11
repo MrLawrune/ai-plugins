@@ -139,8 +139,13 @@ is locked until the phrase is final. A session ends when you:
 - say the stop phrase, if voice commands are on.
 
 On a phone, locking the screen ends the session, unless "Keep listening
-when the screen is off" is on. A session stops after 4 hours. If the
-stream cannot start, the plugin records a one-shot clip instead.
+when the screen is off" is on. A session stops after 4 hours.
+
+If the server URL is not set, the plugin shows an error before it opens
+the mic. If the server is unreachable, busy, or refuses the API key, the
+plugin shows one error and stops. It does not record. If the browser
+cannot capture streaming audio (an AudioContext or AudioWorklet failure),
+the plugin records a one-shot clip instead.
 
 ### One-shot mode
 
