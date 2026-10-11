@@ -61,15 +61,19 @@ export default async function plugin(bb: BbPluginApi) {
   const log = new DictationLog({
     db: () => bb.storage.database(),
     migrate: (db, s) => bb.storage.migrate(db, s),
-    limits: () => (prefsLoaded
+    recording: () => prefsLoaded && prefs.unreadable === null,
+    limits: () => (prefsLoaded && prefs.unreadable === null
       ? { maxEntries: prefs.get().historyMaxEntries, maxAgeDays: prefs.get().historyMaxAgeDays }
       : { maxEntries: HISTORY_MAX_ENTRIES, maxAgeDays: HISTORY_MAX_AGE_DAYS }),
     now: Date.now,
     warn: (m) => bb.log.warn(m),
   });
+  // Neither step may stop the plugin from loading: a failing history database leaves history
+  // unavailable for this load, and unreadable settings leave read-only defaults.
   log.init();
-  await migrate({ kv: bb.storage.kv, log, warn: (m) => bb.log.warn(m) });
-  await prefs.load();
+  const migration = await migrate({ kv: bb.storage.kv, log, warn: (m) => bb.log.warn(m) });
+  await prefs.load(migration.recovered);
+  if (prefs.unreadable !== null) bb.log.warn(`stored settings could not be read, using read-only defaults: ${prefs.unreadable}`);
   prefsLoaded = true;
   log.prune();
   prefs.onChange(() => log.prune());

@@ -26,7 +26,8 @@ const OLD_STATE_KEY = "profiles-v1";
 const OLD_PREFS_KEY = "prefs";
 const OLD_HISTORY_KEY = "history";
 
-export interface MigrateResult { migrated: boolean; note: string | null }
+/** `recovered`: the validated 0.1.0 state when the `settings` write failed; the store serves it from memory. */
+export interface MigrateResult { migrated: boolean; note: string | null; recovered?: State }
 
 interface MigrateKv {
   get<T>(k: string): Promise<T | undefined>;
@@ -94,13 +95,23 @@ async function deleteRow(d: Deps, key: string): Promise<void> {
   }
 }
 
-/** Retry an earlier failed history import under the history limit stored in `settings`. */
+/** Retry an earlier failed history import under the history limit stored in `settings`; its success replaces the failure note. */
 async function retryHistory(d: Deps, settings: unknown): Promise<void> {
   const history = await d.kv.get<unknown>(OLD_HISTORY_KEY);
   if (history === undefined) return void (await deleteRow(d, HISTORY_PENDING_KEY));
   const stored = isRecord(settings) && isRecord(settings.shared) ? prefsSchema.shape.historyMaxEntries.safeParse(settings.shared.historyMaxEntries) : null;
   if (await importHistory(d, parseOldHistory(history, stored?.success ? stored.data : DEFAULT_PREFS.historyMaxEntries))) {
     await deleteRow(d, HISTORY_PENDING_KEY);
+    // A dismissed note stays dismissed: only a note still showing the failure is replaced.
+    if ((await d.kv.get<unknown>(MIGRATION_NOTE_KEY)) === MIGRATION_NOTE_FAILED_IMPORT) await setNote(d, MIGRATION_NOTE);
+  }
+}
+
+async function setNote(d: Deps, note: string): Promise<void> {
+  try {
+    await d.kv.set(MIGRATION_NOTE_KEY, note);
+  } catch (e) {
+    d.warn(`could not store the migration note: ${errorText(e)}`);
   }
 }
 
@@ -124,14 +135,22 @@ export async function migrate(d: Deps): Promise<MigrateResult> {
     const oldPrefs = await d.kv.get<unknown>(OLD_PREFS_KEY);
     rawHistory = await d.kv.get<unknown>(OLD_HISTORY_KEY);
     for (const [key, value] of [[OLD_STATE_KEY, oldState], [OLD_PREFS_KEY, oldPrefs]] as const) if (value !== undefined) present.push(key);
-    // A profiles-v1 row without usable profiles falls back to the legacy prefs row, as 0.1.0 did.
+    // A profiles-v1 row with nothing recoverable falls back to the legacy prefs row, as 0.1.0 did.
     const parsed = parseOldState(oldState);
     if (!parsed && !isRecord(oldState) && !isRecord(oldPrefs) && rawHistory === undefined) return { migrated: false, note: null };
     state = parsed ?? freshState(parseLegacyPrefs(oldPrefs));
-    await d.kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...state });
   } catch (e) {
     d.warn(`settings migration failed, keeping the old storage: ${errorText(e)}`);
     return { migrated: false, note: null };
+  }
+  try {
+    await d.kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...state });
+  } catch (e) {
+    // Everything old stays; the store serves the validated legacy values from memory and writes them
+    // with its next ordinary write, and a marker makes the history import retry on the next load.
+    d.warn(`settings migration failed, keeping the old storage: ${errorText(e)}`);
+    if (rawHistory !== undefined) await markHistoryPending(d);
+    return { migrated: false, note: null, recovered: state };
   }
 
   let note = MIGRATION_NOTE;
@@ -139,18 +158,18 @@ export async function migrate(d: Deps): Promise<MigrateResult> {
     const entries = parseOldHistory(rawHistory, state.shared.historyMaxEntries);
     if (!(await importHistory(d, entries))) {
       note = MIGRATION_NOTE_FAILED_IMPORT;
-      try {
-        await d.kv.set(HISTORY_PENDING_KEY, true);
-      } catch (e) {
-        d.warn(`could not mark the history import as pending: ${errorText(e)}`);
-      }
+      await markHistoryPending(d);
     }
   }
   for (const key of present) await deleteRow(d, key);
-  try {
-    await d.kv.set(MIGRATION_NOTE_KEY, note);
-  } catch (e) {
-    d.warn(`could not store the migration note: ${errorText(e)}`);
-  }
+  await setNote(d, note);
   return { migrated: true, note };
+}
+
+async function markHistoryPending(d: Deps): Promise<void> {
+  try {
+    await d.kv.set(HISTORY_PENDING_KEY, true);
+  } catch (e) {
+    d.warn(`could not mark the history import as pending: ${errorText(e)}`);
+  }
 }

@@ -119,21 +119,35 @@ function parseDevice(d: unknown): DeviceRecord | null {
   };
 }
 
+/** Name of a profile whose stored name is unusable: its kind's name, else its id. */
+const fallbackName = (id: string): string => (id in KIND_PROFILE_NAMES ? KIND_PROFILE_NAMES[id as DeviceKind] : id);
+
+/** A valid, unused profile id for a stored key that is not one (`bad id!` becomes `bad-id`). */
+function repairedId(key: string, taken: Record<string, Profile>): string {
+  const base = key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "profile";
+  let id = base;
+  for (let n = 2; taken[id]; n++) id = `${base}-${n}`;
+  return id;
+}
+
 /**
- * The shared prefs, profiles and devices of a stored row, validated field by field (`parse` reads one
- * prefs object); null when the row holds no usable profile.
+ * The shared prefs, profiles and devices of a stored row, recovered piece by piece (`parse` reads one
+ * prefs object): shared fields independently of the profiles, a profile with unusable metadata keeps
+ * its preferences under a repaired id or name, and starter profiles stand in when none is left.
+ * Null only when the row holds nothing recoverable (no shared object and no profile object).
  */
 export function parseRows(raw: Record<string, unknown>, parse: (raw: unknown) => Prefs = parsePrefs): State | null {
-  if (!isRecord(raw.profiles)) return null;
+  const entries = isRecord(raw.profiles) ? Object.entries(raw.profiles).filter(([, p]) => isRecord(p)) : [];
+  if (!isRecord(raw.shared) && !entries.length) return null;
   const shared = split(parse(raw.shared)).shared;
   const profiles: Record<string, Profile> = {};
-  for (const [id, p] of Object.entries(raw.profiles)) {
+  for (const [key, p] of entries) {
     if (Object.keys(profiles).length >= MAX_PROFILES) break;
-    const name = nameSchema.safeParse(isRecord(p) ? p.name : undefined);
-    if (!idSchema.safeParse(id).success || !name.success) continue;
-    profiles[id] = { name: name.data, prefs: split(parse({ ...shared, ...(isRecord(p) && isRecord(p.prefs) ? p.prefs : {}) })).profile };
+    const stored = p as Record<string, unknown>;
+    const id = idSchema.safeParse(key).success && !profiles[key] ? key : repairedId(key, profiles);
+    const name = nameSchema.catch(fallbackName(id)).parse(stored.name);
+    profiles[id] = { name, prefs: split(parse({ ...shared, ...(isRecord(stored.prefs) ? stored.prefs : {}) })).profile };
   }
-  if (!Object.keys(profiles).length) return null;
   const devices: Record<string, DeviceRecord> = {};
   if (isRecord(raw.devices)) {
     for (const d of Object.values(raw.devices)) {
@@ -141,7 +155,11 @@ export function parseRows(raw: Record<string, unknown>, parse: (raw: unknown) =>
       if (device) devices[device.id] = device;
     }
   }
-  return { shared, profiles, devices: trimDevices(devices) };
+  return {
+    shared,
+    profiles: Object.keys(profiles).length ? profiles : freshState(parse(raw.shared)).profiles,
+    devices: trimDevices(devices),
+  };
 }
 
 /** Validate a stored v2 row; null when it is not a usable one. */
@@ -167,15 +185,34 @@ export class PrefsStore {
   #queue: Promise<void> = Promise.resolve();
   /** `lastSeen` per device as last written to kv (the in-memory value runs ahead of it between writes). */
   #stored = new Map<string, number>();
+  /** Set while the stored row could not be read: the state is defaults and nothing may be written over the row. */
+  #unreadable: string | null = null;
+  #fallback: State | undefined;
 
   constructor(kv: KvLike) {
     this.#kv = kv;
   }
 
-  /** Read the `settings` row; a missing or unusable row leaves the defaults in place. */
-  async load(): Promise<void> {
-    this.#state = parseState(await this.#kv.get<unknown>(SETTINGS_KEY)) ?? freshState(DEFAULT_PREFS);
+  /**
+   * Read the `settings` row. A missing or unusable row leaves `fallback` (the state recovered from the
+   * 0.1.0 rows by a failed migration) or the defaults in place; a row that cannot be read at all leaves
+   * read-only defaults, see `unreadable`. Never throws.
+   */
+  async load(fallback: State | undefined = this.#fallback): Promise<void> {
+    this.#fallback = fallback;
+    try {
+      this.#state = parseState(await this.#kv.get<unknown>(SETTINGS_KEY)) ?? (fallback ? structuredClone(fallback) : freshState(DEFAULT_PREFS));
+      this.#unreadable = null;
+    } catch (e) {
+      this.#state = fallback ? structuredClone(fallback) : freshState(DEFAULT_PREFS);
+      this.#unreadable = e instanceof Error && e.message ? e.message : String(e);
+    }
     this.#rememberStored(this.#state);
+  }
+
+  /** Why the stored settings could not be read (reads serve defaults and writes are refused until a read works), or null. */
+  get unreadable(): string | null {
+    return this.#unreadable;
   }
 
   /** Effective prefs for a profile (unknown ids fall back to the first profile). */
@@ -218,7 +255,7 @@ export class PrefsStore {
       draft.devices = trimDevices(draft.devices);
       await this.#commit(draft);
       return device;
-    });
+    }, () => ({ id, name, kind, profileId: kind, lastSeen: now }));
   }
 
   updateDevice(id: string, patch: { name?: string; profileId?: string }): Promise<DeviceRecord> {
@@ -301,9 +338,22 @@ export class PrefsStore {
     return () => this.#listeners.delete(listener);
   }
 
-  /** Run `op` after every earlier mutation settled; a rejected op does not block the ones behind it. */
-  #enqueue<T>(op: () => Promise<T>): Promise<T> {
-    const result = this.#queue.then(op);
+  /**
+   * Run `op` after every earlier mutation settled; a rejected op does not block the ones behind it.
+   * While the stored row is unreadable it first retries the read; if that still fails the write is
+   * refused (`op` is replaced by `whenUnreadable` when given, so a device can still register).
+   */
+  #enqueue<T>(op: () => Promise<T>, whenUnreadable?: () => T): Promise<T> {
+    const result = this.#queue.then(async () => {
+      if (this.#unreadable !== null) {
+        await this.load();
+        if (this.#unreadable !== null) {
+          if (whenUnreadable) return whenUnreadable();
+          throw new Error(`Settings are unavailable: the stored settings could not be read (${this.#unreadable})`);
+        }
+      }
+      return op();
+    });
     this.#queue = result.then(() => undefined, () => undefined);
     return result;
   }

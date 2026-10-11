@@ -35,6 +35,9 @@ export class DictationLog {
   #limits: () => Limits;
   #now: () => number;
   #warn: (msg: string) => void;
+  #recording: () => boolean;
+  /** Why history is unavailable (a failed init), or null. */
+  #unavailable: string | null = "not initialised";
 
   constructor(deps: {
     db: () => Database.Database;
@@ -43,22 +46,41 @@ export class DictationLog {
     now: () => number;
     /** History is best-effort: add/prune report a database error here instead of throwing. */
     warn?: (msg: string) => void;
+    /** `add` records nothing while this is false (the stored retention settings are not known). */
+    recording?: () => boolean;
   }) {
     this.#db = deps.db;
     this.#migrate = deps.migrate;
     this.#limits = deps.limits;
     this.#now = deps.now;
     this.#warn = deps.warn ?? (() => {});
+    this.#recording = deps.recording ?? (() => true);
   }
 
-  /** Runs migrations and prunes to the current limits. Call once at load. */
-  init(): void {
-    this.#migrate(this.#db(), MIGRATIONS);
+  /**
+   * Runs migrations and prunes to the current limits. Call once at load. Best-effort: a failure is
+   * reported and leaves history unavailable for this load (false); a later call retries.
+   */
+  init(): boolean {
+    try {
+      this.#migrate(this.#db(), MIGRATIONS);
+      this.#unavailable = null;
+    } catch (err) {
+      this.#unavailable = errorText(err);
+      this.#warn(`dictation history is unavailable until the next load: ${this.#unavailable}`);
+      return false;
+    }
     this.prune();
+    return true;
+  }
+
+  #require(): void {
+    if (this.#unavailable !== null) throw new Error(`Dictation history is unavailable: ${this.#unavailable}`);
   }
 
   /** Blank text and maxEntries 0 record nothing. Inserts and enforces maxEntries in one transaction. */
   add(e: { text: string; durationMs: number; source: DictationSource; deviceId: string | null }): void {
+    if (this.#unavailable !== null || !this.#recording()) return;
     try {
       this.#insert([{ ...e, ts: this.#now() }]);
     } catch (err) {
@@ -68,17 +90,20 @@ export class DictationLog {
 
   /** Newest first (by time, then insertion). */
   list(limit = LIST_DEFAULT): HistoryEntry[] {
+    this.#require();
     const n = Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : LIST_DEFAULT;
     const rows = this.#db().prepare(`SELECT id, ts, text, duration_ms, source FROM dictation_log ${NEWEST_FIRST} LIMIT ?`).all(n) as Row[];
     return rows.map((r) => ({ id: r.id, text: r.text, at: r.ts, durationMs: r.duration_ms, source: r.source }));
   }
 
   clear(): void {
+    this.#require();
     this.#db().prepare("DELETE FROM dictation_log").run();
   }
 
   /** Deletes rows older than maxAgeDays, then everything beyond the newest maxEntries. A database error is reported, not thrown. */
   prune(): void {
+    if (this.#unavailable !== null) return;
     try {
       const db = this.#db();
       const { maxAgeDays, maxEntries } = this.#limits();
@@ -95,6 +120,7 @@ export class DictationLog {
 
   /** One-time import of the old kv history (newest first), stored as "oneshot" at their own times. */
   importLegacy(entries: { text: string; at: number; durationMs: number }[]): void {
+    if (entries.length) this.#require();
     this.#insert(
       [...entries].reverse().map((e) => ({ text: e.text, durationMs: e.durationMs, source: "oneshot" as const, deviceId: null, ts: e.at })),
     );

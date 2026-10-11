@@ -156,7 +156,7 @@ test("invalid fields fall back one by one; the valid ones survive", async () => 
       profiles: {
         desktop: { name: "Desktop", prefs: { autoSubmit: true, pauseMs: 5 } },
         "bad id!": { name: "X", prefs: {} },
-        nameless: { prefs: {} },
+        nameless: { prefs: { holdToTalk: true } },
         broken: "x",
       },
       devices: {
@@ -173,7 +173,9 @@ test("invalid fields fall back one by one; the valid ones survive", async () => 
   assert.equal(row.shared.sendPhrase, "go");
   assert.equal(row.shared.correctionThreshold, DEFAULT_PREFS.correctionThreshold);
   assert.equal("bogus" in row.shared, false);
-  assert.deepEqual(Object.keys(row.profiles), ["desktop"]);
+  // Unusable metadata is repaired per profile (id slug, name from the id); a non-object entry is skipped.
+  assert.deepEqual(Object.keys(row.profiles), ["desktop", "bad-id", "nameless"]);
+  assert.equal(row.profiles.nameless.prefs.holdToTalk, true);
   assert.equal(row.profiles.desktop.prefs.autoSubmit, true);
   assert.equal(row.profiles.desktop.prefs.pauseMs, DEFAULT_PREFS.pauseMs);
   assert.deepEqual(Object.keys(row.devices), ["ok"]);
@@ -231,12 +233,14 @@ test("a settings row already present: nothing runs, nothing is deleted", async (
   assert.ok(kv.data["profiles-v1"] && kv.data.prefs && kv.data.history);
 });
 
-test("a failing settings write leaves every old row and reports it", async () => {
+test("a failing settings write leaves every old row, reports it and hands back the recovered state", async () => {
   const base = memKv({ "profiles-v1": legacyRow(), prefs: { autoSubmit: true }, history: [{ id: "a", text: "x", at: 1, durationMs: 1 }] });
   const kv = Object.assign(base, { async set() { throw new Error("disk full"); } });
   const log = fakeLog();
   const warnings: string[] = [];
-  assert.deepEqual(await migrate({ kv, log, warn: (m) => warnings.push(m) }), { migrated: false, note: null });
+  const result = await migrate({ kv, log, warn: (m) => warnings.push(m) });
+  assert.deepEqual([result.migrated, result.note], [false, null]);
+  assert.deepEqual(result.recovered?.shared.customWords, ["tmux"]);
   assert.deepEqual(base.deleted, []);
   assert.deepEqual(log.imported, []);
   assert.ok(base.data["profiles-v1"] && base.data.prefs && base.data.history);

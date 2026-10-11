@@ -151,3 +151,47 @@ test("a database error in add or prune is reported, not thrown", () => {
   assert.doesNotThrow(() => log.prune());
   assert.equal(warnings.length, 2);
 });
+
+test("init is best-effort: a failing database disables history for this load and a later init recovers", () => {
+  const db = new Database(":memory:");
+  let broken = true;
+  const warnings: string[] = [];
+  const log = new DictationLog({
+    db: () => { if (broken) throw new Error("db open failed"); return db; },
+    migrate: (d, stmts) => { for (const sql of stmts) d.exec(sql); },
+    limits: () => ({ maxEntries: 50, maxAgeDays: 7 }),
+    now: () => 1_800_000_000_000,
+    warn: (m) => warnings.push(m),
+  });
+  assert.equal(log.init(), false);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /db open failed/);
+  log.add(entry("skipped"));
+  log.prune();
+  assert.equal(warnings.length, 1, "add and prune stay quiet while history is unavailable");
+  assert.throws(() => log.list(), /history is unavailable.*db open failed/i);
+  assert.throws(() => log.clear(), /history is unavailable/i);
+  assert.throws(() => log.importLegacy([{ text: "x", at: 1, durationMs: 1 }]), /history is unavailable/i);
+  broken = false;
+  assert.equal(log.init(), true);
+  log.add(entry("kept"));
+  assert.deepEqual(log.list().map((e) => e.text), ["kept"]);
+});
+
+test("add records nothing while recording is off", () => {
+  const db = new Database(":memory:");
+  let on = false;
+  const log = new DictationLog({
+    db: () => db,
+    migrate: (d, stmts) => { for (const sql of stmts) d.exec(sql); },
+    limits: () => ({ maxEntries: 50, maxAgeDays: 7 }),
+    now: () => 1_800_000_000_000,
+    recording: () => on,
+  });
+  log.init();
+  log.add(entry("a"));
+  assert.equal(count(db), 0);
+  on = true;
+  log.add(entry("b"));
+  assert.equal(count(db), 1);
+});
