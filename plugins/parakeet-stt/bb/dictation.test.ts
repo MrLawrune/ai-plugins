@@ -467,6 +467,53 @@ test("cancel while the stream is connecting: a later connect failure does not st
   assert.equal(s.log.filter((l) => l === "end").length, 1);
 });
 
+test("a superseded connect that resolves late is cancelled and leaves the new session alone", async () => {
+  const connects: Array<{ resolve: (h: import("./dictation.ts").StreamHandle) => void; reject: (e: Error) => void }> = [];
+  let s2h: import("./dictation.ts").StreamHandlers | null = null;
+  const s = streamHarness({
+    startStream: (h) => new Promise((resolve, reject) => {
+      connects.push({ resolve, reject });
+      s2h = h;
+    }),
+  });
+  const first = s.c.start();
+  s.c.cancel();
+  const second = s.c.start();
+  assert.equal(connects.length, 2);
+  const late = { stopped: 0, cancelled: 0 };
+  connects[0].resolve({ async stop() { late.stopped++; }, cancel() { late.cancelled++; } });
+  await first;
+  assert.equal(late.cancelled, 1);
+  assert.equal(late.stopped, 0);
+  assert.equal(s.c.snapshot().phase, "streaming"); // the new session is untouched
+  const live = { cancelled: 0 };
+  connects[1].resolve({ async stop() { s2h!.onEnded("stopped"); }, cancel() { live.cancelled++; } });
+  await second;
+  assert.equal(live.cancelled, 0);
+  assert.equal(s.c.snapshot().phase, "streaming");
+  await s.c.stop();
+  assert.equal(s.c.snapshot().phase, "idle");
+  assert.ok(!s.log.includes("oneshot:start"));
+});
+
+test("a superseded connect that fails late does not fall back or disturb the new session", async () => {
+  const connects: Array<{ resolve: (h: import("./dictation.ts").StreamHandle) => void; reject: (e: Error) => void }> = [];
+  const s = streamHarness({ startStream: () => new Promise((resolve, reject) => { connects.push({ resolve, reject }); }) });
+  const first = s.c.start();
+  s.c.cancel();
+  const second = s.c.start();
+  connects[0].reject(new Error("connect refused"));
+  await first;
+  assert.equal(s.c.snapshot().phase, "streaming");
+  assert.ok(!s.log.includes("oneshot:start"), s.log.join(" | "));
+  assert.ok(!s.log.some((l) => l.startsWith("info:Streaming unavailable")), s.log.join(" | "));
+  const live = { cancelled: 0 };
+  connects[1].resolve({ async stop() {}, cancel() { live.cancelled++; } });
+  await second;
+  assert.equal(live.cancelled, 0);
+  assert.equal(s.c.snapshot().phase, "streaming");
+});
+
 test("the last target of the active session unregistering ends the session at once", async () => {
   const h = harness();
   const ends: string[] = [];

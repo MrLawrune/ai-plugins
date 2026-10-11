@@ -96,6 +96,8 @@ export class DictationController {
   #active: Target | null = null;
   #live = "";
   #liveSeq = 0;
+  /** Incremented on every start; a connect that settles under an older token belongs to a superseded session. */
+  #session = 0;
 
   constructor(deps: DictationDeps | null) {
     this.#deps = deps;
@@ -156,13 +158,14 @@ export class DictationController {
     const target = this.#resolve(targetId);
     if (!target) return;
     this.#active = target;
+    const session = ++this.#session;
     target.begin();
     const wanted = mode ?? deps.prefs().mode;
-    if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target);
+    if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target, session);
     return this.#startOneShot(deps, target);
   }
 
-  async #startStream(deps: DictationDeps, target: Target): Promise<void> {
+  async #startStream(deps: DictationDeps, target: Target, session: number): Promise<void> {
     this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
     let gated = false; // the session uses a start phrase
     this.#stopRequested = false;
@@ -198,13 +201,13 @@ export class DictationController {
         void this.stop();
       });
     } catch (e) {
-      if (this.snapshot().phase !== "streaming") return; // cancelled while connecting
+      if (session !== this.#session || this.snapshot().phase !== "streaming") return; // cancelled or superseded while connecting
       // No idle state here: the one-shot fallback keeps this session (and its target) alive.
       deps.notify("info", `Streaming unavailable (${e instanceof Error ? e.message : String(e)}); using one-shot.`);
       return this.#startOneShot(deps, target);
     }
-    if (this.snapshot().phase !== "streaming") {
-      handle.cancel(); // cancelled while connecting
+    if (session !== this.#session || this.snapshot().phase !== "streaming") {
+      handle.cancel(); // cancelled or superseded while connecting: release its mic and socket
       return;
     }
     this.#stream = handle;
