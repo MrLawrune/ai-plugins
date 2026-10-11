@@ -49,7 +49,10 @@ export function useRoster() {
     remove: async (id) => { await rpc.call("deleteProfile", { id }); await load(); },
   }), [rpc, load]);
 
-  return { me, devices, profiles, error, api, load: () => load().catch((e) => { setError(errorText(e)); return null; }) };
+  // Stable: effects depend on it, and a new function every render would reload the roster forever.
+  const reload = useCallback(() => load().catch((e) => { setError(errorText(e)); return null; }), [load]);
+
+  return { me, devices, profiles, error, api, load: reload };
 }
 
 /**

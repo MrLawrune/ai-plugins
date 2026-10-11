@@ -1,8 +1,10 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import { toast } from "sonner";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { DEFAULT_PREFS } from "../prefs.ts";
-import { DOWN, LOADING, NOT_SET_UP, panelStubs, withPrefs } from "./fixtures.ts";
+import type { Prefs, ProfileKey } from "../schemas.ts";
+import { DOWN, LOADING, ME, NOT_SET_UP, panelStubs, withPrefs } from "./fixtures.ts";
 
 type Stubs = Parameters<typeof panelStubs>[0];
 
@@ -36,7 +38,7 @@ test("the header says when the model is still loading", async () => {
 
 test("sections appear in the planned order", async () => {
   await panel();
-  await screen.findByRole("heading", { name: "History" });
+  await screen.findByRole("heading", { name: "Vocabulary" });
   expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
     "Devices and profiles", "Dictation", "Continuous dictation", "Voice commands", "Vocabulary", "History",
   ]);
@@ -100,7 +102,7 @@ test("switching profile saves the pending change to the profile it was made on",
   expect(calls(slot, "setPrefs")).toHaveLength(1);
 });
 
-test("the day count can be cleared and retyped without saving the empty field", async () => {
+test("the day count can be cleared and retyped, and saves once on blur", async () => {
   const slot = await panel();
   const days = (await screen.findByLabelText("Keep for")) as HTMLInputElement;
   expect(days.value).toBe("7");
@@ -108,19 +110,71 @@ test("the day count can be cleared and retyped without saving the empty field", 
   expect(days.value).toBe("");
   fireEvent.change(days, { target: { value: "3" } });
   fireEvent.change(days, { target: { value: "30" } });
+  await new Promise((r) => setTimeout(r, 800));
   expect(calls(slot, "setPrefs")).toEqual([]);
-  await waitFor(() => expect(calls(slot, "setPrefs")).toEqual([{ profileId: "desktop", patch: { historyMaxAgeDays: 30 } }]), { timeout: 2_000 });
+  fireEvent.blur(days);
+  await waitFor(() => expect(calls(slot, "setPrefs")).toEqual([{ profileId: "desktop", patch: { historyMaxAgeDays: 30 } }]));
   expect(days.value).toBe("30");
 });
 
-test("a day count out of range is flagged and not saved", async () => {
+test("Enter saves the day count", async () => {
   const slot = await panel();
   const days = await screen.findByLabelText("Keep for");
-  fireEvent.change(days, { target: { value: "120" } });
+  fireEvent.change(days, { target: { value: "14" } });
+  fireEvent.keyDown(days, { key: "Enter" });
+  await waitFor(() => expect(calls(slot, "setPrefs")).toEqual([{ profileId: "desktop", patch: { historyMaxAgeDays: 14 } }]));
+});
+
+test("typing an out-of-range day count key by key never saves a prefix of it", async () => {
+  const slot = await panel();
+  const days = await screen.findByLabelText("Keep for");
+  for (const v of ["1", "12", "120"]) fireEvent.change(days, { target: { value: v } });
   fireEvent.blur(days);
   expect(await screen.findByText("Between 1 and 90 days.")).toBeTruthy();
   await new Promise((r) => setTimeout(r, 800));
   expect(calls(slot, "setPrefs")).toEqual([]);
+});
+
+test("history stays mounted while the profile switches", async () => {
+  const slot = await panel();
+  await screen.findAllByTestId("history-entry");
+  fireEvent.change(screen.getByLabelText("Editing profile"), { target: { value: "touch" } });
+  await waitFor(() => expect(calls(slot, "getPrefs")).toContainEqual({ profileId: "touch" }));
+  expect(screen.getAllByTestId("history-entry")).toHaveLength(3);
+  await screen.findByRole("slider", { name: "Entries to keep" });
+  expect(calls(slot, "listHistory")).toHaveLength(1);
+});
+
+test("loading the roster happens once, not on every render", async () => {
+  const slot = await panel();
+  await screen.findByRole("heading", { name: "Vocabulary" });
+  vi.useFakeTimers();
+  try {
+    await vi.advanceTimersByTimeAsync(3_000);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(calls(slot, "hello")).toHaveLength(1);
+  expect(calls(slot, "listProfiles")).toHaveLength(1);
+});
+
+test("Retry after a failed first load shows the settings", async () => {
+  let first = true;
+  await panel({ hello: () => { if (first) { first = false; throw new Error("backend busy"); } return { device: ME, prefs: DEFAULT_PREFS }; } });
+  expect(await screen.findByText(/Couldn't load settings: backend busy/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("heading", { name: "Vocabulary" })).toBeTruthy();
+  expect(screen.queryByText(/Couldn't load settings/)).toBeNull();
+});
+
+test("a dismiss the server did not record keeps the note and says so", async () => {
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "");
+  const slot = await panel({ getNote: () => ({ note: "Moved." }), dismissNote: () => { throw new Error("kv locked"); } });
+  fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(error).toHaveBeenCalledWith("kv locked"));
+  expect(calls(slot, "dismissNote")).toHaveLength(1);
+  expect(screen.getByText("Moved.")).toBeTruthy();
+  error.mockRestore();
 });
 
 test("the migration note shows and Dismiss clears it", async () => {
@@ -157,7 +211,8 @@ test("an empty history says so", async () => {
 
 test("Clear asks first, then clears the history", async () => {
   const slot = await panel();
-  fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
+  await screen.findAllByTestId("history-entry");
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }));
   expect(calls(slot, "clearHistory")).toEqual([]);
   fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
   await waitFor(() => expect(calls(slot, "clearHistory")).toHaveLength(1));
@@ -171,13 +226,33 @@ test("the shortcut hint explains the command palette entry", async () => {
   expect(hint.textContent).toMatch(/stops a session running in another composer/);
 });
 
-test("shared settings say they apply to every profile", async () => {
-  await panel();
-  await screen.findByText("Vocabulary");
-  const custom = screen.getByLabelText("Custom words").closest("div.grid")!;
-  expect(custom.textContent).toMatch(/all profiles/i);
-  const entries = screen.getByRole("slider", { name: "Entries to keep" }).closest("div.grid")!;
-  expect(entries.textContent).toMatch(/all profiles/i);
+// Typed over every key outside PROFILE_KEYS: a new shared pref fails to compile until it has a row here.
+const SHARED_ROWS: Record<Exclude<keyof Prefs, ProfileKey>, string> = {
+  customWords: "Custom words",
+  removeFillers: "Remove filler words",
+  correctionThreshold: "Correction strength",
+  historyMaxEntries: "Entries to keep",
+  historyMaxAgeDays: "Keep for",
+  sendPhrase: "Send phrase",
+  stopPhrase: "Stop phrase",
+  clearPhrase: "Clear phrase",
+  startPhrases: "Start phrases",
+};
+
+const rowText = (label: string) => screen.getByText(label, { selector: "label" }).parentElement!.textContent ?? "";
+
+test.each(Object.entries(SHARED_ROWS))("the shared setting %s says it applies to all profiles", async (_key, label) => {
+  await panel(withPrefs({ voiceCommands: true, waitForStart: true }));
+  await screen.findByRole("heading", { name: "Vocabulary" });
+  expect(rowText(label)).toMatch(/all profiles/i);
+});
+
+test("per-profile settings do not claim to be shared", async () => {
+  await panel(withPrefs({ voiceCommands: true, waitForStart: true }));
+  await screen.findByRole("heading", { name: "Vocabulary" });
+  for (const label of ["Hold to talk", "Live preview", "Pause before commit", "Voice commands", "Wait for a start phrase"]) {
+    expect(rowText(label)).not.toMatch(/all profiles/i);
+  }
 });
 
 test("voice command phrases and start phrases appear only when they matter", async () => {

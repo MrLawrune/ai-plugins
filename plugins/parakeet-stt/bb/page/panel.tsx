@@ -1,9 +1,11 @@
 // The Dictation nav panel: profiles, then the settings of the profile being edited, then history.
 import { useEffect, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import type { rpcContract } from "../contract.ts";
 import { CommandsSection, ContinuousSection, DictationSection, VocabularySection } from "./dictation-sections.tsx";
+import { errorText } from "./error-text.ts";
 import { HistorySection } from "./history-section.tsx";
 import { useProfilePrefs, useRoster } from "./panel-state.ts";
 import { ProfilesSection } from "./profiles-section.tsx";
@@ -11,6 +13,7 @@ import { useHealth } from "./state.ts";
 import { healthLine } from "./status.ts";
 import { SaveIndicator, StatusDot } from "./ui.tsx";
 
+// Plain text on purpose: the plugin SDK can open a plugin panel (useBbNavigate) but not a plugin's settings page.
 const SETTINGS_PATH = "Settings › Plugins › Parakeet STT › Server";
 
 export function ParakeetHeader() {
@@ -33,8 +36,15 @@ function useNote() {
     return () => { live = false; };
   }, [rpc]);
   const dismiss = async () => {
+    const shown = note;
     setNote(null);
-    await rpc.call("dismissNote").catch(() => {});
+    try {
+      await rpc.call("dismissNote");
+    } catch (cause) {
+      // The server still has the note, so keep showing it.
+      setNote(shown);
+      toast.error(errorText(cause));
+    }
   };
   return { note, dismiss };
 }
@@ -43,9 +53,10 @@ export function ParakeetPanel() {
   const health = useHealth();
   const roster = useRoster();
   const { note, dismiss } = useNote();
-  const [editing, setEditing] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const editing = picked ?? roster.me?.profileId ?? null;
   const { load } = roster;
-  useEffect(() => { void load().then((me) => me && setEditing((cur) => cur ?? me.profileId)); }, [load]);
+  useEffect(() => { void load(); }, [load]);
   const { prefs, patch, save, error, retry } = useProfilePrefs(editing, roster.me);
   const profileName = roster.profiles.find((p) => p.id === editing)?.name ?? "";
   const failure = roster.error ?? error;
@@ -76,16 +87,17 @@ export function ParakeetPanel() {
         ) : null}
         {roster.me && editing ? (
           <div className="divide-y divide-border">
-            <ProfilesSection me={roster.me} devices={roster.devices} profiles={roster.profiles} editing={editing} onEdit={setEditing} api={roster.api} />
+            <ProfilesSection me={roster.me} devices={roster.devices} profiles={roster.profiles} editing={editing} onEdit={setPicked} api={roster.api} />
             {prefs ? (
               <>
                 <DictationSection prefs={prefs} patch={patch} profileName={profileName} />
                 <ContinuousSection prefs={prefs} patch={patch} profileName={profileName} />
                 <CommandsSection prefs={prefs} patch={patch} profileName={profileName} />
                 <VocabularySection prefs={prefs} patch={patch} />
-                <HistorySection prefs={prefs} patch={patch} />
               </>
             ) : null}
+            {/* Outside the prefs gate: history is not per profile, so a profile switch keeps the list. */}
+            <HistorySection prefs={prefs} patch={patch} />
           </div>
         ) : !failure ? (
           <p className="text-sm text-muted-foreground">Loading settings…</p>
