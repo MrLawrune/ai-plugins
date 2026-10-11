@@ -9,6 +9,7 @@ import os
 import sys
 import time
 
+import aiohttp
 from aiohttp import WSMsgType, web
 
 from parakeet_audio import SAMPLE_RATE, AudioDecodeError, decode_to_mono16k
@@ -44,10 +45,21 @@ async def run_transcription(app: web.Application, audio, *, partial: bool) -> st
             await asyncio.wait_for(lock.acquire(), timeout=cfg.queue_timeout_s)
         except TimeoutError as exc:
             raise Busy() from exc
+    # The slot is held until the worker thread ends, even if this request is cancelled
+    # mid-flight: cancelling the await does not stop the thread, so releasing now would
+    # let a second inference run alongside it. The shield keeps `fut` pending until the
+    # thread really finishes.
+    fut = asyncio.get_running_loop().run_in_executor(None, engine.transcribe, audio)
+    handed_off = False
     try:
-        return await asyncio.get_running_loop().run_in_executor(None, engine.transcribe, audio)
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        handed_off = True
+        fut.add_done_callback(lambda done: (done.cancelled() or done.exception(), lock.release()))
+        raise
     finally:
-        lock.release()
+        if not handed_off:
+            lock.release()
 
 
 def error(status: int, code: str, message: str, kind: str = "invalid_request_error") -> web.Response:
@@ -91,11 +103,35 @@ def _bool(value: str | None, default: bool) -> bool:
     return default if value is None else value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+async def read_form(request: web.Request, max_bytes: int) -> tuple[dict[str, str], bytes | None]:
+    """Read a multipart form without parsing on the loop's critical path: the file part
+    becomes bytes (bounded by max_bytes in total), every other part becomes text."""
+    fields: dict[str, str] = {}
+    upload: bytes | None = None
+    if not request.content_type.startswith("multipart/"):
+        return fields, upload
+    total = 0
+    reader = await request.multipart()
+    while (part := await reader.next()) is not None:
+        if not isinstance(part, aiohttp.BodyPartReader):
+            continue
+        buf = bytearray()
+        while chunk := await part.read_chunk(1 << 16):
+            total += len(chunk)
+            if total > max_bytes:
+                raise web.HTTPRequestEntityTooLarge(max_size=max_bytes, actual_size=total)
+            buf += chunk
+        if part.name == "file" and part.filename is not None:
+            upload = bytes(buf)
+        elif part.name:
+            fields[part.name] = bytes(buf).decode(part.get_charset("utf-8"), errors="replace")
+    return fields, upload
+
+
 async def transcriptions(request: web.Request) -> web.Response:
     cfg, engine = request.app[CFG], request.app[ENGINE]
-    form = await request.post()
-    upload = form.get("file")
-    if upload is None or not hasattr(upload, "file"):
+    form, upload = await read_form(request, cfg.max_upload_bytes)
+    if upload is None:
         return error(400, "missing_file", "Multipart field 'file' is required")
     model = str(form.get("model") or engine.model_id)
     if model != engine.model_id and model not in MODEL_ALIASES:
@@ -110,7 +146,7 @@ async def transcriptions(request: web.Request) -> web.Response:
     if not engine.ready:
         return error(503, "model_loading", "Model is still loading; retry shortly", "server_error")
     try:
-        audio = decode_to_mono16k(upload.file.read())
+        audio = await asyncio.to_thread(decode_to_mono16k, upload)
     except AudioDecodeError as exc:
         return error(400, "invalid_audio", str(exc))
     if len(audio) > cfg.max_seconds * SAMPLE_RATE:

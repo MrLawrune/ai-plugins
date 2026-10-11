@@ -1,11 +1,14 @@
 import asyncio
 import json
+import time
 
 import aiohttp
+import numpy as np
 from aiohttp.test_utils import TestClient, TestServer
 
 from audio_fixtures import encode_tone
 from parakeet_config import ServerConfig
+import parakeet_server
 from parakeet_server import create_app
 
 
@@ -156,3 +159,33 @@ def test_loopback_without_key_needs_no_auth():
         r = await c.get("/v1/models")
         return r.status
     assert run(FakeEngine(), ServerConfig.from_env({}), fn) == 200
+
+
+def test_decode_and_upload_do_not_block_the_event_loop(monkeypatch):
+    def slow_decode(data):
+        time.sleep(0.5)
+        return np.zeros(16000, dtype=np.float32)
+
+    monkeypatch.setattr(parakeet_server, "decode_to_mono16k", slow_decode)
+
+    async def fn(c):
+        gaps, stop = [], asyncio.Event()
+
+        async def ticker():
+            last = time.perf_counter()
+            while not stop.is_set():
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        tick = asyncio.create_task(ticker())
+        await asyncio.sleep(0.05)
+        r = await c.post("/v1/audio/transcriptions", headers=AUTH, data=form(b"\0" * 4096))
+        stop.set()
+        await tick
+        return r.status, max(gaps)
+
+    status, worst_gap = run(FakeEngine(), cfg(), fn)
+    assert status == 200
+    assert worst_gap < 0.1, f"event loop stalled for {worst_gap * 1000:.0f} ms"
