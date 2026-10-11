@@ -5,6 +5,15 @@ import type { PrefsStore } from "./prefs.ts";
 import { TRANSCRIBE_TIMEOUT_MS } from "./rpc.ts";
 import type { SttClient } from "./stt-client.ts";
 
+const HINT_WORD_MAX = 64;
+const WORDS_MAX = 200;
+
+/** Vocabulary bb passes with a voice transcription: one word or phrase per comma or line. */
+export function hintWords(hint: string | null | undefined): string[] {
+  if (!hint) return [];
+  return hint.split(/[\n,]/).map((w) => w.trim()).filter((w) => w !== "" && w.length <= HINT_WORD_MAX);
+}
+
 export interface AiServiceDeps {
   client: () => SttClient;
   configured: () => boolean;
@@ -17,11 +26,11 @@ export function createAiService(deps: AiServiceDeps): PluginAiServiceDeclaration
   return {
     id: "parakeet",
     displayName: "Parakeet STT (self-hosted)",
-    async transcribe(audio, { signal }) {
+    async transcribe(audio, { signal, hint }) {
       const p = deps.prefs.get();
       const started = deps.now();
       const text = await deps.client().transcribe(new Uint8Array(await audio.arrayBuffer()), audio.type, audio.name, {
-        customWords: p.customWords,
+        customWords: [...new Set([...p.customWords, ...hintWords(hint)])].slice(0, WORDS_MAX),
         removeFillers: p.removeFillers,
         correctionThreshold: p.correctionThreshold,
         timeoutMs: TRANSCRIBE_TIMEOUT_MS,

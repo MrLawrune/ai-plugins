@@ -1,7 +1,7 @@
 import type { DictationLog } from "./dictation-log.ts";
 import { MIGRATION_NOTE_KEY } from "./migrate.ts";
 import type { PrefsStore } from "./prefs.ts";
-import type { DeviceKind, HealthResult, Prefs } from "./schemas.ts";
+import { serverUrlSchema, type DeviceKind, type HealthResult, type Prefs, type ServerResult } from "./schemas.ts";
 import type { SttClient } from "./stt-client.ts";
 
 export const TRANSCRIBE_TIMEOUT_MS = 120_000;
@@ -13,12 +13,25 @@ export interface RpcDeps {
   history: DictationLog;
   kv: { get<T>(key: string): Promise<T | undefined>; delete(key: string): Promise<void> };
   now: () => number;
+  /** The server connection settings, written through bb's settings store. */
+  server: {
+    get(): { serverUrl: string; apiKey?: string };
+    set(values: { serverUrl?: string; apiKey?: string | null }): Promise<void>;
+    /** The plugin was marked needs-configuration at load; it clears only on the next load. */
+    needsConfiguration: boolean;
+  };
+  /** Aborts when the plugin unloads; cancels in-flight transcriptions. */
+  signal: AbortSignal;
 }
 
 const message = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
 export function createRpcHandlers(deps: RpcDeps) {
   let lastLatencyMs: number | null = null;
+  const serverResult = (): ServerResult => {
+    const { serverUrl, apiKey } = deps.server.get();
+    return { serverUrl, apiKeySet: !!apiKey, needsReload: deps.server.needsConfiguration && serverUrl.trim() !== "" };
+  };
   return {
     async health(): Promise<HealthResult> {
       if (!deps.configured()) return { configured: false, up: false, model: null, version: null, error: null, lastLatencyMs };
@@ -37,6 +50,7 @@ export function createRpcHandlers(deps: RpcDeps) {
         removeFillers: p.removeFillers,
         correctionThreshold: p.correctionThreshold,
         timeoutMs: TRANSCRIBE_TIMEOUT_MS,
+        signal: deps.signal,
       });
       const durationMs = deps.now() - started;
       lastLatencyMs = durationMs;
@@ -57,6 +71,16 @@ export function createRpcHandlers(deps: RpcDeps) {
     async forgetDevice(input: { id: string }) { await deps.prefs.forgetDevice(input.id); return { forgotten: true as const }; },
     async listHistory() { return { entries: deps.history.list() }; },
     async clearHistory() { deps.history.clear(); return { cleared: true as const }; },
+    async getServer() { return serverResult(); },
+    async setServer(input: { serverUrl?: string; apiKey?: string | null }) {
+      const url = input.serverUrl === undefined ? undefined : serverUrlSchema.safeParse(input.serverUrl);
+      if (url && !url.success) throw new Error(url.error.issues[0]!.message);
+      await deps.server.set({
+        ...(url?.success ? { serverUrl: url.data } : {}),
+        ...(input.apiKey !== undefined ? { apiKey: input.apiKey } : {}),
+      });
+      return serverResult();
+    },
     async getNote() {
       const note = await deps.kv.get<unknown>(MIGRATION_NOTE_KEY);
       return { note: typeof note === "string" && note !== "" ? note : null };

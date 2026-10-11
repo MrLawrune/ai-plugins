@@ -94,3 +94,13 @@ export const healthResultSchema = z.object({
   lastLatencyMs: z.number().nullable(),
 });
 export type HealthResult = z.infer<typeof healthResultSchema>;
+
+/** Server URL setting: empty (unset) or an absolute http(s) URL. */
+export const SERVER_URL_ERROR = "Enter an http or https URL";
+export const serverUrlSchema = z
+  .string()
+  .trim()
+  .refine((v) => v === "" || (z.url().safeParse(v).success && /^https?:\/\//i.test(v)), SERVER_URL_ERROR);
+
+export const serverResultSchema = z.object({ serverUrl: z.string(), apiKeySet: z.boolean(), needsReload: z.boolean() });
+export type ServerResult = z.infer<typeof serverResultSchema>;

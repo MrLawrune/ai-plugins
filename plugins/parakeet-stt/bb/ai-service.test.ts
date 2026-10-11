@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createAiService } from "./ai-service.ts";
+import { createAiService, hintWords } from "./ai-service.ts";
 import { PrefsStore } from "./prefs.ts";
 import { SttError, type SttClient, type TranscribeOptions } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
@@ -71,4 +71,24 @@ test("a failed transcription is not logged", async () => {
   const service = await setup({ async transcribe() { throw new SttError("unreachable", "down", null); } }, true, added);
   await assert.rejects(service.transcribe!(new File(["a"], "a.webm"), { signal: new AbortController().signal, hint: null }));
   assert.deepEqual(added, []);
+});
+
+test("hintWords splits on commas and newlines, trims, drops empties and over-long entries", () => {
+  assert.deepEqual(hintWords("tmux, kubectl\nPodman"), ["tmux", "kubectl", "Podman"]);
+  assert.deepEqual(hintWords(" , ,\n\n"), []);
+  assert.deepEqual(hintWords(null), []);
+  assert.deepEqual(hintWords(undefined), []);
+  assert.deepEqual(hintWords(`ok,${"x".repeat(65)},${"y".repeat(64)}`), ["ok", "y".repeat(64)]);
+});
+
+test("transcribe sends the union of the prefs words and the hint, deduped and capped at 200", async () => {
+  let words: string[] = [];
+  const service = await setup({ async transcribe(_a, _m, _f, opts) { words = opts.customWords; return "x"; } });
+  const signal = new AbortController().signal;
+  await service.transcribe!(new File(["a"], "a.webm"), { signal, hint: "kubectl, tmux\nPodman" });
+  assert.deepEqual(words, ["tmux", "kubectl", "Podman"]);
+  const many = Array.from({ length: 300 }, (_, i) => `w${i}`).join(",");
+  await service.transcribe!(new File(["a"], "a.webm"), { signal, hint: many });
+  assert.equal(words.length, 200);
+  assert.equal(words[0], "tmux");
 });

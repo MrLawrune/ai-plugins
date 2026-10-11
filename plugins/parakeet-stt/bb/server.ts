@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { createAiService } from "./ai-service.ts";
 import { DictationLog } from "./dictation-log.ts";
+import { LoadScope } from "./lifecycle.ts";
 import { migrate } from "./migrate.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers } from "./rpc.ts";
@@ -14,6 +15,10 @@ import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
 
 const PRUNE_EVERY_MS = 3_600_000;
+const NEEDS_URL_MESSAGE = "Set the Parakeet server URL in Settings → Plugins → Parakeet STT";
+const MAX_SESSIONS = 4;
+const CONNECT_TIMEOUT_MS = 10_000;
+const IDLE_TIMEOUT_MS = 60_000;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -27,6 +32,10 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 export { rpcContract } from "./contract.ts";
 
 export default async function plugin(bb: BbPluginApi) {
+  // Registered first, so it runs last: everything that holds the scope's signal is stopped by then.
+  const scope = new LoadScope();
+  bb.onDispose(() => scope.dispose());
+
   const settings = bb.settings.define({
     serverUrl: {
       type: "string",
@@ -38,6 +47,13 @@ export default async function plugin(bb: BbPluginApi) {
   });
   let current = await settings.get();
   let client: SttClient = createSttClient({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" });
+  // Saving settings does not reload the plugin, so this status only clears on the next load.
+  const needsConfiguration = current.serverUrl.trim() === "";
+  if (needsConfiguration) bb.status.needsConfiguration(NEEDS_URL_MESSAGE);
+  const apply = (next: typeof current) => {
+    current = next;
+    client = createSttClient({ serverUrl: next.serverUrl, apiKey: next.apiKey ?? "" });
+  };
 
   const prefs = new PrefsStore(bb.storage.kv);
   // Until the prefs are loaded the log must not prune to the default limits (the stored ones may be larger).
@@ -73,16 +89,35 @@ export default async function plugin(bb: BbPluginApi) {
     history: log,
     kv: bb.storage.kv,
     now: Date.now,
+    server: {
+      get: () => current,
+      async set(values) {
+        apply(await settings.experimental_set({
+          ...(values.serverUrl !== undefined ? { serverUrl: values.serverUrl === "" ? null : values.serverUrl } : {}),
+          ...(values.apiKey !== undefined ? { apiKey: values.apiKey } : {}),
+        }));
+      },
+      needsConfiguration,
+    },
+    signal: scope.signal,
   }));
 
-  bb.http.experimental_websocket("/stream", createStreamRelay({
+  const relay = createStreamRelay({
     config: () => ({ serverUrl: current.serverUrl, apiKey: current.apiKey ?? "" }),
     prefs: (device) => prefs.forDevice(device),
     connect: (url) => new WebSocket(url) as unknown as UpstreamSocket,
     log: (m) => bb.log.warn(m),
     onSession: (s) => log.add({ ...s, source: "stream" }),
     now: Date.now,
-  }));
+    maxSessions: MAX_SESSIONS,
+    connectTimeoutMs: CONNECT_TIMEOUT_MS,
+    idleTimeoutMs: IDLE_TIMEOUT_MS,
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    signal: scope.signal,
+  });
+  bb.onDispose(() => relay.closeAll());
+  bb.http.experimental_websocket("/stream", relay.handler);
   bb.http.route("GET", "/prefs", (c) => Response.json(prefs.forDevice(c.req.query("device"))));
 
   bb.experimental_aiServices.register(createAiService({
@@ -93,10 +128,7 @@ export default async function plugin(bb: BbPluginApi) {
     now: Date.now,
   }));
 
-  settings.onChange((next) => {
-    current = next;
-    client = createSttClient({ serverUrl: next.serverUrl, apiKey: next.apiKey ?? "" });
-  });
+  settings.onChange(apply);
 
   const assets = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "assets");
   for (const sound of SOUNDS) {

@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { DictationLog } from "./dictation-log.ts";
 import { PrefsStore } from "./prefs.ts";
-import { createRpcHandlers } from "./rpc.ts";
+import { createRpcHandlers, type RpcDeps } from "./rpc.ts";
 import { SttError, type SttClient } from "./stt-client.ts";
 import { memKv } from "./test-kv.ts";
 
-async function setup(client: Partial<SttClient>, configured = true) {
+type SetCall = { serverUrl?: string | null; apiKey?: string | null };
+
+async function setup(client: Partial<SttClient>, configured = true, server: Partial<RpcDeps["server"]> = {}, signal: AbortSignal = new AbortController().signal) {
   const kv = memKv();
   const prefs = new PrefsStore(kv);
   await prefs.load();
@@ -21,8 +23,23 @@ async function setup(client: Partial<SttClient>, configured = true) {
   });
   history.init();
   let t = 1000;
-  const handlers = createRpcHandlers({ client: () => client as SttClient, configured: () => configured, prefs, history, kv, now: () => (t += 50) });
-  return { handlers, history, kv };
+  const sets: SetCall[] = [];
+  let url = configured ? "https://stt.example" : "";
+  let key = "";
+  const handlers = createRpcHandlers({
+    client: () => client as SttClient, configured: () => configured, prefs, history, kv, now: () => (t += 50), signal,
+    server: {
+      get: () => ({ serverUrl: url, apiKey: key || undefined }),
+      async set(v: SetCall) {
+        sets.push(v);
+        if (v.serverUrl !== undefined) url = v.serverUrl ?? "";
+        if (v.apiKey !== undefined) key = v.apiKey ?? "";
+      },
+      needsConfiguration: false,
+      ...server,
+    },
+  });
+  return { handlers, history, kv, sets };
 }
 
 test("transcribe decodes base64, applies prefs, records history", async () => {
@@ -79,4 +96,47 @@ test("getNote returns the migration note until dismissNote deletes it", async ()
   assert.deepEqual(await handlers.getNote(), { note: null });
   await kv.set("migration-note", 5);
   assert.deepEqual(await handlers.getNote(), { note: null });
+});
+
+test("getServer reports the URL and whether a key is set, never the key", async () => {
+  const { handlers, sets } = await setup({});
+  assert.deepEqual(await handlers.getServer(), { serverUrl: "https://stt.example", apiKeySet: false, needsReload: false });
+  await handlers.setServer({ apiKey: "s3cret" });
+  const out = await handlers.getServer();
+  assert.equal(out.apiKeySet, true);
+  assert.equal(JSON.stringify(out).includes("s3cret"), false);
+  assert.deepEqual(sets, [{ apiKey: "s3cret" }]);
+});
+
+test("setServer rejects URLs that are not http(s)", async () => {
+  const { handlers, sets } = await setup({});
+  for (const bad of ["ftp://x", "not a url", "stt.example", "javascript:alert(1)"]) {
+    await assert.rejects(handlers.setServer({ serverUrl: bad }), /Enter an http or https URL/, bad);
+  }
+  assert.deepEqual(sets, []);
+});
+
+test("setServer writes a valid URL through settings and trims it; empty clears; null clears the key", async () => {
+  const { handlers, sets } = await setup({});
+  const out = await handlers.setServer({ serverUrl: " http://stt.example:9000/ " });
+  assert.equal(out.serverUrl, "http://stt.example:9000/");
+  await handlers.setServer({ serverUrl: "" });
+  await handlers.setServer({ apiKey: null });
+  assert.deepEqual(sets, [{ serverUrl: "http://stt.example:9000/" }, { serverUrl: "" }, { apiKey: null }]);
+});
+
+test("needsReload is true once a URL is set after the plugin was marked needs-configuration", async () => {
+  const { handlers } = await setup({}, false, { needsConfiguration: true });
+  assert.equal((await handlers.getServer()).needsReload, false);
+  assert.equal((await handlers.setServer({ serverUrl: "https://stt.example" })).needsReload, true);
+});
+
+test("transcribe passes an abort signal that follows the scope signal", async () => {
+  let got: AbortSignal | undefined;
+  const ctl = new AbortController();
+  const { handlers } = await setup({ async transcribe(_a, _m, _f, opts) { got = opts.signal; return "x"; } }, true, {}, ctl.signal);
+  await handlers.transcribe({ audioBase64: "YQ==", mimeType: "a", filename: "b" });
+  assert.equal(got!.aborted, false);
+  ctl.abort();
+  assert.equal(got!.aborted, true);
 });
