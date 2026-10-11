@@ -2,7 +2,8 @@
 // Each browser registers with a random id (see device.ts) and gets the profile for its kind until
 // it is assigned another one.
 import {
-  deviceSchema,
+  deviceKindSchema,
+  idSchema,
   nameSchema,
   PROFILE_KEYS,
   prefsSchema,
@@ -75,9 +76,15 @@ export function split(p: Prefs): { shared: SharedPrefs; profile: ProfilePrefs } 
   return { shared: shared as SharedPrefs, profile: profile as ProfilePrefs };
 }
 
-function parsePrefs(raw: unknown): Prefs {
-  const parsed = prefsSchema.safeParse({ ...DEFAULT_PREFS, ...(raw && typeof raw === "object" ? raw : {}) });
-  return parsed.success ? parsed.data : DEFAULT_PREFS;
+/** Prefs from a stored object, validated field by field: an invalid or missing field takes its default. */
+export function parsePrefs(raw: unknown): Prefs {
+  const src = isRecord(raw) ? raw : {};
+  const out: Record<string, unknown> = { ...DEFAULT_PREFS };
+  for (const [key, schema] of Object.entries(prefsSchema.shape)) {
+    const parsed = schema.safeParse(src[key]);
+    if (parsed.success) out[key] = parsed.data;
+  }
+  return out as Prefs;
 }
 
 /** Starter state: `base` becomes the shared settings and the Desktop and Touch screen profiles. */
@@ -97,25 +104,49 @@ export function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
-/** Validate a stored row field by field; null when it is not a usable v2 row. */
-function parseState(raw: unknown): State | null {
-  if (!isRecord(raw) || raw.v !== SETTINGS_VERSION || !isRecord(raw.profiles)) return null;
-  const shared = split(parsePrefs(raw.shared)).shared;
+/** A device with an unusable id is dropped; its other fields fall back (unknown kind: desktop, empty name: "Device"). */
+function parseDevice(d: unknown): DeviceRecord | null {
+  if (!isRecord(d)) return null;
+  const id = idSchema.safeParse(d.id);
+  if (!id.success) return null;
+  const kind = deviceKindSchema.catch("desktop").parse(d.kind);
+  return {
+    id: id.data,
+    name: nameSchema.catch("Device").parse(d.name),
+    kind,
+    profileId: idSchema.catch(kind).parse(d.profileId),
+    lastSeen: typeof d.lastSeen === "number" && Number.isFinite(d.lastSeen) ? d.lastSeen : 0,
+  };
+}
+
+/**
+ * The shared prefs, profiles and devices of a stored row, validated field by field (`parse` reads one
+ * prefs object); null when the row holds no usable profile.
+ */
+export function parseRows(raw: Record<string, unknown>, parse: (raw: unknown) => Prefs = parsePrefs): State | null {
+  if (!isRecord(raw.profiles)) return null;
+  const shared = split(parse(raw.shared)).shared;
   const profiles: Record<string, Profile> = {};
-  for (const [id, p] of Object.entries(raw.profiles).slice(0, MAX_PROFILES)) {
+  for (const [id, p] of Object.entries(raw.profiles)) {
+    if (Object.keys(profiles).length >= MAX_PROFILES) break;
     const name = nameSchema.safeParse(isRecord(p) ? p.name : undefined);
-    if (!name.success) continue;
-    profiles[id] = { name: name.data, prefs: split(parsePrefs({ ...shared, ...(isRecord(p) && isRecord(p.prefs) ? p.prefs : {}) })).profile };
+    if (!idSchema.safeParse(id).success || !name.success) continue;
+    profiles[id] = { name: name.data, prefs: split(parse({ ...shared, ...(isRecord(p) && isRecord(p.prefs) ? p.prefs : {}) })).profile };
   }
   if (!Object.keys(profiles).length) return null;
   const devices: Record<string, DeviceRecord> = {};
   if (isRecord(raw.devices)) {
     for (const d of Object.values(raw.devices)) {
-      const parsed = deviceSchema.safeParse(d);
-      if (parsed.success) devices[parsed.data.id] = parsed.data;
+      const device = parseDevice(d);
+      if (device) devices[device.id] = device;
     }
   }
   return { shared, profiles, devices: trimDevices(devices) };
+}
+
+/** Validate a stored v2 row; null when it is not a usable one. */
+function parseState(raw: unknown): State | null {
+  return isRecord(raw) && raw.v === SETTINGS_VERSION ? parseRows(raw) : null;
 }
 
 export function trimDevices(devices: Record<string, DeviceRecord>): Record<string, DeviceRecord> {

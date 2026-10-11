@@ -8,23 +8,23 @@ import {
   freshState,
   isRecord,
   KIND_PROFILE_NAMES,
-  MAX_PROFILES,
+  parsePrefs,
+  parseRows,
   SETTINGS_KEY,
   SETTINGS_VERSION,
-  split,
-  trimDevices,
-  type Profile,
   type State,
 } from "./prefs.ts";
-import { deviceSchema, idSchema, nameSchema, prefsSchema, type DeviceRecord, type Prefs } from "./schemas.ts";
+import { prefsSchema, type Prefs } from "./schemas.ts";
 
 export const MIGRATION_NOTE_KEY = "migration-note";
 export const MIGRATION_NOTE = "Settings moved to the new layout. History now keeps 7 days.";
+export const MIGRATION_NOTE_FAILED_IMPORT = `${MIGRATION_NOTE} Your earlier dictation history could not be imported yet; bb will retry.`;
+/** Set when the history import failed; the old `history` row is kept and the import retried on each load. */
+export const HISTORY_PENDING_KEY = "history-import-pending";
 
 const OLD_STATE_KEY = "profiles-v1";
 const OLD_PREFS_KEY = "prefs";
 const OLD_HISTORY_KEY = "history";
-const OLD_KEYS = [OLD_STATE_KEY, OLD_PREFS_KEY, OLD_HISTORY_KEY];
 
 export interface MigrateResult { migrated: boolean; note: string | null }
 
@@ -33,6 +33,8 @@ interface MigrateKv {
   set(k: string, v: unknown): Promise<void>;
   delete(k: string): Promise<void>;
 }
+type Deps = { kv: MigrateKv; log: Pick<DictationLog, "importLegacy">; warn: (m: string) => void };
+type OldEntry = { text: string; at: number; durationMs: number };
 
 /** 0.1.0 kept the newest `historyLimit` (0–50) entries; its default was 5. */
 const historyLimitSchema = z.number().int().min(0).max(50);
@@ -40,104 +42,115 @@ const legacyEntrySchema = z.object({ text: z.string(), at: z.number().finite(), 
 
 const errorText = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
-/** Prefs from a stored object, validated field by field (invalid or missing fields take their defaults). */
+/** 0.1.0 prefs: `historyLimit` is the entry limit and the retention age is the new default. */
 function parseLegacyPrefs(raw: unknown): Prefs {
   const src = isRecord(raw) ? raw : {};
-  const out: Record<string, unknown> = { ...DEFAULT_PREFS };
-  for (const [key, schema] of Object.entries(prefsSchema.shape)) {
-    const parsed = schema.safeParse(src[key]);
-    if (parsed.success) out[key] = parsed.data;
-  }
   const limit = historyLimitSchema.safeParse(src.historyLimit);
-  if (limit.success) out.historyMaxEntries = limit.data;
-  out.historyMaxAgeDays = DEFAULT_PREFS.historyMaxAgeDays;
-  return out as Prefs;
+  return { ...parsePrefs(limit.success ? { ...src, historyMaxEntries: limit.data } : src), historyMaxAgeDays: DEFAULT_PREFS.historyMaxAgeDays };
 }
 
 /** The 0.1.0 `profiles-v1` row as the new state, or null when it holds no usable profile. */
 function parseOldState(raw: unknown): State | null {
-  if (!isRecord(raw) || !isRecord(raw.profiles)) return null;
-  const shared = split(parseLegacyPrefs(raw.shared)).shared;
-  const profiles: Record<string, Profile> = {};
-  for (const [id, p] of Object.entries(raw.profiles)) {
-    if (Object.keys(profiles).length >= MAX_PROFILES) break;
-    if (!idSchema.safeParse(id).success) continue;
-    const name = nameSchema.safeParse(isRecord(p) ? p.name : undefined);
-    if (!name.success) continue;
-    profiles[id] = { name: name.data, prefs: split(parseLegacyPrefs({ ...shared, ...(isRecord(p) && isRecord(p.prefs) ? p.prefs : {}) })).profile };
-  }
-  if (!Object.keys(profiles).length) return null;
-  const devices: Record<string, DeviceRecord> = {};
-  if (isRecord(raw.devices)) {
-    for (const d of Object.values(raw.devices)) {
-      const parsed = deviceSchema.safeParse(d);
-      if (parsed.success) devices[parsed.data.id] = parsed.data;
-    }
-  }
+  const state = isRecord(raw) ? parseRows(raw, parseLegacyPrefs) : null;
+  if (!state) return null;
+  const { profiles, devices } = state;
   // The earlier Phone profile is the touch-screen profile.
   if (profiles.phone && !profiles.touch) {
     profiles.touch = { ...profiles.phone, name: profiles.phone.name === "Phone" ? KIND_PROFILE_NAMES.touch : profiles.phone.name };
     delete profiles.phone;
     for (const d of Object.values(devices)) if (d.profileId === "phone") d.profileId = "touch";
   }
-  return { shared, profiles, devices: trimDevices(devices) };
+  return state;
 }
 
-/** Old history entries (newest first), skipping malformed ones. */
-function parseOldHistory(raw: unknown): { text: string; at: number; durationMs: number }[] {
+/** Old history entries (newest first), skipping malformed ones, at most `limit`. */
+function parseOldHistory(raw: unknown, limit: number): OldEntry[] {
   if (!Array.isArray(raw)) return [];
-  const entries: { text: string; at: number; durationMs: number }[] = [];
+  const entries: OldEntry[] = [];
   for (const item of raw) {
     const parsed = legacyEntrySchema.safeParse(item);
     if (parsed.success) entries.push({ text: parsed.data.text, at: parsed.data.at, durationMs: parsed.data.durationMs });
   }
-  return entries;
+  return entries.slice(0, limit);
+}
+
+/** Import the old history, then drop its row. False (warned, nothing deleted) when the import throws. */
+async function importHistory(d: Deps, entries: OldEntry[]): Promise<boolean> {
+  try {
+    d.log.importLegacy(entries);
+  } catch (e) {
+    d.warn(`dictation history import failed: ${errorText(e)}`);
+    return false;
+  }
+  await deleteRow(d, OLD_HISTORY_KEY);
+  return true;
+}
+
+async function deleteRow(d: Deps, key: string): Promise<void> {
+  try {
+    await d.kv.delete(key);
+  } catch (e) {
+    d.warn(`could not delete the old ${key} row: ${errorText(e)}`);
+  }
+}
+
+/** Retry an earlier failed history import under the history limit stored in `settings`. */
+async function retryHistory(d: Deps, settings: unknown): Promise<void> {
+  const history = await d.kv.get<unknown>(OLD_HISTORY_KEY);
+  if (history === undefined) return void (await deleteRow(d, HISTORY_PENDING_KEY));
+  const stored = isRecord(settings) && isRecord(settings.shared) ? prefsSchema.shape.historyMaxEntries.safeParse(settings.shared.historyMaxEntries) : null;
+  if (await importHistory(d, parseOldHistory(history, stored?.success ? stored.data : DEFAULT_PREFS.historyMaxEntries))) {
+    await deleteRow(d, HISTORY_PENDING_KEY);
+  }
 }
 
 /**
  * Builds the `settings` row from the 0.1.0 rows when it does not exist yet, imports the old history
  * into the dictation log and deletes the old rows. The `settings` write comes first so a failure
- * before it leaves everything as it was; the history import follows it (once, so it can never
- * duplicate) and is best-effort, keeping the old `history` row when it fails.
+ * before it leaves everything as it was; the history import follows it and is best-effort: when it
+ * fails the old `history` row stays, a marker is set and the import is retried on each later load.
  */
-export async function migrate(deps: { kv: MigrateKv; log: Pick<DictationLog, "importLegacy">; warn: (m: string) => void }): Promise<MigrateResult> {
-  const { kv, log, warn } = deps;
-  let history: ReturnType<typeof parseOldHistory>;
+export async function migrate(d: Deps): Promise<MigrateResult> {
   let state: State;
+  let rawHistory: unknown;
+  const present: string[] = [];
   try {
-    if ((await kv.get<unknown>(SETTINGS_KEY)) !== undefined) return { migrated: false, note: null };
-    const oldState = await kv.get<unknown>(OLD_STATE_KEY);
-    const oldPrefs = await kv.get<unknown>(OLD_PREFS_KEY);
+    const settings = await d.kv.get<unknown>(SETTINGS_KEY);
+    if (settings !== undefined) {
+      if ((await d.kv.get<unknown>(HISTORY_PENDING_KEY)) !== undefined) await retryHistory(d, settings);
+      return { migrated: false, note: null };
+    }
+    const oldState = await d.kv.get<unknown>(OLD_STATE_KEY);
+    const oldPrefs = await d.kv.get<unknown>(OLD_PREFS_KEY);
+    rawHistory = await d.kv.get<unknown>(OLD_HISTORY_KEY);
+    for (const [key, value] of [[OLD_STATE_KEY, oldState], [OLD_PREFS_KEY, oldPrefs]] as const) if (value !== undefined) present.push(key);
     // A profiles-v1 row without usable profiles falls back to the legacy prefs row, as 0.1.0 did.
     const parsed = parseOldState(oldState);
-    if (!parsed && !isRecord(oldState) && !isRecord(oldPrefs)) return { migrated: false, note: null };
+    if (!parsed && !isRecord(oldState) && !isRecord(oldPrefs) && rawHistory === undefined) return { migrated: false, note: null };
     state = parsed ?? freshState(parseLegacyPrefs(oldPrefs));
-    history = parseOldHistory(await kv.get<unknown>(OLD_HISTORY_KEY)).slice(0, state.shared.historyMaxEntries);
-    await kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...state });
+    await d.kv.set(SETTINGS_KEY, { v: SETTINGS_VERSION, ...state });
   } catch (e) {
-    warn(`settings migration failed, keeping the old storage: ${errorText(e)}`);
+    d.warn(`settings migration failed, keeping the old storage: ${errorText(e)}`);
     return { migrated: false, note: null };
   }
 
-  let keepHistory = false;
-  try {
-    log.importLegacy(history);
-  } catch (e) {
-    keepHistory = true;
-    warn(`dictation history import failed: ${errorText(e)}`);
-  }
-  for (const key of OLD_KEYS) {
-    if (keepHistory && key === OLD_HISTORY_KEY) continue;
-    try {
-      await kv.delete(key);
-    } catch (e) {
-      warn(`could not delete the old ${key} row: ${errorText(e)}`);
+  let note = MIGRATION_NOTE;
+  if (rawHistory !== undefined) {
+    const entries = parseOldHistory(rawHistory, state.shared.historyMaxEntries);
+    if (!(await importHistory(d, entries))) {
+      note = MIGRATION_NOTE_FAILED_IMPORT;
+      try {
+        await d.kv.set(HISTORY_PENDING_KEY, true);
+      } catch (e) {
+        d.warn(`could not mark the history import as pending: ${errorText(e)}`);
+      }
     }
   }
+  for (const key of present) await deleteRow(d, key);
   try {
-    await kv.set(MIGRATION_NOTE_KEY, MIGRATION_NOTE);
+    await d.kv.set(MIGRATION_NOTE_KEY, note);
   } catch (e) {
-    warn(`could not store the migration note: ${errorText(e)}`);
+    d.warn(`could not store the migration note: ${errorText(e)}`);
   }
-  return { migrated: true, note: MIGRATION_NOTE };
+  return { migrated: true, note };
 }

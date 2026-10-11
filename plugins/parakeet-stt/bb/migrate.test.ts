@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { DictationLog } from "./dictation-log.ts";
-import { MIGRATION_NOTE, MIGRATION_NOTE_KEY, migrate } from "./migrate.ts";
+import { HISTORY_PENDING_KEY, MIGRATION_NOTE, MIGRATION_NOTE_FAILED_IMPORT, MIGRATION_NOTE_KEY, migrate } from "./migrate.ts";
 import { DEFAULT_PREFS, PrefsStore } from "./prefs.ts";
 import { memKv } from "./test-kv.ts";
 
@@ -39,6 +39,7 @@ test("a real profiles-v1 row becomes the settings row, old rows go, the note is 
   assert.deepEqual(await run(), { migrated: true, note: MIGRATION_NOTE });
   assert.equal(MIGRATION_NOTE, "Settings moved to the new layout. History now keeps 7 days.");
   assert.deepEqual(kv.deleted.sort(), ["history", "prefs", "profiles-v1"]);
+  assert.equal(kv.data[HISTORY_PENDING_KEY], undefined);
   assert.equal(kv.data[MIGRATION_NOTE_KEY], MIGRATION_NOTE);
   assert.equal(MIGRATION_NOTE_KEY, "migration-note");
   const row = kv.data.settings as { v: number; shared: Record<string, unknown>; profiles: Record<string, { name: string; prefs: Record<string, unknown> }>; devices: Record<string, { kind: string; profileId: string }> };
@@ -106,7 +107,7 @@ test("only the legacy prefs row seeds both starter profiles", async () => {
   assert.equal(row.shared.historyMaxEntries, 3);
   assert.deepEqual(row.shared.customWords, ["a"]);
   assert.deepEqual(row.devices, {});
-  assert.deepEqual(kv.deleted.sort(), ["history", "prefs", "profiles-v1"]);
+  assert.deepEqual(kv.deleted.sort(), ["prefs"]);
 });
 
 test("historyLimit 0 stays 0 and imports nothing", async () => {
@@ -160,8 +161,8 @@ test("invalid fields fall back one by one; the valid ones survive", async () => 
       },
       devices: {
         ok: { id: "ok", name: "A", kind: "desktop", profileId: "desktop", lastSeen: 1 },
-        bad: { id: "bad", name: "", kind: "desktop", profileId: "desktop", lastSeen: 1 },
         worse: 5,
+        noId: { name: "X", kind: "desktop", profileId: "desktop", lastSeen: 1 },
       },
     },
   });
@@ -250,15 +251,93 @@ test("a failing kv read never rethrows", async () => {
   assert.equal(warnings.length, 1);
 });
 
-test("a failing history import keeps the history row; settings still migrate", async () => {
+test("a failing history import keeps the history row, marks it pending and says so in the note", async () => {
   const kv = memKv({ "profiles-v1": legacyRow(), prefs: {}, history: [{ id: "a", text: "x", at: 1, durationMs: 1 }] });
   const warnings: string[] = [];
   const log = { importLegacy() { throw new Error("db locked"); } };
   const result = await migrate({ kv, log, warn: (m) => warnings.push(m) });
-  assert.equal(result.migrated, true);
+  assert.deepEqual(result, { migrated: true, note: MIGRATION_NOTE_FAILED_IMPORT });
+  assert.ok(MIGRATION_NOTE_FAILED_IMPORT.startsWith(MIGRATION_NOTE));
+  assert.equal(kv.data[MIGRATION_NOTE_KEY], MIGRATION_NOTE_FAILED_IMPORT);
   assert.deepEqual(kv.deleted.sort(), ["prefs", "profiles-v1"]);
   assert.ok(kv.data.history);
+  assert.ok(kv.data[HISTORY_PENDING_KEY]);
+  assert.equal(HISTORY_PENDING_KEY, "history-import-pending");
   assert.ok(warnings.some((w) => w.includes("db locked")));
+});
+
+test("a pending history import is retried on the next load and cleans up", async () => {
+  const history = [{ id: "a", text: "one", at: 20, durationMs: 1 }, "junk", { id: "b", text: "two", at: 10, durationMs: 2 }];
+  const { kv, log, run } = setup({ "profiles-v1": legacyRow(), history });
+  const first = { importLegacy() { throw new Error("db locked"); } };
+  await migrate({ kv, log: first, warn: () => {} });
+  assert.ok(kv.data[HISTORY_PENDING_KEY]);
+  kv.deleted.length = 0;
+  assert.deepEqual(await run(), { migrated: false, note: null });
+  assert.deepEqual(log.imported, [[{ text: "one", at: 20, durationMs: 1 }, { text: "two", at: 10, durationMs: 2 }]]);
+  assert.deepEqual(kv.deleted.sort(), ["history", HISTORY_PENDING_KEY]);
+  assert.equal(kv.data.history, undefined);
+  // Third load: nothing left to do.
+  log.imported.length = 0;
+  await run();
+  assert.deepEqual(log.imported, []);
+});
+
+test("the retry respects the stored history limit", async () => {
+  const kv = memKv({ settings: { v: 2, shared: { historyMaxEntries: 1 }, profiles: {} }, [HISTORY_PENDING_KEY]: true, history: [{ text: "a", at: 2, durationMs: 1 }, { text: "b", at: 1, durationMs: 1 }] });
+  const log = fakeLog();
+  await migrate({ kv, log, warn: () => {} });
+  assert.deepEqual(log.imported, [[{ text: "a", at: 2, durationMs: 1 }]]);
+});
+
+test("a retry that fails again warns, keeps both rows and does not throw", async () => {
+  const kv = memKv({ settings: { v: 2 }, [HISTORY_PENDING_KEY]: true, history: [{ id: "a", text: "x", at: 1, durationMs: 1 }] });
+  const warnings: string[] = [];
+  const result = await migrate({ kv, log: { importLegacy() { throw new Error("still locked"); } }, warn: (m) => warnings.push(m) });
+  assert.deepEqual(result, { migrated: false, note: null });
+  assert.deepEqual(kv.deleted, []);
+  assert.ok(kv.data.history && kv.data[HISTORY_PENDING_KEY]);
+  assert.ok(warnings.some((w) => w.includes("still locked")));
+});
+
+test("a marker without a settings-time history row just clears itself", async () => {
+  const kv = memKv({ settings: { v: 2 }, [HISTORY_PENDING_KEY]: true });
+  assert.deepEqual(await migrate({ kv, log: fakeLog(), warn: () => {} }), { migrated: false, note: null });
+  assert.deepEqual(kv.deleted, [HISTORY_PENDING_KEY]);
+});
+
+test("a history-only install migrates with default settings", async () => {
+  const { kv, log, run } = setup({ history: [{ id: "a", text: "x", at: 5, durationMs: 1 }, "junk"] });
+  assert.deepEqual(await run(), { migrated: true, note: MIGRATION_NOTE });
+  const row = kv.data.settings as { v: number; shared: Record<string, unknown>; profiles: Record<string, unknown> };
+  assert.equal(row.v, 2);
+  assert.deepEqual(Object.keys(row.profiles), ["desktop", "touch"]);
+  assert.equal(row.shared.historyMaxEntries, DEFAULT_PREFS.historyMaxEntries);
+  assert.deepEqual(log.imported, [[{ text: "x", at: 5, durationMs: 1 }]]);
+  assert.deepEqual(kv.deleted, ["history"]);
+  assert.equal(kv.data[MIGRATION_NOTE_KEY], MIGRATION_NOTE);
+});
+
+test("devices parse like 0.1.0: odd kinds and names are coerced, only an unusable id drops one", async () => {
+  const { kv, run } = setup({
+    "profiles-v1": {
+      shared: {},
+      profiles: { desktop: { name: "Desktop", prefs: {} } },
+      devices: {
+        a: { id: "a", name: "", kind: "toaster", profileId: "desktop", lastSeen: 3 },
+        b: { id: "b", name: "Pad", kind: "tablet", profileId: "desktop", lastSeen: 2 },
+        c: { id: "c", name: "Odd", kind: "phone", profileId: "not valid!", lastSeen: "x" },
+        "bad id!": { id: "bad id!", name: "N", kind: "desktop", profileId: "desktop", lastSeen: 1 },
+        d: { name: "No id", kind: "desktop", profileId: "desktop", lastSeen: 1 },
+      },
+    },
+  });
+  await run();
+  const devices = (kv.data.settings as { devices: Record<string, Record<string, unknown>> }).devices;
+  assert.deepEqual(Object.keys(devices).sort(), ["a", "b", "c"]);
+  assert.deepEqual([devices.a.name, devices.a.kind], ["Device", "desktop"]);
+  assert.equal(devices.b.kind, "touch");
+  assert.deepEqual([devices.c.kind, devices.c.profileId, devices.c.lastSeen], ["touch", "touch", 0]);
 });
 
 test("each old row is deleted independently", async () => {

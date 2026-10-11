@@ -248,3 +248,24 @@ test("floating mic on phones by default", () => {
 test("collapsed composer shows more lines by default", () => {
   assert.equal(DEFAULT_PREFS.expandCompactDraft, true);
 });
+
+test("a stored settings row with one invalid field keeps every other field", async () => {
+  const kv = memKv({
+    settings: {
+      v: 2,
+      shared: { ...DEFAULT_PREFS, correctionThreshold: 9, sendPhrase: "ship it", customWords: ["tmux"] },
+      profiles: { desktop: { name: "Desktop", prefs: { autoSubmit: true, pauseMs: 1 } }, touch: { name: "Touch screen", prefs: { floatingMic: false } } },
+      devices: { d1: { id: "d1", name: "", kind: "toaster", profileId: "touch", lastSeen: 4 } },
+    },
+  });
+  const store = new PrefsStore(kv);
+  await store.load();
+  const desktop = store.get("desktop");
+  assert.equal(desktop.correctionThreshold, DEFAULT_PREFS.correctionThreshold);
+  assert.equal(desktop.sendPhrase, "ship it");
+  assert.deepEqual(desktop.customWords, ["tmux"]);
+  assert.equal(desktop.autoSubmit, true);
+  assert.equal(desktop.pauseMs, DEFAULT_PREFS.pauseMs);
+  assert.equal(store.get("touch").floatingMic, false);
+  assert.deepEqual(store.devices().map((d) => [d.id, d.name, d.kind, d.profileId]), [["d1", "Device", "desktop", "touch"]]);
+});

@@ -9,6 +9,10 @@ const customWordsSchema = z
   .max(200)
   .transform((words) => [...new Set(words.map((w) => w.trim()).filter(Boolean))]);
 
+/** Bounds of the history retention settings. */
+export const HISTORY_MAX_ENTRIES = 1000;
+export const HISTORY_MAX_AGE_DAYS = 90;
+
 export const prefsSchema = z.object({
   shortcut: z.enum(SHORTCUTS),
   holdToTalk: z.boolean(),
@@ -18,8 +22,8 @@ export const prefsSchema = z.object({
   customWords: customWordsSchema,
   removeFillers: z.boolean(),
   correctionThreshold: z.number().min(0).max(0.5),
-  historyMaxEntries: z.number().int().min(0).max(1000),
-  historyMaxAgeDays: z.number().int().min(1).max(90),
+  historyMaxEntries: z.number().int().min(0).max(HISTORY_MAX_ENTRIES),
+  historyMaxAgeDays: z.number().int().min(1).max(HISTORY_MAX_AGE_DAYS),
   mode: z.enum(["continuous", "oneshot"]),
   livePreview: z.boolean(),
   pauseMs: z.number().int().min(300).max(1500),

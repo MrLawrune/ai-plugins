@@ -9,14 +9,11 @@ import { migrate } from "./migrate.ts";
 import { PrefsStore } from "./prefs.ts";
 import { createRpcHandlers } from "./rpc.ts";
 import { rpcContract } from "./contract.ts";
-import { SOUNDS } from "./schemas.ts";
+import { HISTORY_MAX_AGE_DAYS, HISTORY_MAX_ENTRIES, SOUNDS } from "./schemas.ts";
 import { createStreamRelay, type UpstreamSocket } from "./stream-relay.ts";
 import { createSttClient, type SttClient } from "./stt-client.ts";
 
 const PRUNE_EVERY_MS = 3_600_000;
-/** The schema maxima for the history limits. */
-const HISTORY_MAX_ENTRIES = 1000;
-const HISTORY_MAX_AGE_DAYS = 90;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
