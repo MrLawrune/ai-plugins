@@ -91,7 +91,7 @@ test("a failed write leaves the committed state and does not block the queue", a
   assert.deepEqual([store.get("desktop").autoSubmit, store.get("desktop").trailingSpace], [false, true]);
 });
 
-test("hello writes only for a new, renamed or retyped device, or after ten minutes", async () => {
+test("hello writes only for a new device or after ten minutes", async () => {
   const kv = memKv();
   const store = new PrefsStore(kv);
   await store.load();
@@ -103,11 +103,23 @@ test("hello writes only for a new, renamed or retyped device, or after ten minut
   assert.equal(kv.writes, 1);
   await store.hello("d1", "Linux PC", "desktop", 600_999 + 600_000);
   assert.equal(kv.writes, 2);
-  await store.hello("d1", "Work PC", "desktop", 1_200_000);
+  await store.hello("d1", "Work PC", "touch", 2_000_000);
+  assert.deepEqual([store.devices()[0]!.name, store.devices()[0]!.kind], ["Linux PC", "desktop"]); // known devices keep name and kind
   assert.equal(kv.writes, 3);
-  await store.hello("d1", "Work PC", "touch", 1_200_001);
-  assert.equal(kv.writes, 4);
-  assert.equal(store.devices()[0]!.name, "Work PC");
+});
+
+test("a renamed device keeps its name when the browser says hello with its guessed name", async () => {
+  const kv = memKv();
+  const store = new PrefsStore(kv);
+  await store.load();
+  await store.hello("d1", "Linux PC", "desktop", 1_000);
+  await store.updateDevice("d1", { name: "Desk" });
+  const writes = kv.writes;
+  const device = await store.hello("d1", "Linux PC", "desktop", 2_000);
+  assert.deepEqual([device.name, device.lastSeen], ["Desk", 2_000]);
+  assert.equal(kv.writes, writes);
+  assert.equal((await store.hello("d1", "Linux PC", "desktop", 700_000)).name, "Desk"); // ≥10 min: written, name kept
+  assert.equal(kv.writes, writes + 1);
 });
 
 test("history size prefs are shared, bounded, and persisted", async () => {
@@ -160,7 +172,7 @@ test("new devices get their kind's profile", async () => {
   assert.deepEqual([phone.profileId, pc.profileId, tab.profileId], ["touch", "desktop", "touch"]);
   assert.equal(store.forDevice("t1").floatingMic, false);
   assert.equal(store.forDevice("unknown").floatingMic, true); // first profile (Desktop)
-  const again = await store.hello("p1", "Android phone", "touch", 9);
+  const again = await store.hello("p1", "ignored", "touch", 9);
   assert.deepEqual([again.name, again.lastSeen], ["Android phone", 9]);
   assert.deepEqual(store.devices().map((d) => d.id), ["p1", "t1", "d1"]);
 });

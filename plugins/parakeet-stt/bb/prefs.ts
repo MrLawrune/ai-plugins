@@ -163,21 +163,22 @@ export class PrefsStore {
   }
 
   /**
-   * Register a browser (or refresh its last-seen time). New devices get their kind's profile.
-   * The row is written only for a new, renamed or retyped device, or when the stored last-seen is
-   * 10 minutes old; other page loads just update the time in memory.
+   * Register a browser (or refresh its last-seen time). New devices get their kind's profile; a
+   * known device keeps its name, kind and profile (the browser only guesses a name, the user renames it).
+   * The row is written only for a new device or when the stored last-seen is 10 minutes old; other
+   * page loads just update the time in memory.
    */
   hello(id: string, name: string, kind: DeviceKind, now: number): Promise<DeviceRecord> {
     return this.#enqueue(async () => {
       const known = this.#state.devices[id];
-      if (known && known.name === name && known.kind === kind && now - known.lastSeen < LAST_SEEN_WRITE_MS) {
+      if (known && now - known.lastSeen < LAST_SEEN_WRITE_MS) {
         const device = { ...known, lastSeen: now };
         this.#state.devices[id] = device;
         return device;
       }
       const draft = this.#draft();
       const device: DeviceRecord = known
-        ? { ...known, name, kind, lastSeen: now }
+        ? { ...known, lastSeen: now }
         : { id, name, kind, profileId: this.#kindProfile(draft, kind), lastSeen: now };
       draft.devices[id] = device;
       draft.devices = trimDevices(draft.devices);
