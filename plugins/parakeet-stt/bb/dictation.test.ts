@@ -1,28 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendDictation, DictationController, matchesShortcut, type DictationDeps, type Interruption } from "./dictation.ts";
-
-function harness(over: Partial<DictationDeps> = {}) {
-  const log: string[] = [];
-  let interrupt: ((why: Interruption) => void) | null = null;
-  const deps: DictationDeps = {
-    async startRecording(onInterrupt) {
-      interrupt = onInterrupt;
-      log.push("rec:start");
-      return { async stop() { log.push("rec:stop"); return new Blob(["x"]); }, cancel() { log.push("rec:cancel"); } };
-    },
-    async transcribe() { return "hello world"; },
-    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: true, mode: "oneshot" as const, livePreview: true }),
-    playSound: (n) => log.push(`sound:${n}`),
-    notify: (k, m) => log.push(`${k}:${m}`),
-    now: () => 0,
-    ...over,
-  };
-  const c = new DictationController(deps);
-  let draft = "fix the";
-  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => { draft = appendDictation(draft, t, false); }, submit: () => log.push("submit") });
-  return { c, log, draft: () => draft, interrupt: (w: Interruption) => interrupt!(w) };
-}
+import { appendDictation, DictationController, matchesShortcut } from "./dictation.ts";
+import { target, harness, streamHarness } from "./test-dictation.ts";
 
 test("toggle records then transcribes into the target", async () => {
   const h = harness();
@@ -151,39 +130,24 @@ test("stop pressed before the mic resolves still stops once it does (hold-to-tal
 
 test("composer closed before the transcript arrives: user is told where the text went", async () => {
   const log: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
   const c = new DictationController({
     async startRecording() { return { async stop() { return new Blob(["x"]); }, cancel() {} }; },
-    async transcribe() { return "lost words"; },
+    async transcribe() { await gate; return "lost words"; },
     prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "oneshot" as const, livePreview: true }),
     playSound: () => {},
     notify: (k, m) => log.push(`${k}:${m}`),
     now: () => 0,
   });
-  const unregister = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: () => log.push("appended"), submit: () => {} });
+  const unregister = c.register(target({ appendText: () => log.push("appended") }));
   await c.start("t1");
+  const stopping = c.stop(); // transcribing: closing now cannot cancel, the text has nowhere to go
   unregister();
-  await c.stop();
+  release();
+  await stopping;
   assert.ok(!log.includes("appended"));
   assert.ok(log.some((l) => l.startsWith("info:") && l.includes("history")), log.join(" | "));
-});
-
-test("two surfaces for one composer: unmounting one keeps the other usable", async () => {
-  const log: string[] = [];
-  const c = new DictationController({
-    async startRecording() { return { async stop() { return new Blob(["x"]); }, cancel() {} }; },
-    async transcribe() { return "hi"; },
-    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "oneshot" as const, livePreview: true }),
-    playSound: () => {},
-    notify: (k, m) => log.push(`${k}:${m}`),
-    now: () => 0,
-  });
-  c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => log.push(`action:${t}`), submit: () => {} });
-  const unregisterBanner = c.register({ id: "t1", setLive() {}, commitLive() {}, begin() {}, clear() {}, appendText: (t) => log.push(`banner:${t}`), submit: () => {} });
-  unregisterBanner();
-  await c.toggle("t1");
-  assert.equal(c.snapshot().phase, "recording");
-  await c.toggle("t1");
-  assert.deepEqual(log, ["action:hi"]);
 });
 
 test("cancel while the mic prompt is pending releases the mic once it resolves", async () => {
@@ -202,167 +166,6 @@ test("cancel while the mic prompt is pending releases the mic once it resolves",
   assert.deepEqual(log, ["rec:cancel"]);
 });
 
-function streamHarness(over: Partial<DictationDeps> = {}) {
-  const log: string[] = [];
-  let handlers: import("./dictation.ts").StreamHandlers | null = null;
-  let interrupt: ((w: Interruption) => void) | null = null;
-  let draft = "Start.";
-  let live = "";
-  const deps: DictationDeps = {
-    async startRecording() { log.push("oneshot:start"); return { async stop() { return new Blob(["x"]); }, cancel() {} }; },
-    async transcribe() { return "one shot text"; },
-    async startStream(h, onInterrupt) {
-      handlers = h; interrupt = onInterrupt; log.push("stream:start");
-      return {
-        async stop() { log.push("stream:stop"); h.onEnded("stopped"); },
-        cancel() { log.push("stream:cancel"); },
-      };
-    },
-    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "continuous", livePreview: true }),
-    playSound: () => {},
-    notify: (k, m) => log.push(`${k}:${m}`),
-    now: () => 0,
-    ...over,
-  };
-  const c = new DictationController(deps);
-  c.register({
-    id: "t1",
-    appendText: (t) => { draft = `${draft} ${t}`; },
-    submit: () => log.push("submit"),
-    setLive: (t) => { live = t; },
-    commitLive: (t) => { live = ""; if (t) draft = `${draft} ${t}`; },
-    begin: () => log.push("begin"),
-    clear: () => { draft = ""; log.push("clear"); },
-  });
-  return { c, log, h: () => handlers!, interrupt: (w: Interruption) => interrupt!(w), draft: () => draft, live: () => live };
-}
-
-test("continuous: partials set the live tail, finals commit, send submits, stop ends", async () => {
-  const s = streamHarness();
-  await s.c.toggle();
-  assert.equal(s.c.snapshot().phase, "streaming");
-  s.h().onPartial("hello wor", 0);
-  assert.equal(s.live(), "hello wor");
-  s.h().onFinal("Hello world.", 0);
-  assert.equal(s.live(), "");
-  assert.equal(s.draft(), "Start. Hello world.");
-  s.h().onCommand("send");
-  assert.ok(s.log.includes("submit"));
-  await s.c.toggle();
-  assert.equal(s.c.snapshot().phase, "idle");
-  assert.ok(s.log.includes("stream:stop"));
-});
-
-test("continuous: start phrase waits, starts, sends, and waits again", async () => {
-  const cues: string[] = [];
-  const s = streamHarness({
-    prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: true, mode: "continuous", livePreview: true }),
-    playSound: (n) => cues.push(n),
-  });
-  await s.c.start();
-  s.h().onState(true);
-  assert.equal(s.c.snapshot().waiting, true);
-  s.h().onCommand("start");
-  s.h().onState(false);
-  assert.equal(s.c.snapshot().waiting, false);
-  s.h().onFinal("Fix it.", 1);
-  s.h().onCommand("send");
-  s.h().onState(true);
-  assert.equal(s.c.snapshot().waiting, true);
-  assert.deepEqual(s.log.filter((l) => l === "begin" || l === "submit"), ["begin", "begin", "submit"]);
-  assert.deepEqual(cues, ["start", "start", "stop"]);
-  await s.c.stop();
-  assert.equal(s.c.snapshot().waiting, false);
-});
-
-test("continuous: heard text shows while waiting and clears on start", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.h().onState(true);
-  s.h().onHeard("star new replay");
-  assert.equal(s.c.snapshot().heard, "star new replay");
-  s.h().onState(false);
-  assert.equal(s.c.snapshot().heard, null);
-});
-
-test("continuous: clear empties the draft and keeps listening", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.h().onFinal("Wrong words.", 0);
-  s.h().onCommand("clear");
-  s.h().onFinal("Take two.", 1);
-  assert.equal(s.draft(), " Take two.");
-  assert.equal(s.c.snapshot().phase, "streaming");
-});
-
-test("continuous: live preview off ignores partials", async () => {
-  const s = streamHarness({ prefs: () => ({ autoSubmit: false, trailingSpace: false, soundCues: false, mode: "continuous", livePreview: false }) });
-  await s.c.start();
-  s.h().onPartial("ignored", 0);
-  assert.equal(s.live(), "");
-});
-
-test("continuous: connect failure falls back to one-shot", async () => {
-  const s = streamHarness({ async startStream() { throw new Error("connect refused"); } });
-  await s.c.start();
-  assert.equal(s.c.snapshot().phase, "recording");
-  assert.ok(s.log.includes("oneshot:start"));
-  assert.ok(s.log.some((l) => l.startsWith("info:") && l.includes("one-shot")));
-});
-
-test("continuous: disconnect keeps the live text as solid and warns", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.h().onPartial("half a sen", 0);
-  s.h().onError("Parakeet STT stream closed (1006)");
-  s.h().onEnded("error");
-  assert.equal(s.c.snapshot().phase, "idle");
-  assert.equal(s.draft(), "Start. half a sen");
-  assert.ok(s.log.some((l) => l.includes("may be incomplete")));
-});
-
-test("continuous: silence end notifies", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.h().onEnded("silence");
-  assert.equal(s.c.snapshot().phase, "idle");
-  assert.ok(s.log.some((l) => l.startsWith("info:") && l.toLowerCase().includes("silence")));
-});
-
-test("continuous: cancel clears the tail and stops streaming", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.h().onPartial("draft words", 0);
-  s.c.cancel();
-  assert.equal(s.live(), "");
-  assert.ok(s.log.includes("stream:cancel"));
-  assert.equal(s.c.snapshot().phase, "idle");
-});
-
-test("continuous: page hidden stops the stream gracefully", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.interrupt("hidden");
-  await new Promise((r) => setTimeout(r, 0));
-  assert.ok(s.log.includes("stream:stop"));
-  assert.equal(s.c.snapshot().phase, "idle");
-});
-
-test("stop during stream connect stops once connected", async () => {
-  let release!: () => void;
-  const s = streamHarness({
-    startStream: (h) => new Promise((resolve) => {
-      release = () => resolve({ async stop() { h.onEnded("stopped"); }, cancel() {} });
-    }),
-  });
-  const starting = s.c.start();
-  const stopping = s.c.stop();
-  release();
-  await starting;
-  await stopping;
-  assert.equal(s.c.snapshot().phase, "idle");
-});
-
 test("explicit oneshot mode overrides the continuous default (press-and-hold)", async () => {
   const s = streamHarness();
   await s.c.start("t1", "oneshot");
@@ -370,30 +173,50 @@ test("explicit oneshot mode overrides the continuous default (press-and-hold)", 
   assert.ok(s.log.includes("oneshot:start") && !s.log.includes("stream:start"));
 });
 
-test("continuous: mic lost by the browser ends gracefully with a notice", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  s.interrupt("lost");
-  await new Promise((r) => setTimeout(r, 0));
-  assert.ok(s.log.includes("stream:stop"));
-  assert.ok(s.log.some((l) => l.startsWith("info:") && l.includes("microphone")), s.log.join(" | "));
+test("a superseded one-shot mic prompt that resolves late is cancelled and leaves the new session alone", async () => {
+  const prompts: Array<{ resolve: (h: import("./dictation.ts").RecordingHandle) => void; reject: (e: Error) => void }> = [];
+  const h = harness({ startRecording: () => new Promise((resolve, reject) => { prompts.push({ resolve, reject }); }) });
+  const first = h.c.start();
+  h.c.cancel();
+  const second = h.c.start();
+  assert.equal(prompts.length, 2);
+  const late = { cancelled: 0, stopped: 0 };
+  prompts[0].resolve({ async stop() { late.stopped++; return new Blob(["x"]); }, cancel() { late.cancelled++; } });
+  await first;
+  assert.equal(late.cancelled, 1);
+  assert.equal(late.stopped, 0);
+  assert.equal(h.c.snapshot().phase, "recording");
+  const live = { cancelled: 0 };
+  prompts[1].resolve({ async stop() { return new Blob(["x"]); }, cancel() { live.cancelled++; } });
+  await second;
+  assert.equal(live.cancelled, 0);
+  await h.c.stop();
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.equal(h.draft(), "fix the hello world");
 });
 
-test("targetCount tracks registrations and notifies subscribers", () => {
-  const c = new DictationController(null);
-  let notified = 0;
-  c.subscribe(() => notified++);
-  assert.equal(c.targetCount(), 0);
-  const off = c.register({ id: "a", appendText() {}, submit() {}, setLive() {}, commitLive() {}, begin() {}, clear() {} });
-  assert.equal(c.targetCount(), 1);
-  off();
-  assert.equal(c.targetCount(), 0);
-  assert.equal(notified, 2);
+test("a superseded one-shot mic prompt that fails late is ignored", async () => {
+  const prompts: Array<{ resolve: (h: import("./dictation.ts").RecordingHandle) => void; reject: (e: Error) => void }> = [];
+  const h = harness({ startRecording: () => new Promise((resolve, reject) => { prompts.push({ resolve, reject }); }) });
+  const first = h.c.start();
+  h.c.cancel();
+  const second = h.c.start();
+  prompts[0].reject(new Error("denied"));
+  await first;
+  assert.equal(h.c.snapshot().phase, "recording");
+  assert.ok(!h.log.some((l) => l.startsWith("error:")), h.log.join(" | "));
+  prompts[1].resolve({ async stop() { return new Blob(["x"]); }, cancel() {} });
+  await second;
+  assert.equal(h.c.snapshot().phase, "recording");
 });
 
-test("each start captures the insertion point once, before recording", async () => {
-  const s = streamHarness();
-  await s.c.start();
-  assert.equal(s.log.filter((l) => l === "begin").length, 1);
-  assert.ok(s.log.indexOf("begin") < s.log.indexOf("stream:start"));
+test("cancel while the mic prompt is pending, then the prompt is denied: no late error cue or toast", async () => {
+  let deny!: (e: Error) => void;
+  const h = harness({ startRecording: () => new Promise((_, reject) => { deny = reject; }) });
+  const starting = h.c.start();
+  h.c.cancel();
+  deny(new DOMException("Permission denied", "NotAllowedError"));
+  await starting;
+  assert.equal(h.c.snapshot().phase, "idle");
+  assert.ok(!h.log.some((l) => l.startsWith("error:") || l === "sound:error"), h.log.join(" | "));
 });

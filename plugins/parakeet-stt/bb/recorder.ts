@@ -23,23 +23,42 @@ export async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
-export async function startBrowserRecording(onInterrupt: (why: Interruption) => void, keepListeningHidden: () => boolean = () => true): Promise<RecordingHandle & { mimeType: string }> {
-  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-    throw new Error("this browser cannot record audio");
-  }
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-  const mimeType = pickMimeType((t) => MediaRecorder.isTypeSupported(t)) ?? "";
-  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-  const chunks: Blob[] = [];
-  recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-  const limit = setTimeout(() => onInterrupt("limit"), MAX_RECORDING_MS);
+/** Browser capabilities the recorder needs; injectable so the failure paths run under node:test. */
+export interface RecorderEnv {
+  getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
+  MediaRecorder: typeof MediaRecorder;
+  doc: Document;
+}
+
+function browserRecorderEnv(): RecorderEnv {
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") throw new Error("this browser cannot record audio");
+  return { getUserMedia: (c) => navigator.mediaDevices.getUserMedia(c), MediaRecorder, doc: document };
+}
+
+export async function startBrowserRecording(onInterrupt: (why: Interruption) => void, keepListeningHidden: () => boolean = () => true, env: RecorderEnv = browserRecorderEnv()): Promise<RecordingHandle & { mimeType: string }> {
+  const stream = await env.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  let limit: ReturnType<typeof setTimeout> | undefined;
+  let unguard: (() => void) | null = null;
   const release = () => {
     stream.getTracks().forEach((t) => t.stop());
-    unguard();
+    unguard?.();
+    unguard = null;
     clearTimeout(limit);
   };
-  const unguard = guardCapture({ doc: document, tracks: stream.getAudioTracks(), keepListeningHidden, onInterrupt });
-  recorder.start(1000); // timeslice: keeps captured audio if the page is suspended
+  const chunks: Blob[] = [];
+  let recorder: MediaRecorder;
+  let mimeType: string;
+  try {
+    mimeType = pickMimeType((t) => env.MediaRecorder.isTypeSupported(t)) ?? "";
+    recorder = mimeType ? new env.MediaRecorder(stream, { mimeType }) : new env.MediaRecorder(stream);
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+    limit = setTimeout(() => onInterrupt("limit"), MAX_RECORDING_MS);
+    unguard = guardCapture({ doc: env.doc, tracks: stream.getAudioTracks(), keepListeningHidden, onInterrupt });
+    recorder.start(1000); // timeslice: keeps captured audio if the page is suspended
+  } catch (e) {
+    release();
+    throw e;
+  }
   const type = recorder.mimeType || mimeType || "audio/webm";
   return {
     mimeType: type,

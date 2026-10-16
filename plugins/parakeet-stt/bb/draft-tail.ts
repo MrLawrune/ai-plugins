@@ -73,6 +73,16 @@ export function applyLive(draft: string, state: LiveState, seq: number, text: st
   return { draft: next, state: final ? { anchor: pos + tail.length, tail: "", dropSeq: null } : { anchor: pos, tail, dropSeq: null } };
 }
 
+/**
+ * True when a live tail is showing in a non-empty draft but is no longer where this session put it
+ * (at its anchor, or at the end): another writer changed the dictated range. An empty draft is not
+ * that: the user sent or cleared it, which `applyLive` handles.
+ */
+export function tailMoved(draft: string, state: LiveState): boolean {
+  if (!state.tail || draft.trim() === "") return false;
+  return state.anchor === null ? !draft.endsWith(state.tail) : !draft.startsWith(state.tail, state.anchor);
+}
+
 /** Where to paint the dimmed tail in `draft`, or null. */
 export function liveRange(draft: string, state: LiveState): { from: number; to: number } | null {
   if (!state.tail) return null;

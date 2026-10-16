@@ -1,7 +1,7 @@
 // Frontend dictation state machine shared by the composer action, plus-menu item, banner,
 // and keyboard shortcut. Browser specifics are injected so the logic runs under node:test.
 import type { SoundName } from "./schemas.ts";
-import type { CommandName, EndReason } from "./stream-protocol.ts";
+import { StreamServerError, type CommandName, type EndReason } from "./stream-protocol.ts";
 
 export type Mode = "continuous" | "oneshot";
 export type Phase = "idle" | "recording" | "transcribing" | "streaming" | "finishing";
@@ -26,6 +26,8 @@ export interface Target {
   begin(): void;
   /** Empty the whole draft. */
   clear(): void;
+  /** The session on this target is over (stopped, cancelled, failed or ended); called exactly once. */
+  end(): void;
 }
 export interface StreamHandlers {
   onPartial(text: string, seq: number): void;
@@ -45,11 +47,24 @@ export interface DictationDeps {
   startRecording(onInterrupt: (why: Interruption) => void): Promise<RecordingHandle>;
   transcribe(audio: Blob): Promise<string>;
   startStream?(handlers: StreamHandlers, onInterrupt: (why: Interruption) => void): Promise<StreamHandle>;
+  /** Runs before the mic opens: a message when no session can succeed (e.g. no server URL set), else null. */
+  preflight?(): Promise<string | null>;
   prefs(): { autoSubmit: boolean; trailingSpace: boolean; soundCues: boolean; mode: Mode; livePreview: boolean };
   playSound(name: SoundName): void;
   notify(kind: "info" | "error", message: string): void;
   now(): number;
 }
+
+/** Runs `fn` once, on the first of an animation frame and a zero timeout: a hidden page gets no frames, node:test has none. */
+function soon(fn: () => void): void {
+  let done = false;
+  const once = () => { if (!done) { done = true; fn(); } };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(once);
+  setTimeout(once, 0);
+}
+
+/** Shown when the composer of the active session goes away. */
+export const COMPOSER_CLOSED = "The composer closed; dictation stopped.";
 
 const IDLE: DictationSnapshot = { phase: "idle", targetId: null, startedAt: null, waiting: false, heard: null };
 const INTERRUPT_NOTICE: Record<Interruption, string> = {
@@ -87,8 +102,12 @@ export class DictationController {
   /** stop() arrived while the mic prompt was still pending (e.g. hold-to-talk key released). */
   #stopRequested = false;
   #stream: StreamHandle | null = null;
+  /** The target of the session in flight; its `end()` runs when the session reaches a terminal state. */
+  #active: Target | null = null;
   #live = "";
   #liveSeq = 0;
+  /** Incremented on every start; a connect that settles under an older token belongs to a superseded session. */
+  #session = 0;
 
   constructor(deps: DictationDeps | null) {
     this.#deps = deps;
@@ -116,13 +135,29 @@ export class DictationController {
     this.#emit();
     return () => {
       this.#targets = this.#targets.filter((t) => t !== target);
+      // A surface that remounts under the same composer unregisters and registers within one commit;
+      // judge "the composer is gone" only after that, and only if the session is still the same.
+      const session = this.#session;
+      queueMicrotask(() => soon(() => {
+        const { phase, targetId } = this.#state;
+        const live = phase === "recording" || phase === "streaming" || phase === "finishing";
+        if (live && session === this.#session && targetId === target.id && !this.has(target.id)) {
+          // the composer is gone: release the mic now instead of recording into nothing
+          this.#deps?.notify("info", COMPOSER_CLOSED);
+          this.cancel();
+        }
+      }));
       this.#emit();
     };
   }
 
-  /** Number of mounted composer targets (the floating mic shows only when one exists). */
+  /** Number of mounted composers (the floating mic shows only when one exists). */
   targetCount(): number {
-    return this.#targets.length;
+    return new Set(this.#targets.map((t) => t.id)).size;
+  }
+
+  has(id: string): boolean {
+    return this.#targets.some((t) => t.id === id);
   }
 
   async toggle(targetId?: string): Promise<void> {
@@ -137,17 +172,31 @@ export class DictationController {
     if (this.#state.phase !== "idle" || !deps) return;
     const target = this.#resolve(targetId);
     if (!target) return;
+    this.#active = target;
+    const session = ++this.#session;
     target.begin();
-    const wanted = mode ?? deps.prefs().mode;
-    if (wanted === "continuous" && deps.startStream) return this.#startStream(deps, target);
-    return this.#startOneShot(deps, target);
-  }
-
-  async #startStream(deps: DictationDeps, target: Target): Promise<void> {
-    this.#set({ phase: "streaming", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
-    let gated = false; // the session uses a start phrase
+    const stream = (mode ?? deps.prefs().mode) === "continuous" && !!deps.startStream;
+    // Enter the session phase first so a double press is ignored while the preflight runs.
+    this.#set({ phase: stream ? "streaming" : "recording", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
     this.#stopRequested = false;
     this.#live = "";
+    if (deps.preflight) {
+      const problem = await deps.preflight().catch(() => null); // a failing check must not block dictation
+      if (session !== this.#session || this.snapshot().phase === "idle") return; // cancelled while checking
+      if (problem) return this.#fail(deps, problem);
+    }
+    return stream ? this.#startStream(deps, target, session) : this.#startOneShot(deps, target, session);
+  }
+
+  /** A session that cannot start: one error, back to idle. */
+  #fail(deps: DictationDeps, message: string): void {
+    this.#finish();
+    this.#cue("error");
+    deps.notify("error", message);
+  }
+
+  async #startStream(deps: DictationDeps, target: Target, session: number): Promise<void> {
+    let gated = false; // the session uses a start phrase
     const handlers: StreamHandlers = {
       onPartial: (text, seq) => {
         if (!deps.prefs().livePreview || this.snapshot().phase === "idle") return;
@@ -179,12 +228,16 @@ export class DictationController {
         void this.stop();
       });
     } catch (e) {
-      this.#set(IDLE);
+      if (session !== this.#session || this.snapshot().phase !== "streaming") return; // cancelled or superseded while connecting
+      // The server side failed (not set, unreachable, busy, refused): one-shot would fail the same way.
+      if (e instanceof StreamServerError) return this.#fail(deps, e.message);
+      // Only this browser could not stream: one-shot may still work. No idle state here, the fallback
+      // keeps this session (its target and a Stop already pressed) alive.
       deps.notify("info", `Streaming unavailable (${e instanceof Error ? e.message : String(e)}); using one-shot.`);
-      return this.#startOneShot(deps, target);
+      return this.#startOneShot(deps, target, session);
     }
-    if (this.snapshot().phase !== "streaming") {
-      handle.cancel(); // cancelled while connecting
+    if (session !== this.#session || this.snapshot().phase !== "streaming") {
+      handle.cancel(); // cancelled or superseded while connecting: release its mic and socket
       return;
     }
     this.#stream = handle;
@@ -205,13 +258,12 @@ export class DictationController {
     }
     this.#live = "";
     this.#stream = null;
-    this.#set(IDLE);
+    this.#finish();
   }
 
-  async #startOneShot(deps: DictationDeps, target: Target): Promise<void> {
+  async #startOneShot(deps: DictationDeps, target: Target, session: number): Promise<void> {
     // Enter "recording" before the mic prompt resolves so a double press is ignored.
     this.#set({ phase: "recording", targetId: target.id, startedAt: deps.now(), waiting: false, heard: null });
-    this.#stopRequested = false;
     let handle: RecordingHandle;
     try {
       handle = await deps.startRecording((why) => {
@@ -220,14 +272,15 @@ export class DictationController {
         void this.stop();
       });
     } catch (e) {
+      if (session !== this.#session || this.snapshot().phase !== "recording") return; // cancelled or superseded while the mic prompt was pending
       this.#recording = null;
-      this.#set(IDLE);
+      this.#finish();
       this.#cue("error");
       deps.notify("error", `Microphone unavailable: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
-    if (this.snapshot().phase !== "recording") {
-      handle.cancel(); // cancelled while the mic prompt was pending
+    if (session !== this.#session || this.snapshot().phase !== "recording") {
+      handle.cancel(); // cancelled or superseded while the mic prompt was pending
       return;
     }
     this.#recording = handle;
@@ -254,13 +307,14 @@ export class DictationController {
       return;
     }
     this.#stopRequested = false;
-    const target = this.#resolve(this.#state.targetId ?? undefined);
+    const targetId = this.#state.targetId ?? undefined;
     this.#recording = null;
     this.#set({ ...this.#state, phase: "transcribing" });
     try {
       const audio = await recording.stop();
       this.#cue("stop");
       const text = (await deps.transcribe(audio)).trim();
+      const target = this.#resolve(targetId); // the composer may have closed while transcribing
       if (!text) deps.notify("info", "No speech detected");
       else if (!target) deps.notify("info", "The composer closed before the text arrived; it is saved in Parakeet STT history.");
       else {
@@ -271,7 +325,7 @@ export class DictationController {
       this.#cue("error");
       deps.notify("error", e instanceof Error ? e.message : String(e));
     } finally {
-      this.#set(IDLE);
+      this.#finish();
     }
   }
 
@@ -282,15 +336,23 @@ export class DictationController {
       this.#stream = null;
       this.#live = "";
       target?.setLive("", this.#liveSeq);
-      this.#set(IDLE);
+      this.#finish();
       this.#cue("cancel");
       return;
     }
     if (this.#state.phase !== "recording") return;
     this.#recording?.cancel();
     this.#recording = null;
-    this.#set(IDLE);
+    this.#finish();
     this.#cue("cancel");
+  }
+
+  /** Terminal state of a session: back to idle, and the target hears about it exactly once. */
+  #finish(): void {
+    const target = this.#active;
+    this.#active = null;
+    this.#set(IDLE);
+    target?.end();
   }
 
   #resolve(targetId?: string): Target | undefined {
